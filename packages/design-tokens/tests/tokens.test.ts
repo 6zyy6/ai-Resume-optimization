@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { tokens } from "../src/tokens";
 
@@ -17,5 +18,19 @@ describe("design tokens", () => {
       risk600: "#DC2626",
       gap600: "#7C3AED",
     });
+  });
+
+  it("exposes the CSS entry point through the package export map", () => {
+    const resolved = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        "console.log(import.meta.resolve('@resume/design-tokens/tokens.css'))",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    expect(resolved.trim()).toMatch(/tokens\.css$/);
   });
 });
