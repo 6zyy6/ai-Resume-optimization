@@ -17,10 +17,16 @@ from app.contracts import (
     SuggestionStatus,
     TaskRecord,
 )
+from app.modules.auth.router import router as auth_router
+from app.modules.privacy.router import router as privacy_router
+from app.modules.usage.router import router as usage_router
 
 
 def build_application() -> FastAPI:
     app = FastAPI(title="AI Resume API", version="1")
+    app.include_router(auth_router)
+    app.include_router(usage_router)
+    app.include_router(privacy_router)
 
     @app.get("/contracts/fact", response_model=FactRecord)
     def fact_contract() -> FactRecord:

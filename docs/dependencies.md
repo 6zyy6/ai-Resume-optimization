@@ -13,3 +13,4 @@ dependencies are pinned in `packages/api/requirements.lock`.
 | Alembic | 1.18.5 | Applies versioned database migrations. | MIT |
 | asyncpg | 0.31.0 | Provides the production PostgreSQL async driver. | Apache-2.0 |
 | greenlet | 3.5.4 | Enables SQLAlchemy's async bridge. | MIT |
+| cryptography | 49.0.0 | Encrypts normalized email addresses with authenticated AES-GCM. | Apache-2.0 OR BSD-3-Clause |

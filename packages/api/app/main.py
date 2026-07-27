@@ -6,9 +6,21 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import get_settings
 from app.core.errors import createApiError
 from app.core.middleware import RequestContextMiddleware, get_request_context
+from app.modules.auth.router import router as auth_router
+from app.modules.auth.service import build_default_auth_service
+from app.modules.privacy.router import router as privacy_router
+from app.modules.privacy.service import build_default_privacy_service
+from app.modules.usage.router import router as usage_router
+from app.modules.usage.service import build_default_usage_service
 
 app = FastAPI(title="AI Resume API", version="1")
 app.add_middleware(RequestContextMiddleware)
+app.state.auth_service = build_default_auth_service(get_settings().app_env)
+app.state.usage_service = build_default_usage_service()
+app.state.privacy_service = build_default_privacy_service(app.state.auth_service)
+app.include_router(auth_router)
+app.include_router(usage_router)
+app.include_router(privacy_router)
 
 
 def api_error_response(
@@ -25,7 +37,11 @@ def api_error_response(
 @app.exception_handler(HTTPException)
 async def api_error_handler(request: Request, error: HTTPException) -> JSONResponse:
     if isinstance(error.detail, dict) and "error" in error.detail:
-        return JSONResponse(status_code=error.status_code, content=error.detail)
+        return JSONResponse(
+            status_code=error.status_code,
+            content=error.detail,
+            headers=error.headers,
+        )
     return api_error_response(request, error.status_code, "HTTP_ERROR", "Request failed")
 
 

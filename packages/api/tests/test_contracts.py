@@ -45,3 +45,34 @@ def test_openapi_includes_all_enum_contracts():
     assert schemas["SuggestionStatus"]["enum"] == [
         "pending", "accepted", "edited", "ignored", "reverted", "blocked"
     ]
+
+
+def test_openapi_includes_auth_usage_and_privacy_routes():
+    paths = build_application().openapi()["paths"]
+
+    assert "/v1/auth/email/start" in paths
+    assert "/v1/auth/email/verify" in paths
+    assert "/v1/auth/wechat/login" in paths
+    assert "/v1/auth/identities/bind-email" in paths
+    assert "/v1/auth/refresh" in paths
+    assert "/v1/auth/logout" in paths
+    assert "/v1/me/usage" in paths
+    assert "/v1/me/data-exports" in paths
+    assert "/v1/me/deletion-requests" in paths
+
+
+def test_openapi_declares_the_runtime_error_envelope():
+    paths = build_application().openapi()["paths"]
+
+    auth_validation = paths["/v1/auth/email/start"]["post"]["responses"]["422"]
+    privacy_limit = paths["/v1/me/data-exports"]["post"]["responses"]["429"]
+    usage_auth = paths["/v1/me/usage"]["get"]["responses"]["401"]
+    assert auth_validation["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ApiErrorEnvelope"
+    )
+    assert privacy_limit["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ApiErrorEnvelope"
+    )
+    assert usage_auth["content"]["application/json"]["schema"]["$ref"].endswith(
+        "/ApiErrorEnvelope"
+    )
