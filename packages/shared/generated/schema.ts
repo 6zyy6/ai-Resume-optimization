@@ -1426,6 +1426,7 @@ export interface operations {
         parameters: {
             query?: {
                 cursor?: string | null;
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -1999,6 +2000,7 @@ export interface operations {
         parameters: {
             query?: {
                 cursor?: string | null;
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -2297,7 +2299,10 @@ export interface operations {
     };
     list_versions_v1_resumes__resume_id__versions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
             header?: never;
             path: {
                 resume_id: string;

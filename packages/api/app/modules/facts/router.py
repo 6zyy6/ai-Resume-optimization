@@ -33,9 +33,9 @@ async def _response(service: FactService, fact) -> FactResponse:
 
 
 @router.get("", response_model=FactListResponse)
-async def list_facts(cursor: str | None = Query(default=None), authenticated: AuthenticatedSession = Depends(require_session), service: FactService = Depends(get_fact_service)) -> FactListResponse:
-    facts = await service.list_facts(authenticated.user_id)
-    return FactListResponse(items=[await _response(service, fact) for fact in facts])
+async def list_facts(cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: FactService = Depends(get_fact_service)) -> FactListResponse:
+    facts, next_cursor = await service.list_facts(authenticated.user_id, cursor, limit)
+    return FactListResponse(items=[await _response(service, fact) for fact in facts], next_cursor=next_cursor)
 
 
 @router.post("", status_code=201, response_model=FactResponse)

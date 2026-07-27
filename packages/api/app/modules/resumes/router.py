@@ -36,8 +36,9 @@ def _version(saved: SavedVersion) -> ResumeVersionResponse:
 
 
 @router.get("", response_model=ResumeListResponse)
-async def list_resumes(cursor: str | None = Query(default=None), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
-    return ResumeListResponse(items=[_resume(row) for row in await service.list_resumes(authenticated.user_id)])
+async def list_resumes(cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
+    rows, next_cursor = await service.list_resumes(authenticated.user_id, cursor, limit)
+    return ResumeListResponse(items=[_resume(row) for row in rows], next_cursor=next_cursor)
 
 
 @router.post("", status_code=201, response_model=ResumeResponse)
@@ -65,17 +66,18 @@ async def update_resume(resume_id: str, payload: ResumeUpdate, request: Request,
 
 
 @router.get("/{resume_id}/versions", response_model=ResumeVersionsResponse)
-async def list_versions(resume_id: str, request: Request, authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionsResponse:
-    rows = await service.versions(authenticated.user_id, resume_id)
-    if rows is None:
+async def list_versions(resume_id: str, request: Request, cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionsResponse:
+    page = await service.versions(authenticated.user_id, resume_id, cursor, limit)
+    if page is None:
         _raise(request, ResumeError("RESOURCE_NOT_FOUND", "Resume not found", 404))
-    return ResumeVersionsResponse(items=[_version(SavedVersion(row, 200, "save")) for row in rows])
+    rows, next_cursor = page
+    return ResumeVersionsResponse(items=[_version(SavedVersion(row, 200, "save")) for row in rows], next_cursor=next_cursor)
 
 
 @router.post("/{resume_id}/versions", status_code=201, response_model=ResumeVersionResponse)
 async def save_version(resume_id: str, payload: VersionCreate, request: Request, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionResponse:
     try:
-        saved = await service.save_resume_version(authenticated.user_id, resume_id, payload.base_version, payload.snapshot.model_dump(mode="json"), "save", _key(idempotency_key, request))
+        saved = await service.save_resume_version(authenticated.user_id, resume_id, payload.base_version, payload.snapshot.model_dump(mode="json"), _key(idempotency_key, request))
         response.status_code = saved.status_code
         return _version(saved)
     except ResumeError as error:

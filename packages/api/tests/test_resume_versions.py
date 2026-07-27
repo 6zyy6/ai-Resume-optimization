@@ -155,6 +155,35 @@ def test_identical_snapshot_does_not_create_a_second_version(resume_client):
     assert _run(_version_count(sessions, resume_id)) == 1
 
 
+def test_saving_an_old_snapshot_creates_a_new_current_head(resume_client):
+    """Deduplicating against history leaves the authoritative head on unrelated content."""
+    client, sessions = resume_client
+    resume_id = _resume(client, "old-head-resume")
+    one = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 0, "snapshot": _snapshot("one")}, headers=_headers("old-head-1"))
+    two = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 1, "snapshot": _snapshot("two")}, headers=_headers("old-head-2"))
+    replayed = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 2, "snapshot": _snapshot("one")}, headers=_headers("old-head-3"))
+
+    assert one.status_code == 201
+    assert two.status_code == 201
+    assert replayed.status_code == 201
+    assert replayed.json()["id"] != one.json()["id"]
+    assert _run(_version_count(sessions, resume_id)) == 3
+
+
+def test_resume_list_uses_an_opaque_cursor(resume_client):
+    """Ignoring cursor returns the first page again instead of the remaining resume."""
+    client, _ = resume_client
+    _resume(client, "cursor-r1")
+    _resume(client, "cursor-r2")
+    first = client.get("/v1/resumes?limit=1")
+    second = client.get(f"/v1/resumes?limit=1&cursor={first.json()['next_cursor']}")
+
+    assert first.status_code == 200
+    assert first.json()["next_cursor"]
+    assert second.status_code == 200
+    assert second.json()["items"][0]["id"] != first.json()["items"][0]["id"]
+
+
 def test_restore_copies_history_into_a_new_immutable_row(resume_client):
     """Returning the historical row instead of appending makes this fail."""
     client, sessions = resume_client

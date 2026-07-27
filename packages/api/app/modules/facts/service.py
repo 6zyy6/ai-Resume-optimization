@@ -1,4 +1,5 @@
 import hashlib
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -24,10 +25,15 @@ class FactService:
         self.sessions = sessions
         self.idempotency = IdempotencyService()
 
-    async def list_facts(self, owner_id: str) -> list[Fact]:
+    async def list_facts(self, owner_id: str, cursor: str | None = None, limit: int = 20) -> tuple[list[Fact], str | None]:
         async with self.sessions() as session:
             owners = await authorized_owner_ids(session, owner_id)
-            return list((await session.scalars(select(Fact).where(Fact.owner_user_id.in_(owners)).order_by(Fact.created_at, Fact.id))).all())
+            query = select(Fact).where(Fact.owner_user_id.in_(owners)).order_by(Fact.created_at, Fact.id)
+            if cursor:
+                created_at, identifier = _decode_cursor(cursor)
+                query = query.where((Fact.created_at > created_at) | ((Fact.created_at == created_at) & (Fact.id > identifier)))
+            rows = list((await session.scalars(query.limit(limit + 1))).all())
+            return rows[:limit], _cursor(rows[-2]) if len(rows) > limit else None
 
     async def get_fact(self, owner_id: str, fact_id: str) -> Fact | None:
         async with self.sessions() as session:
@@ -150,3 +156,15 @@ class FactService:
             await session.flush()
             session.add(FactSource(fact_id=fact.id, source_record_id=source.id, owner_user_id=fact.owner_user_id, source_range=item.get("source_range"), source_hash=hashlib.sha256(source.content_encrypted.encode()).hexdigest()))
         await session.flush()
+
+
+def _cursor(row: Fact) -> str:
+    return urlsafe_b64encode(f"{row.created_at.isoformat()}|{row.id}".encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        created_at, identifier = urlsafe_b64decode(cursor.encode()).decode().split("|", 1)
+        return datetime.fromisoformat(created_at), identifier
+    except Exception as error:
+        raise FactError("VALIDATION_FAILED", "Invalid cursor", 422) from error

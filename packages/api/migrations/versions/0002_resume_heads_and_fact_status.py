@@ -14,9 +14,28 @@ def upgrade() -> None:
     with op.batch_alter_table("resumes") as batch:
         batch.add_column(sa.Column("head_version", sa.Integer(), nullable=False, server_default="0"))
         batch.add_column(sa.Column("head_version_id", sa.String(64), nullable=True))
+    op.execute("""
+    UPDATE resumes
+    SET head_version = (
+      SELECT COUNT(*) FROM resume_versions rv
+      WHERE rv.resume_id = resumes.id AND rv.owner_user_id = resumes.owner_user_id
+    ), head_version_id = (
+      SELECT rv.id FROM resume_versions rv
+      WHERE rv.resume_id = resumes.id AND rv.owner_user_id = resumes.owner_user_id
+      ORDER BY rv.created_at DESC, rv.id DESC LIMIT 1
+    )
+    """)
     with op.batch_alter_table("resume_versions") as batch:
         batch.drop_constraint("uq_resume_snapshot_hash", type_="unique")
     if op.get_bind().dialect.name == "sqlite":
+        op.execute("""
+        CREATE TRIGGER trg_resume_head_matches_version
+        BEFORE UPDATE OF head_version, head_version_id ON resumes
+        WHEN NEW.head_version_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM resume_versions
+          WHERE id = NEW.head_version_id AND resume_id = NEW.id AND owner_user_id = NEW.owner_user_id
+        ) BEGIN SELECT RAISE(ABORT, 'resume head must reference its own version'); END
+        """)
         op.execute("""
         CREATE TRIGGER trg_resume_versions_no_update
         BEFORE UPDATE ON resume_versions
@@ -70,7 +89,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    duplicate = op.get_bind().execute(sa.text("""
+      SELECT 1 FROM resume_versions
+      GROUP BY resume_id, snapshot_hash HAVING COUNT(*) > 1 LIMIT 1
+    """)).scalar()
+    if duplicate:
+        raise RuntimeError("cannot downgrade 0002 while restored duplicate snapshots exist")
     if op.get_bind().dialect.name == "sqlite":
+        op.execute("DROP TRIGGER IF EXISTS trg_resume_head_matches_version")
         for trigger in (
             "trg_confirmed_fact_requires_source_insert",
             "trg_confirmed_fact_requires_source_update",
