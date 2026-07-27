@@ -4,11 +4,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings, get_settings
 from app.core.errors import createApiError
 from app.core.middleware import RequestContextMiddleware, get_request_context
-from app.db.session import SessionLocal
 from app.modules.auth.router import router as auth_router
 from app.modules.auth.service import (
     AuthRepository,
@@ -38,6 +38,7 @@ class ApplicationDependencies:
     wechat_exchange: WechatExchange
     email_crypto: EmailCrypto
     keys: KeyProvider
+    task4_sessions: async_sessionmaker[AsyncSession] | None = None
 
 def api_error_response(
     request: Request,
@@ -101,8 +102,9 @@ def create_app(
         application.state.auth_service,
         dependencies.privacy_repository if dependencies else None,
     )
-    application.state.fact_service = FactService(SessionLocal)
-    application.state.resume_service = ResumeService(SessionLocal)
+    task4_sessions = dependencies.task4_sessions if dependencies and dependencies.task4_sessions else async_sessionmaker(create_async_engine(resolved.database_url), expire_on_commit=False)
+    application.state.fact_service = FactService(task4_sessions)
+    application.state.resume_service = ResumeService(task4_sessions)
     application.state.ready = (
         dependencies is not None or resolved.app_env != "production"
     )

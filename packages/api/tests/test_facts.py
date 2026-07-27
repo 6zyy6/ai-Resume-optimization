@@ -107,6 +107,37 @@ def test_creating_a_confirmed_fact_with_a_source_keeps_its_source(fact_client):
     assert _run(_fact_count(sessions)) == 1
 
 
+def test_editing_confirmed_fact_requires_reconfirmation_before_use(fact_client):
+    """Leaving confirmation intact after a material edit accepts stale evidence."""
+    client, _ = fact_client
+    created = client.post(
+        "/v1/facts",
+        json={"kind": "metric", "value": "42", "status": "confirmed", "sources": [{"source_type": "user_edit", "content": "42"}]},
+        headers=_headers("confirm-edit-create"),
+    ).json()
+
+    edited = client.patch(
+        f"/v1/facts/{created['id']}", json={"value": "999"}, headers=_headers("confirm-edit-patch")
+    )
+
+    assert edited.status_code == 200
+    assert edited.json()["status"] == "unconfirmed"
+    assert edited.json()["confirmed_at"] is None
+
+
+def test_invalid_source_type_is_a_validation_envelope(fact_client):
+    """Sending an unsupported source type must not leak an integrity exception."""
+    client, _ = fact_client
+    response = client.post(
+        "/v1/facts",
+        json={"kind": "metric", "value": "42", "sources": [{"source_type": "unknown", "content": "42"}]},
+        headers=_headers("bad-source"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
 async def _fact_count(sessions) -> int:
     async with sessions() as session:
         return len((await session.scalars(select(Fact))).all())

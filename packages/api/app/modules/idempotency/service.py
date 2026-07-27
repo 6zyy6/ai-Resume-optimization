@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ids import new_id
 from app.db.models import IdempotencyRecord
+from app.db.ownership import authorized_owner_ids, canonical_user_id
 
 
 IDEMPOTENCY_TTL = timedelta(hours=24)
@@ -31,15 +32,17 @@ class IdempotencyService:
         key: str,
         body: Any,
     ) -> tuple[int, dict[str, Any]] | None:
+        owners = await authorized_owner_ids(session, owner_user_id)
         row = await session.scalar(
             select(IdempotencyRecord).where(
-                IdempotencyRecord.owner_user_id == owner_user_id,
+                IdempotencyRecord.owner_user_id.in_(owners),
                 IdempotencyRecord.route == route,
                 IdempotencyRecord.key == key,
             )
         )
         if row is None:
             return None
+        owner_user_id = await canonical_user_id(session, owner_user_id)
         now = datetime.now(timezone.utc)
         expires_at = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=timezone.utc)
         if expires_at <= now:

@@ -650,6 +650,8 @@ export interface components {
             kind: string;
             /** Title */
             title: string;
+            /** Version */
+            version: number;
         };
         /** ResumeSection */
         ResumeSection: {
@@ -720,8 +722,11 @@ export interface components {
             } | null;
             /** Source Ref */
             source_ref?: string | null;
-            /** Source Type */
-            source_type: string;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "question_answer" | "imported_resume" | "user_edit" | "user_confirmation";
         };
         /**
          * SuggestionStatus
@@ -772,15 +777,7 @@ export interface components {
         VersionCreate: {
             /** Base Version */
             base_version: number;
-            /**
-             * Operation
-             * @default save
-             */
-            operation: string;
-            /** Snapshot */
-            snapshot: {
-                [key: string]: unknown;
-            };
+            snapshot: components["schemas"]["ResumeSnapshot"];
         };
         /** WechatLoginRequest */
         WechatLoginRequest: {
@@ -1427,7 +1424,9 @@ export interface operations {
     };
     list_facts_v1_facts_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1998,7 +1997,9 @@ export interface operations {
     };
     list_resumes_v1_resumes_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;

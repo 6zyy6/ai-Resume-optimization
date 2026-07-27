@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Body, Depends, Request, Response
+from fastapi import APIRouter, Body, Depends, Request, Response, Security
+from fastapi.security import APIKeyCookie
 
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
@@ -29,6 +30,7 @@ router = APIRouter(
     },
 )
 SESSION_COOKIE = "session"
+session_cookie = APIKeyCookie(name=SESSION_COOKIE, auto_error=False)
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -62,9 +64,10 @@ def set_session_cookie(response: Response, result: LoginResult, service: AuthSer
 
 async def require_session(
     request: Request,
+    raw_session: str | None = Security(session_cookie),
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedSession:
-    authenticated = await service.authenticate(request.cookies.get(SESSION_COOKIE))
+    authenticated = await service.authenticate(raw_session)
     if authenticated is None:
         raise_auth_error(
             request,

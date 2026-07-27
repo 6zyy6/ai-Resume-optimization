@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
@@ -27,7 +27,7 @@ def _raise(request: Request, error: ResumeError) -> None:
 
 
 def _resume(row) -> ResumeResponse:
-    return ResumeResponse(id=row.id, kind=row.kind, title=row.title, base_resume_id=row.base_resume_id, job_description_id=row.job_description_id)
+    return ResumeResponse(id=row.id, kind=row.kind, title=row.title, base_resume_id=row.base_resume_id, job_description_id=row.job_description_id, version=row.head_version)
 
 
 def _version(saved: SavedVersion) -> ResumeVersionResponse:
@@ -36,7 +36,7 @@ def _version(saved: SavedVersion) -> ResumeVersionResponse:
 
 
 @router.get("", response_model=ResumeListResponse)
-async def list_resumes(authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
+async def list_resumes(cursor: str | None = Query(default=None), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
     return ResumeListResponse(items=[_resume(row) for row in await service.list_resumes(authenticated.user_id)])
 
 
@@ -75,7 +75,7 @@ async def list_versions(resume_id: str, request: Request, authenticated: Authent
 @router.post("/{resume_id}/versions", status_code=201, response_model=ResumeVersionResponse)
 async def save_version(resume_id: str, payload: VersionCreate, request: Request, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionResponse:
     try:
-        saved = await service.save_resume_version(authenticated.user_id, resume_id, payload.base_version, payload.snapshot, payload.operation, _key(idempotency_key, request))
+        saved = await service.save_resume_version(authenticated.user_id, resume_id, payload.base_version, payload.snapshot.model_dump(mode="json"), "save", _key(idempotency_key, request))
         response.status_code = saved.status_code
         return _version(saved)
     except ResumeError as error:

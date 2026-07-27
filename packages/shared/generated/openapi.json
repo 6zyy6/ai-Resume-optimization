@@ -658,6 +658,10 @@
           "title": {
             "title": "Title",
             "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
@@ -665,7 +669,8 @@
           "kind",
           "title",
           "base_resume_id",
-          "job_description_id"
+          "job_description_id",
+          "version"
         ],
         "title": "ResumeResponse",
         "type": "object"
@@ -868,6 +873,12 @@
             "title": "Source Ref"
           },
           "source_type": {
+            "enum": [
+              "question_answer",
+              "imported_resume",
+              "user_edit",
+              "user_confirmation"
+            ],
             "title": "Source Type",
             "type": "string"
           }
@@ -1020,15 +1031,8 @@
             "title": "Base Version",
             "type": "integer"
           },
-          "operation": {
-            "default": "save",
-            "title": "Operation",
-            "type": "string"
-          },
           "snapshot": {
-            "additionalProperties": true,
-            "title": "Snapshot",
-            "type": "object"
+            "$ref": "#/components/schemas/ResumeSnapshot"
           }
         },
         "required": [
@@ -1068,6 +1072,13 @@
         ],
         "title": "WechatLoginRequest",
         "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyCookie": {
+        "in": "cookie",
+        "name": "session",
+        "type": "apiKey"
       }
     }
   },
@@ -1467,6 +1478,11 @@
             "description": "Service Unavailable"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Bind Email",
         "tags": [
           "auth"
@@ -1786,6 +1802,24 @@
     "/v1/facts": {
       "get": {
         "operationId": "list_facts_v1_facts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -1838,6 +1872,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "List Facts",
         "tags": [
           "facts"
@@ -1925,6 +1964,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Create Fact",
         "tags": [
           "facts"
@@ -1997,6 +2041,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Get Fact",
         "tags": [
           "facts"
@@ -2093,6 +2142,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Update Fact",
         "tags": [
           "facts"
@@ -2181,6 +2235,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Set Fact Status",
         "tags": [
           "facts"
@@ -2269,6 +2328,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Set Fact Status",
         "tags": [
           "facts"
@@ -2341,6 +2405,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Get Sources",
         "tags": [
           "facts"
@@ -2432,6 +2501,11 @@
             "description": "Too Many Requests"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Request Data Export",
         "tags": [
           "privacy"
@@ -2554,6 +2628,11 @@
             "description": "Unauthorized"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Get Usage",
         "tags": [
           "usage"
@@ -2563,6 +2642,24 @@
     "/v1/resumes": {
       "get": {
         "operationId": "list_resumes_v1_resumes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2615,6 +2712,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "List Resumes",
         "tags": [
           "resumes"
@@ -2702,6 +2804,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Create Resume",
         "tags": [
           "resumes"
@@ -2774,6 +2881,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Get Resume",
         "tags": [
           "resumes"
@@ -2870,6 +2982,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Update Resume",
         "tags": [
           "resumes"
@@ -2942,6 +3059,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Quality Check",
         "tags": [
           "resumes"
@@ -3014,6 +3136,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "List Versions",
         "tags": [
           "resumes"
@@ -3110,6 +3237,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Save Version",
         "tags": [
           "resumes"
@@ -3217,6 +3349,11 @@
             "description": "Unprocessable Entity"
           }
         },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
         "summary": "Restore Version",
         "tags": [
           "resumes"

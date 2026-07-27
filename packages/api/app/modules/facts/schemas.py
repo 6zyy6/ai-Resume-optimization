@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -8,7 +9,7 @@ from app.contracts import FactStatus
 class SourceInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    source_type: str
+    source_type: Literal["question_answer", "imported_resume", "user_edit", "user_confirmation"]
     content: str
     source_ref: str | None = None
     source_range: dict | None = None

@@ -145,6 +145,10 @@ class Fact(OwnerMixin, Base):
             "status <> 'confirmed' OR confirmed_at IS NOT NULL",
             name="ck_confirmed_fact_has_timestamp",
         ),
+        CheckConstraint(
+            "status IN ('unconfirmed', 'confirmed', 'rejected')",
+            name="ck_fact_status",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -221,6 +225,8 @@ class Resume(OwnerMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     base_resume_id: Mapped[str | None] = mapped_column(String(64))
     job_description_id: Mapped[str | None] = mapped_column(String(64))
+    head_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    head_version_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.contracts import ResumeSnapshot
+
 
 class ResumeCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -27,6 +29,7 @@ class ResumeResponse(BaseModel):
     title: str
     base_resume_id: str | None
     job_description_id: str | None
+    version: int
 
 
 class ResumeListResponse(BaseModel):
@@ -40,8 +43,7 @@ class VersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     base_version: int
-    snapshot: dict[str, Any]
-    operation: str = "save"
+    snapshot: ResumeSnapshot
 
 
 class RestoreRequest(BaseModel):

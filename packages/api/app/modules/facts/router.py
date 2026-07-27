@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
@@ -33,7 +33,7 @@ async def _response(service: FactService, fact) -> FactResponse:
 
 
 @router.get("", response_model=FactListResponse)
-async def list_facts(authenticated: AuthenticatedSession = Depends(require_session), service: FactService = Depends(get_fact_service)) -> FactListResponse:
+async def list_facts(cursor: str | None = Query(default=None), authenticated: AuthenticatedSession = Depends(require_session), service: FactService = Depends(get_fact_service)) -> FactListResponse:
     facts = await service.list_facts(authenticated.user_id)
     return FactListResponse(items=[await _response(service, fact) for fact in facts])
 

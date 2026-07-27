@@ -87,11 +87,17 @@ class FactService:
             fact = await self._fact(session, owner_id, fact_id)
             if fact is None:
                 raise FactError("RESOURCE_NOT_FOUND", "Fact not found", 404)
+            material_change = (
+                values.get("value") is not None and values["value"] != fact.value_encrypted
+            ) or (values.get("kind") is not None and values["kind"] != fact.kind)
             if values.get("value") is not None and values["value"] != fact.value_encrypted:
                 session.add(FactRevision(id=new_id("frev"), fact_id=fact.id, owner_user_id=fact.owner_user_id, previous_value_hash=hashlib.sha256(fact.value_encrypted.encode()).hexdigest(), new_value_encrypted=values["value"], actor=canonical))
                 fact.value_encrypted = values["value"]
             if values.get("kind") is not None:
                 fact.kind = values["kind"]
+            if material_change:
+                fact.status = "unconfirmed"
+                fact.confirmed_at = None
             await session.flush()
             await self.idempotency.store(session, canonical, f"/v1/facts/{fact_id}", idempotency_key, values, 200, {"id": fact.id})
             return fact

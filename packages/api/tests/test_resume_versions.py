@@ -88,6 +88,37 @@ def test_stale_resume_write_returns_visible_conflict(resume_client):
     assert second.json()["error"]["code"] == "RESUME_VERSION_CONFLICT"
 
 
+def test_normal_version_endpoint_rejects_forged_restore_operation(resume_client):
+    """Letting clients send restore bypasses normal snapshot deduplication."""
+    client, _ = resume_client
+    resume_id = _resume(client, "forged-restore-resume")
+    response = client.post(
+        f"/v1/resumes/{resume_id}/versions",
+        json={"base_version": 0, "snapshot": _snapshot("one"), "operation": "restore"},
+        headers=_headers("forged-restore"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_nested_unknown_snapshot_field_is_rejected(resume_client):
+    """A loose snapshot dictionary accepts unknown nested content."""
+    client, _ = resume_client
+    resume_id = _resume(client, "strict-snapshot-resume")
+    response = client.post(
+        f"/v1/resumes/{resume_id}/versions",
+        json={
+            "base_version": 0,
+            "snapshot": {"schema_version": "1", "title": "one", "target": None, "sections": [], "unexpected": True},
+        },
+        headers=_headers("strict-snapshot"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
 def test_owner_cannot_read_or_write_another_users_resume(resume_client):
     """Removing resume owner predicates would expose usr_b's resume."""
     client, sessions = resume_client

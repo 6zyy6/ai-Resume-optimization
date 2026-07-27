@@ -542,6 +542,7 @@ def upgrade() -> None:
             name="fk_resume_version_resume_owner",
         ),
         sa.UniqueConstraint("id", "owner_user_id", name="uq_resume_version_owner"),
+        sa.UniqueConstraint("resume_id", "snapshot_hash", name="uq_resume_snapshot_hash"),
     )
     _create_owned_table(
         "resume_sections",
