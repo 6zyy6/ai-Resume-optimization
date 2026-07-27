@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.main import app
+from app.modules.auth.preflight import InMemoryAuthPreflightStore
 from app.modules.auth.service import AuthService, HmacSecretHasher, InMemoryAuthRepository
 from app.modules.privacy.service import InMemoryPrivacyRepository, PrivacyService
 
@@ -49,6 +50,7 @@ def privacy_harness():
     auth_repository = InMemoryAuthRepository()
     auth_service = AuthService(
         repository=auth_repository,
+        preflight_store=InMemoryAuthPreflightStore(),
         email_sender=DiscardSender(),
         wechat_exchange=StubWechat(),
         email_crypto=DeterministicEmailCrypto(),

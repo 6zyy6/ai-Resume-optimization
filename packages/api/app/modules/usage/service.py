@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -49,8 +51,10 @@ class UsageRepository(Protocol):
         created_at: datetime,
         day_start: datetime,
         retry_after: int,
+        workflow_type: str,
         is_retry: bool,
         cost_cny: Decimal,
+        body_hash: str,
     ) -> "UsageDecision": ...
 
 
@@ -65,7 +69,10 @@ class InMemoryUsageRepository:
         self._running_ai_tasks: dict[str, int] = {}
         self._daily_cost_override: Decimal | None = None
         self.tasks: dict[str, dict[str, str]] = {}
-        self.idempotency: dict[tuple[str, str], UsageDecision] = {}
+        self.idempotency: dict[
+            tuple[str, str],
+            tuple[str, UsageDecision],
+        ] = {}
         self._admission_lock = asyncio.Lock()
 
     async def append_ai_task(
@@ -127,14 +134,23 @@ class InMemoryUsageRepository:
         created_at: datetime,
         day_start: datetime,
         retry_after: int,
+        workflow_type: str,
         is_retry: bool,
         cost_cny: Decimal,
+        body_hash: str,
     ) -> "UsageDecision":
         async with self._admission_lock:
             idempotency_ref = (owner_user_id, idempotency_key)
             existing = self.idempotency.get(idempotency_ref)
             if existing is not None:
-                return existing
+                existing_hash, decision = existing
+                if existing_hash != body_hash:
+                    raise UsageAdmissionError(
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "Idempotency key was reused with different input",
+                        409,
+                    )
+                return decision
             decision = evaluate_usage(
                 await self.daily_cost(day_start),
                 await self.count_ai_tasks(owner_user_id, day_start),
@@ -148,6 +164,7 @@ class InMemoryUsageRepository:
                     "owner_user_id": owner_user_id,
                     "status": "queued",
                     "trace_id": trace_id,
+                    "workflow_type": workflow_type,
                 }
                 await self.append_ai_task(
                     owner_user_id,
@@ -161,7 +178,7 @@ class InMemoryUsageRepository:
                     decision.retry_after,
                     task_id,
                 )
-            self.idempotency[idempotency_ref] = decision
+            self.idempotency[idempotency_ref] = (body_hash, decision)
             return decision
 
 
@@ -171,6 +188,32 @@ class UsageDecision:
     reason: str | None
     retry_after: int | None
     task_id: str | None = None
+
+
+class UsageAdmissionError(Exception):
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
+
+def admission_body_hash(
+    workflow_type: str,
+    is_retry: bool,
+    cost_cny: Decimal,
+) -> str:
+    normalized_cost = format(cost_cny.normalize(), "f")
+    payload = json.dumps(
+        {
+            "cost_cny": normalized_cost,
+            "is_retry": is_retry,
+            "workflow_type": workflow_type,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def evaluate_usage(
@@ -240,6 +283,7 @@ class UsageService:
         trace_id: str,
         idempotency_key: str,
         *,
+        workflow_type: str = "generic",
         is_retry: bool = False,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageDecision:
@@ -250,8 +294,10 @@ class UsageService:
             self.clock.now(),
             self._day_start(),
             self._retry_after_day(),
+            workflow_type,
             is_retry,
             cost_cny,
+            admission_body_hash(workflow_type, is_retry, cost_cny),
         )
 
     async def record_ai_task(

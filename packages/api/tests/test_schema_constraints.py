@@ -85,6 +85,7 @@ def seed_resume_version(session):
 def test_metadata_contains_complete_owner_scoped_foundation():
     required_tables = {
         "users",
+        "user_aliases",
         "user_identities",
         "user_consents",
         "sessions",
@@ -117,7 +118,7 @@ def test_metadata_contains_complete_owner_scoped_foundation():
     }
     assert required_tables == set(Base.metadata.tables)
 
-    owner_scoped_tables = required_tables - {"users"}
+    owner_scoped_tables = required_tables - {"users", "user_aliases"}
     for table_name in owner_scoped_tables:
         owner_column = Base.metadata.tables[table_name].c.owner_user_id
         assert owner_column.nullable is False, table_name

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.main import app
+from app.modules.auth.preflight import InMemoryAuthPreflightStore
 from app.modules.auth.service import (
     AuthError,
     AuthService,
@@ -79,6 +80,7 @@ def auth_harness():
     hasher = HmacSecretHasher()
     service = AuthService(
         repository=repository,
+        preflight_store=InMemoryAuthPreflightStore(),
         email_sender=sender,
         wechat_exchange=wechat,
         email_crypto=DeterministicEmailCrypto(),

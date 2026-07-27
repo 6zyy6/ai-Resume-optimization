@@ -18,6 +18,7 @@ from app.db.models import (
     UsageRow,
     User,
 )
+from app.db.ownership import authorized_owner_ids
 from app.db.ports import (
     FactRepository,
     IdempotencyRepository,
@@ -67,10 +68,11 @@ class SqlAlchemyRepository:
         return row
 
     async def get(self, identifier: str, owner_user_id: str) -> Any:
+        owner_ids = await authorized_owner_ids(self.session, owner_user_id)
         return await self.session.scalar(
             select(self.model).where(
                 self.model.id == identifier,
-                self.model.owner_user_id == owner_user_id,
+                self.model.owner_user_id.in_(owner_ids),
             )
         )
 
@@ -186,10 +188,11 @@ class SqlAlchemyResumeVersionRepository:
         identifier: str,
         owner_user_id: str,
     ) -> ResumeVersionEntry | None:
+        owner_ids = await authorized_owner_ids(self.session, owner_user_id)
         row = await self.session.scalar(
             select(ResumeVersion).where(
                 ResumeVersion.id == identifier,
-                ResumeVersion.owner_user_id == owner_user_id,
+                ResumeVersion.owner_user_id.in_(owner_ids),
             )
         )
         return self._to_entry(row) if row else None
@@ -238,10 +241,11 @@ class SqlAlchemyUsageRepository:
         return self._to_entry(row)
 
     async def list_for_owner(self, owner_user_id: str) -> tuple[UsageEntry, ...]:
+        owner_ids = await authorized_owner_ids(self.session, owner_user_id)
         rows = (
             await self.session.scalars(
                 select(UsageRow)
-                .where(UsageRow.owner_user_id == owner_user_id)
+                .where(UsageRow.owner_user_id.in_(owner_ids))
                 .order_by(UsageRow.created_at, UsageRow.id)
             )
         ).all()

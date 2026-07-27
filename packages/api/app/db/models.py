@@ -46,6 +46,31 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class UserAlias(Base):
+    __tablename__ = "user_aliases"
+    __table_args__ = (
+        CheckConstraint(
+            "alias_user_id <> canonical_user_id",
+            name="ck_user_alias_not_self",
+        ),
+    )
+
+    alias_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"),
+        primary_key=True,
+    )
+    canonical_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
 class UserIdentity(OwnerMixin, Base):
     __tablename__ = "user_identities"
     __table_args__ = (

@@ -15,6 +15,7 @@ from app.modules.auth.service import (
     WechatExchange,
     build_default_auth_service,
 )
+from app.modules.auth.preflight import AuthPreflightStore
 from app.modules.privacy.router import router as privacy_router
 from app.modules.privacy.service import PrivacyRepository, build_default_privacy_service
 from app.modules.usage.router import router as usage_router
@@ -25,6 +26,7 @@ from app.modules.users.service import EmailCrypto, KeyProvider
 @dataclass(frozen=True)
 class ApplicationDependencies:
     auth_repository: AuthRepository
+    auth_preflight: AuthPreflightStore
     usage_repository: UsageRepository
     privacy_repository: PrivacyRepository
     email_sender: EmailSender
@@ -80,6 +82,7 @@ def create_app(
     application.state.auth_service = build_default_auth_service(
         resolved.app_env,
         repository=dependencies.auth_repository if dependencies else None,
+        preflight_store=dependencies.auth_preflight if dependencies else None,
         email_sender=dependencies.email_sender if dependencies else None,
         wechat_exchange=dependencies.wechat_exchange if dependencies else None,
         email_crypto=dependencies.email_crypto if dependencies else None,

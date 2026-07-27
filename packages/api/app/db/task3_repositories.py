@@ -10,14 +10,20 @@ from app.db.models import (
     Session,
     Task,
     UsageLedger,
-    Base,
     User,
+    UserAlias,
     UserConsent,
     UserIdentity,
 )
-from app.modules.auth.service import OtpChallenge, SessionRecord
+from app.db.ownership import authorized_owner_ids, canonical_user_id
+from app.modules.auth.service import SessionRecord
 from app.modules.privacy.service import PrivacyTask
-from app.modules.usage.service import UsageDecision, UsageRecord, evaluate_usage
+from app.modules.usage.service import (
+    UsageAdmissionError,
+    UsageDecision,
+    UsageRecord,
+    evaluate_usage,
+)
 from app.modules.users.service import (
     ConsentRecord,
     IdentityRecord,
@@ -32,8 +38,6 @@ def _as_utc(value: datetime) -> datetime:
 class SqlAuthRepository:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self.sessions = sessions
-        self.challenges: dict[str, OtpChallenge] = {}
-        self._rate_events: dict[tuple[str, str], list[datetime]] = {}
 
     @staticmethod
     def _user(row: User | None) -> UserAccount | None:
@@ -49,7 +53,8 @@ class SqlAuthRepository:
 
     async def find_user(self, user_id: str) -> UserAccount | None:
         async with self.sessions() as session:
-            return self._user(await session.get(User, user_id))
+            canonical = await canonical_user_id(session, user_id)
+            return self._user(await session.get(User, canonical))
 
     async def find_user_by_email_hash(self, email_hash: str) -> UserAccount | None:
         async with self.sessions() as session:
@@ -202,25 +207,6 @@ class SqlAuthRepository:
                 revoked_at=_as_utc(row.revoked_at) if row.revoked_at else None,
             )
 
-    async def latest_challenge(self, email_hash: str) -> OtpChallenge | None:
-        return self.challenges.get(email_hash)
-
-    async def save_challenge(self, challenge: OtpChallenge) -> None:
-        self.challenges[challenge.email_hash] = challenge
-
-    async def consume_challenge(self, email_hash: str) -> None:
-        self.challenges.pop(email_hash, None)
-
-    async def rate_events(self, bucket: str, key: str) -> list[datetime]:
-        return self._rate_events.setdefault((bucket, key), [])
-
-    async def save_rate_event(
-        self,
-        bucket: str,
-        key: str,
-        now: datetime,
-    ) -> None:
-        self._rate_events.setdefault((bucket, key), []).append(now)
 
     async def revoke_all_sessions(self, user_id: str, now: datetime) -> None:
         async with self.sessions.begin() as session:
@@ -265,17 +251,20 @@ class SqlAuthRepository:
         async with self.sessions() as session:
             await session.begin()
             try:
-                if session.bind is not None and session.bind.dialect.name == "sqlite":
-                    await session.execute(text("PRAGMA defer_foreign_keys=ON"))
-                else:
-                    await session.execute(text("SET CONSTRAINTS ALL DEFERRED"))
-                for table in reversed(Base.metadata.sorted_tables):
-                    if table.name != "users" and "owner_user_id" in table.c:
-                        await session.execute(
-                            table.update()
-                            .where(table.c.owner_user_id == source_user_id)
-                            .values(owner_user_id=target_user_id)
-                        )
+                target_user_id = await canonical_user_id(session, target_user_id)
+                session.add(
+                    UserAlias(
+                        alias_user_id=source_user_id,
+                        canonical_user_id=target_user_id,
+                        created_at=datetime.now(timezone.utc),
+                    )
+                )
+                for model in (UserIdentity, UserConsent, Session):
+                    await session.execute(
+                        update(model)
+                        .where(model.owner_user_id == source_user_id)
+                        .values(owner_user_id=target_user_id)
+                    )
                 await session.execute(
                     update(User)
                     .where(User.id == source_user_id)
@@ -298,16 +287,17 @@ class SqlUsageRepository:
         created_at: datetime,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageRecord:
-        row = UsageLedger(
-            id=new_id("usg"),
-            owner_user_id=owner_user_id,
-            usage_type="ai_task",
-            quantity=1,
-            cost_cny=cost_cny,
-            trace_id=trace_id,
-            created_at=created_at,
-        )
         async with self.sessions.begin() as session:
+            owner_user_id = await canonical_user_id(session, owner_user_id)
+            row = UsageLedger(
+                id=new_id("usg"),
+                owner_user_id=owner_user_id,
+                usage_type="ai_task",
+                quantity=1,
+                cost_cny=cost_cny,
+                trace_id=trace_id,
+                created_at=created_at,
+            )
             session.add(row)
         return UsageRecord(
             id=row.id,
@@ -321,10 +311,11 @@ class SqlUsageRepository:
 
     async def count_ai_tasks(self, owner_user_id: str, since: datetime) -> int:
         async with self.sessions() as session:
+            owner_ids = await authorized_owner_ids(session, owner_user_id)
             return int(
                 await session.scalar(
                     select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
-                        UsageLedger.owner_user_id == owner_user_id,
+                        UsageLedger.owner_user_id.in_(owner_ids),
                         UsageLedger.usage_type == "ai_task",
                         UsageLedger.created_at >= since,
                     )
@@ -334,10 +325,11 @@ class SqlUsageRepository:
 
     async def running_ai_tasks(self, owner_user_id: str) -> int:
         async with self.sessions() as session:
+            owner_ids = await authorized_owner_ids(session, owner_user_id)
             return int(
                 await session.scalar(
                     select(func.count()).select_from(Task).where(
-                        Task.owner_user_id == owner_user_id,
+                        Task.owner_user_id.in_(owner_ids),
                         Task.type == "ai_task",
                         Task.status.in_(("queued", "running")),
                     )
@@ -362,8 +354,10 @@ class SqlUsageRepository:
         created_at: datetime,
         day_start: datetime,
         retry_after: int,
+        workflow_type: str,
         is_retry: bool,
         cost_cny: Decimal,
+        body_hash: str,
     ) -> UsageDecision:
         route = "/internal/ai-task-admissions"
         async with self.sessions() as session:
@@ -374,6 +368,8 @@ class SqlUsageRepository:
                 if session.bind is not None and session.bind.dialect.name == "postgresql":
                     await session.execute(text("SELECT pg_advisory_xact_lock(73467231)"))
             try:
+                owner_user_id = await canonical_user_id(session, owner_user_id)
+                owner_ids = await authorized_owner_ids(session, owner_user_id)
                 existing = await session.scalar(
                     select(IdempotencyRecord).where(
                         IdempotencyRecord.owner_user_id == owner_user_id,
@@ -382,6 +378,12 @@ class SqlUsageRepository:
                     )
                 )
                 if existing is not None and existing.response_json is not None:
+                    if existing.body_hash != body_hash:
+                        raise UsageAdmissionError(
+                            "IDEMPOTENCY_KEY_REUSED",
+                            "Idempotency key was reused with different input",
+                            409,
+                        )
                     payload = existing.response_json
                     await session.commit()
                     return UsageDecision(
@@ -402,7 +404,7 @@ class SqlUsageRepository:
                 daily_tasks = int(
                     await session.scalar(
                         select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
-                            UsageLedger.owner_user_id == owner_user_id,
+                            UsageLedger.owner_user_id.in_(owner_ids),
                             UsageLedger.usage_type == "ai_task",
                             UsageLedger.created_at >= day_start,
                         )
@@ -412,7 +414,7 @@ class SqlUsageRepository:
                 running_tasks = int(
                     await session.scalar(
                         select(func.count()).select_from(Task).where(
-                            Task.owner_user_id == owner_user_id,
+                            Task.owner_user_id.in_(owner_ids),
                             Task.type == "ai_task",
                             Task.status.in_(("queued", "running")),
                         )
@@ -435,6 +437,7 @@ class SqlUsageRepository:
                             type="ai_task",
                             status="queued",
                             priority=0,
+                            resource_type=workflow_type,
                             trace_id=trace_id,
                             attempts=0,
                             max_attempts=3,
@@ -466,7 +469,7 @@ class SqlUsageRepository:
                         owner_user_id=owner_user_id,
                         route=route,
                         key=idempotency_key,
-                        body_hash="ai-task-admission",
+                        body_hash=body_hash,
                         response_status=202 if decision.allowed else 429,
                         response_json={
                             "allowed": decision.allowed,
@@ -511,9 +514,10 @@ class SqlPrivacyRepository:
         key: str,
     ) -> PrivacyTask | None:
         async with self.sessions() as session:
+            owner_ids = await authorized_owner_ids(session, owner_user_id)
             record = await session.scalar(
                 select(IdempotencyRecord).where(
-                    IdempotencyRecord.owner_user_id == owner_user_id,
+                    IdempotencyRecord.owner_user_id.in_(owner_ids),
                     IdempotencyRecord.route == route,
                     IdempotencyRecord.key == key,
                 )
@@ -526,10 +530,14 @@ class SqlPrivacyRepository:
 
     async def save_task(self, task: PrivacyTask, route: str, key: str) -> None:
         async with self.sessions.begin() as session:
+            owner_user_id = await canonical_user_id(
+                session,
+                task.owner_user_id,
+            )
             session.add(
                 Task(
                     id=task.id,
-                    owner_user_id=task.owner_user_id,
+                    owner_user_id=owner_user_id,
                     type=task.type,
                     status=task.status,
                     priority=0,
@@ -544,7 +552,7 @@ class SqlPrivacyRepository:
             session.add(
                 IdempotencyRecord(
                     id=new_id("idem"),
-                    owner_user_id=task.owner_user_id,
+                    owner_user_id=owner_user_id,
                     route=route,
                     key=key,
                     body_hash="empty",
@@ -560,9 +568,10 @@ class SqlPrivacyRepository:
         owner_user_id: str,
     ) -> PrivacyTask | None:
         async with self.sessions() as session:
+            owner_ids = await authorized_owner_ids(session, owner_user_id)
             row = await session.scalar(
                 select(Task).where(
-                    Task.owner_user_id == owner_user_id,
+                    Task.owner_user_id.in_(owner_ids),
                     Task.type == "account_deletion",
                     Task.status.in_(("queued", "running")),
                 )
@@ -575,11 +584,12 @@ class SqlPrivacyRepository:
         since: datetime,
     ) -> tuple[PrivacyTask, ...]:
         async with self.sessions() as session:
+            owner_ids = await authorized_owner_ids(session, owner_user_id)
             rows = (
                 await session.scalars(
                     select(Task)
                     .where(
-                        Task.owner_user_id == owner_user_id,
+                        Task.owner_user_id.in_(owner_ids),
                         Task.type == "data_export",
                         Task.queued_at > since,
                     )
@@ -595,10 +605,14 @@ class SqlPrivacyRepository:
         key: str,
     ) -> None:
         async with self.sessions.begin() as session:
+            owner_user_id = await canonical_user_id(
+                session,
+                task.owner_user_id,
+            )
             session.add(
                 IdempotencyRecord(
                     id=new_id("idem"),
-                    owner_user_id=task.owner_user_id,
+                    owner_user_id=owner_user_id,
                     route=route,
                     key=key,
                     body_hash="empty",
@@ -608,3 +622,96 @@ class SqlPrivacyRepository:
                     created_at=task.queued_at,
                 )
             )
+
+    async def accept_deletion(
+        self,
+        owner_user_id: str,
+        route: str,
+        key: str,
+        trace_id: str,
+        now: datetime,
+    ) -> PrivacyTask:
+        async with self.sessions() as session:
+            if session.bind is not None and session.bind.dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            else:
+                await session.begin()
+            try:
+                owner_user_id = await canonical_user_id(
+                    session,
+                    owner_user_id,
+                )
+                owner_ids = await authorized_owner_ids(session, owner_user_id)
+                await session.scalar(
+                    select(User)
+                    .where(User.id == owner_user_id)
+                    .with_for_update()
+                )
+                existing = await session.scalar(
+                    select(IdempotencyRecord).where(
+                        IdempotencyRecord.owner_user_id.in_(owner_ids),
+                        IdempotencyRecord.route == route,
+                        IdempotencyRecord.key == key,
+                    )
+                )
+                if existing is not None and existing.response_json is not None:
+                    task = await session.get(
+                        Task,
+                        existing.response_json["task_id"],
+                    )
+                    await session.commit()
+                    return self._task(task)
+
+                task = await session.scalar(
+                    select(Task).where(
+                        Task.owner_user_id.in_(owner_ids),
+                        Task.type == "account_deletion",
+                        Task.status.in_(("queued", "running")),
+                    )
+                )
+                if task is None:
+                    task = Task(
+                        id=new_id("tsk"),
+                        owner_user_id=owner_user_id,
+                        type="account_deletion",
+                        status="queued",
+                        priority=0,
+                        trace_id=trace_id,
+                        attempts=0,
+                        max_attempts=3,
+                        queued_at=now,
+                        stage="queued",
+                        progress=0,
+                    )
+                    session.add(task)
+                session.add(
+                    IdempotencyRecord(
+                        id=new_id("idem"),
+                        owner_user_id=owner_user_id,
+                        route=route,
+                        key=key,
+                        body_hash="empty",
+                        response_status=202,
+                        response_json={"task_id": task.id},
+                        expires_at=now + timedelta(days=1),
+                        created_at=now,
+                    )
+                )
+                await session.execute(
+                    update(User)
+                    .where(User.id == owner_user_id)
+                    .values(status="pending_deletion")
+                )
+                await session.execute(
+                    update(Session)
+                    .where(
+                        Session.owner_user_id.in_(owner_ids),
+                        Session.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
+                )
+                await session.commit()
+                return self._task(task)
+            except BaseException:
+                await session.rollback()
+                raise

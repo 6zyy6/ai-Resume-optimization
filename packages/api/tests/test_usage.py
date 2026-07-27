@@ -7,7 +7,11 @@ import pytest
 
 from app.main import app
 from app.modules.auth.service import AuthenticatedSession
-from app.modules.usage.service import InMemoryUsageRepository, UsageService
+from app.modules.usage.service import (
+    InMemoryUsageRepository,
+    UsageAdmissionError,
+    UsageService,
+)
 
 
 class FakeClock:
@@ -169,6 +173,68 @@ async def test_atomic_admission_at_global_stop_creates_no_task_or_ledger_row(
     assert first.reason == second.reason == "AI_LIMIT_REACHED"
     assert repository.tasks == {}
     assert repository.rows == []
+
+
+@pytest.mark.anyio
+async def test_atomic_admission_replays_same_key_with_same_semantic_input(
+    usage_harness,
+):
+    service, repository = usage_harness
+
+    first = await service.admit_ai_task(
+        "usr_1",
+        "tr_first",
+        "same-key",
+        workflow_type="quality_check",
+        cost_cny=Decimal("1.25"),
+    )
+    replay = await service.admit_ai_task(
+        "usr_1",
+        "tr_retry",
+        "same-key",
+        workflow_type="quality_check",
+        cost_cny=Decimal("1.250"),
+    )
+
+    assert replay == first
+    assert len(repository.tasks) == 1
+    assert len(repository.rows) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"workflow_type": "rewrite", "is_retry": False, "cost_cny": Decimal("1.25")},
+        {"workflow_type": "quality_check", "is_retry": True, "cost_cny": Decimal("1.25")},
+        {"workflow_type": "quality_check", "is_retry": False, "cost_cny": Decimal("2.00")},
+    ],
+)
+async def test_atomic_admission_rejects_same_key_with_different_semantic_input(
+    usage_harness,
+    changed,
+):
+    service, repository = usage_harness
+    await service.admit_ai_task(
+        "usr_1",
+        "tr_first",
+        "reused-key",
+        workflow_type="quality_check",
+        cost_cny=Decimal("1.25"),
+    )
+
+    with pytest.raises(UsageAdmissionError) as caught:
+        await service.admit_ai_task(
+            "usr_1",
+            "tr_second",
+            "reused-key",
+            **changed,
+        )
+
+    assert caught.value.code == "IDEMPOTENCY_KEY_REUSED"
+    assert caught.value.status_code == 409
+    assert len(repository.tasks) == 1
+    assert len(repository.rows) == 1
 
 
 def test_authenticated_user_can_query_usage_without_consuming_ai_quota(

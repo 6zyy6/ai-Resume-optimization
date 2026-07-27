@@ -9,6 +9,15 @@ from typing import Callable, Protocol
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.core.ids import new_id
+from app.modules.auth.preflight import (
+    OTP_TTL,
+    AuthPreflightRejected,
+    AuthPreflightStore,
+    AuthPreflightUnavailable,
+    InMemoryAuthPreflightStore,
+    OtpChallenge,
+    UnavailableAuthPreflightStore,
+)
 from app.modules.auth.schemas import ConsentInput
 from app.modules.users.service import (
     ConsentRecord,
@@ -20,10 +29,6 @@ from app.modules.users.service import (
 )
 
 
-OTP_TTL = timedelta(minutes=10)
-RESEND_WAIT = timedelta(seconds=60)
-IP_RATE_WINDOW = timedelta(minutes=1)
-EMAIL_RATE_WINDOW = timedelta(hours=1)
 SESSION_TTL = timedelta(days=30)
 REQUIRED_CONSENTS = {
     "user_agreement": "2026-07-27",
@@ -52,14 +57,6 @@ class AuthProviderUnavailable(Exception):
 
 
 @dataclass
-class OtpChallenge:
-    email_hash: str
-    code_hash: str
-    sent_at: datetime
-    expires_at: datetime
-
-
-@dataclass
 class SessionRecord:
     id: str
     owner_user_id: str
@@ -80,11 +77,6 @@ class AuthRepository(Protocol):
     async def save_user(self, user: UserAccount) -> None: ...
     async def save_identity(self, identity: IdentityRecord) -> None: ...
     async def save_consent(self, consent: ConsentRecord) -> None: ...
-    async def latest_challenge(self, email_hash: str) -> OtpChallenge | None: ...
-    async def save_challenge(self, challenge: OtpChallenge) -> None: ...
-    async def consume_challenge(self, email_hash: str) -> None: ...
-    async def rate_events(self, bucket: str, key: str) -> list[datetime]: ...
-    async def save_rate_event(self, bucket: str, key: str, now: datetime) -> None: ...
     async def save_session(self, session: SessionRecord) -> None: ...
     async def find_session(self, token_hash: str) -> SessionRecord | None: ...
     async def revoke_all_sessions(self, user_id: str, now: datetime) -> None: ...
@@ -143,9 +135,7 @@ class InMemoryAuthRepository:
         self.users: dict[str, UserAccount] = {}
         self.identities: dict[tuple[str, str], IdentityRecord] = {}
         self.consents: list[ConsentRecord] = []
-        self.challenges: dict[str, OtpChallenge] = {}
         self.sessions: dict[str, SessionRecord] = {}
-        self._rate_events: dict[tuple[str, str], list[datetime]] = {}
 
     async def find_user(self, user_id: str) -> UserAccount | None:
         return self.users.get(user_id)
@@ -172,21 +162,6 @@ class InMemoryAuthRepository:
 
     async def save_consent(self, consent: ConsentRecord) -> None:
         self.consents.append(consent)
-
-    async def latest_challenge(self, email_hash: str) -> OtpChallenge | None:
-        return self.challenges.get(email_hash)
-
-    async def save_challenge(self, challenge: OtpChallenge) -> None:
-        self.challenges[challenge.email_hash] = challenge
-
-    async def consume_challenge(self, email_hash: str) -> None:
-        self.challenges.pop(email_hash, None)
-
-    async def rate_events(self, bucket: str, key: str) -> list[datetime]:
-        return self._rate_events.setdefault((bucket, key), [])
-
-    async def save_rate_event(self, bucket: str, key: str, now: datetime) -> None:
-        self._rate_events.setdefault((bucket, key), []).append(now)
 
     async def save_session(self, session: SessionRecord) -> None:
         self.sessions[session.token_hash] = session
@@ -272,6 +247,7 @@ class AuthService:
     def __init__(
         self,
         repository: AuthRepository,
+        preflight_store: AuthPreflightStore,
         email_sender: EmailSender,
         wechat_exchange: WechatExchange,
         email_crypto: EmailCrypto,
@@ -283,6 +259,7 @@ class AuthService:
         app_env: str,
     ) -> None:
         self.repository = repository
+        self.preflight_store = preflight_store
         self.email_sender = email_sender
         self.wechat_exchange = wechat_exchange
         self.keys = keys
@@ -296,62 +273,42 @@ class AuthService:
     def _hash(self, value: str, purpose: str) -> str:
         return self.hasher.hash_secret(value, self.keys.get_key(purpose))
 
-    @staticmethod
-    def _retry_after(events: list[datetime], now: datetime, window: timedelta) -> int:
-        remaining = int((events[0] + window - now).total_seconds())
-        return max(1, remaining)
-
-    async def _check_rate(
-        self,
-        bucket: str,
-        key: str,
-        now: datetime,
-        window: timedelta,
-    ) -> None:
-        events = await self.repository.rate_events(bucket, key)
-        events[:] = [event for event in events if event > now - window]
-        if len(events) >= 5:
-            raise AuthError(
-                "AUTH_RATE_LIMITED",
-                "Too many authentication attempts",
-                429,
-                self._retry_after(events, now, window),
-            )
-
     async def start_email(self, email: str, ip_address: str) -> None:
         normalized = self.users.normalize_email(email)
         email_hash = self.users.email_lookup_hash(normalized)
         ip_hash = self._hash(ip_address, "ip-rate-limit")
         now = self.clock.now()
-        previous = await self.repository.latest_challenge(email_hash)
-        if previous and previous.sent_at + RESEND_WAIT > now:
-            retry_after = int((previous.sent_at + RESEND_WAIT - now).total_seconds())
-            raise AuthError(
-                "AUTH_RATE_LIMITED",
-                "Wait before requesting another code",
-                429,
-                max(1, retry_after),
-            )
-        await self._check_rate("ip", ip_hash, now, IP_RATE_WINDOW)
-        await self._check_rate("email", email_hash, now, EMAIL_RATE_WINDOW)
-
         code = self.code_factory()
         if len(code) != 6 or not code.isdigit():
             raise RuntimeError("OTP generator must return six digits")
-        await self.repository.save_rate_event("ip", ip_hash, now)
-        await self.repository.save_rate_event("email", email_hash, now)
-        await self.repository.save_challenge(
-            OtpChallenge(
-                email_hash=email_hash,
-                code_hash=self._hash(code, "otp"),
-                sent_at=now,
-                expires_at=now + OTP_TTL,
+        try:
+            await self.preflight_store.issue(
+                OtpChallenge(
+                    email_hash=email_hash,
+                    code_hash=self._hash(code, "otp"),
+                    sent_at=now,
+                    expires_at=now + OTP_TTL,
+                ),
+                ip_hash,
+                now,
             )
-        )
+        except AuthPreflightRejected as error:
+            raise AuthError(
+                "AUTH_RATE_LIMITED",
+                "Too many authentication attempts",
+                429,
+                error.retry_after,
+            )
+        except AuthPreflightUnavailable:
+            raise AuthError(
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "Authentication provider is unavailable",
+                503,
+            )
         try:
             await self.email_sender.send_otp(normalized, code)
         except AuthProviderUnavailable:
-            await self.repository.consume_challenge(email_hash)
+            await self.preflight_store.consume_challenge(email_hash)
             raise AuthError(
                 "AUTH_PROVIDER_UNAVAILABLE",
                 "Authentication provider is unavailable",
@@ -360,7 +317,17 @@ class AuthService:
 
     async def _verify_code(self, email: str, code: str) -> UserAccount | None:
         email_hash = self.users.email_lookup_hash(email)
-        challenge = await self.repository.latest_challenge(email_hash)
+        try:
+            challenge = await self.preflight_store.get_challenge(
+                email_hash,
+                self.clock.now(),
+            )
+        except AuthPreflightUnavailable:
+            raise AuthError(
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "Authentication provider is unavailable",
+                503,
+            )
         code_hash = self._hash(code, "otp")
         now = self.clock.now()
         if (
@@ -450,7 +417,9 @@ class AuthService:
             await self._accept_consents(user.id, validated_consents)
         if user.status != "active":
             raise AuthError("AUTH_ACCOUNT_INACTIVE", "Account is not active", 403)
-        await self.repository.consume_challenge(self.users.email_lookup_hash(normalized))
+        await self.preflight_store.consume_challenge(
+            self.users.email_lookup_hash(normalized)
+        )
         return await self._create_session(user.id)
 
     async def login_wechat(
@@ -656,10 +625,14 @@ class AuthService:
                     },
                 )
             await self.repository.merge_users(authenticated.user_id, existing.id)
-            await self.repository.consume_challenge(self.users.email_lookup_hash(normalized))
+            await self.preflight_store.consume_challenge(
+                self.users.email_lookup_hash(normalized)
+            )
             return
         await self.users.bind_email(user, normalized, self.clock.now())
-        await self.repository.consume_challenge(self.users.email_lookup_hash(normalized))
+        await self.preflight_store.consume_challenge(
+            self.users.email_lookup_hash(normalized)
+        )
 
     async def revoke_all_sessions(self, user_id: str) -> None:
         await self.repository.revoke_all_sessions(user_id, self.clock.now())
@@ -676,6 +649,7 @@ def build_default_auth_service(
     app_env: str,
     *,
     repository: AuthRepository | None = None,
+    preflight_store: AuthPreflightStore | None = None,
     email_sender: EmailSender | None = None,
     wechat_exchange: WechatExchange | None = None,
     email_crypto: EmailCrypto | None = None,
@@ -683,6 +657,12 @@ def build_default_auth_service(
 ) -> AuthService:
     return AuthService(
         repository=repository or InMemoryAuthRepository(),
+        preflight_store=preflight_store
+        or (
+            UnavailableAuthPreflightStore()
+            if app_env == "production"
+            else InMemoryAuthPreflightStore()
+        ),
         email_sender=email_sender or UnavailableEmailSender(),
         wechat_exchange=wechat_exchange or UnavailableWechatExchange(),
         email_crypto=email_crypto or EnvelopeEmailCrypto(),

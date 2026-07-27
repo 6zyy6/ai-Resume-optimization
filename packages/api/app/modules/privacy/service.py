@@ -199,6 +199,15 @@ class PrivacyService:
                 "Recent authentication is required",
                 403,
             )
+        accept_deletion = getattr(self.repository, "accept_deletion", None)
+        if accept_deletion is not None:
+            return await accept_deletion(
+                authenticated.user_id,
+                route,
+                idempotency_key,
+                trace_id,
+                self.clock.now(),
+            )
         active = await self.repository.find_active_deletion(authenticated.user_id)
         if active is not None:
             await self.repository.bind_idempotency(active, route, idempotency_key)

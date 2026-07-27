@@ -13,6 +13,7 @@ depends_on = None
 
 TABLES: Sequence[str] = (
     "users",
+    "user_aliases",
     "user_identities",
     "user_consents",
     "sessions",
@@ -367,6 +368,24 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("email_lookup_hash"),
+    )
+    op.create_table(
+        "user_aliases",
+        sa.Column("alias_user_id", sa.String(64), nullable=False),
+        sa.Column("canonical_user_id", sa.String(64), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "alias_user_id <> canonical_user_id",
+            name="ck_user_alias_not_self",
+        ),
+        sa.ForeignKeyConstraint(["alias_user_id"], ["users.id"]),
+        sa.ForeignKeyConstraint(["canonical_user_id"], ["users.id"]),
+        sa.PrimaryKeyConstraint("alias_user_id"),
+    )
+    op.create_index(
+        "ix_user_aliases_canonical_user_id",
+        "user_aliases",
+        ["canonical_user_id"],
     )
     _create_owned_table(
         "user_identities",
