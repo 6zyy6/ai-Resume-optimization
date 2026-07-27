@@ -27,38 +27,85 @@
 
 ---
 
-### Task 1: Monorepo、共享契约与设计 Token
+### Task 1: Monorepo、FastAPI 契约源与设计 Token
 
 **Files:**
 - Create: `package.json`
+- Create: `pnpm-lock.yaml`
 - Create: `pnpm-workspace.yaml`
 - Create: `tsconfig.base.json`
 - Create: `eslint.config.mjs`
+- Create: `packages/api/pyproject.toml`
+- Create: `packages/api/requirements.lock`
+- Create: `packages/api/app/__init__.py`
+- Create: `packages/api/app/contracts.py`
+- Create: `packages/api/scripts/export_openapi.py`
+- Create: `packages/api/tests/test_contracts.py`
 - Create: `packages/shared/package.json`
-- Create: `packages/shared/src/contracts.ts`
+- Create (generated): `packages/shared/generated/openapi.json`
+- Create (generated): `packages/shared/generated/schema.ts`
 - Create: `packages/shared/src/client.ts`
 - Create: `packages/shared/src/index.ts`
-- Create: `packages/shared/tests/contracts.test.ts`
+- Create: `packages/shared/tests/client.test.ts`
 - Create: `packages/design-tokens/package.json`
 - Create: `packages/design-tokens/src/tokens.ts`
 - Create: `packages/design-tokens/src/tokens.css`
+- Create: `packages/design-tokens/tests/tokens.test.ts`
 - Create: `packages/test-fixtures/package.json`
 - Create: `packages/test-fixtures/src/index.ts`
 - Create: `scripts/run-python.mjs`
+- Create: `scripts/python_task.py`
 - Create: `docs/dependencies.md`
 
 **Interfaces:**
-- Produces: `FactStatus`, `TaskStatus`, `MatchCategory`, `SuggestionStatus`, `ResumeSnapshot`, `ApiErrorEnvelope`, `TaskRecord` and `createApiClient({ baseUrl, request })`.
-- Produces: `tokens` with exact brand, ink, fact, pending, risk and gap colors from the visual specification.
+- Produces: authoritative Pydantic `FactStatus`, `TaskStatus`, `MatchCategory`, `SuggestionStatus`, `ResumeSnapshot`, `ApiErrorEnvelope` and `TaskRecord`, plus generated TypeScript equivalents in `packages/shared/generated/schema.ts`.
+- Produces: handwritten `createApiClient({ baseUrl, request })` and `isInternalReturnTo(value)` around the generated contract; generated files are never hand-edited.
+- Produces: `tokens` from `@resume/design-tokens` with `brand600=#4F46E5`, `brand700=#4338CA`, `ink950=#111827`, `ink700=#374151`, `ink500=#6B7280`, `surface0=#FFFFFF`, `surface50=#F8FAFC`, `line200=#E5E7EB`, `fact600=#059669`, `pending600=#D97706`, `risk600=#DC2626`, `gap600=#7C3AED`.
 - Consumes: no application code.
 
-- [ ] **Step 1: Write the failing shared-contract test**
+The authoritative Pydantic DTO fields are exact:
+
+- `FactRecord`: `id: str`, `kind: str`, `value: str`, `status: FactStatus`, `source_ids: list[str]`, `confirmed_at: datetime | None`.
+- `ResumeBullet`: `id: str`, `text: str`, `fact_refs: list[str]`.
+- `ResumeSection`: `id: str`, `type: str`, `title: str`, `items: list[ResumeBullet]`.
+- `ResumeSnapshot`: `schema_version: Literal["1"]`, `title: str`, `target: str | None`, `sections: list[ResumeSection]`.
+- `ApiErrorBody`: `code: str`, `message: str`, `request_id: str`, `details: dict[str, Any]`.
+- `ApiErrorEnvelope`: `error: ApiErrorBody`.
+- `TaskRecord`: `id: str`, `type: str`, `status: TaskStatus`, `progress: int` constrained to 0–100, `stage: str`, `trace_id: str`, `result_ref: str | None`, `error_code: str | None`.
+
+- [ ] **Step 1: Create test harness configuration, install exact dependencies and write failing tests**
+
+Create only workspace/package configuration, Python lock input and the three test files before production source. Pin exact versions in `pnpm-lock.yaml` and `packages/api/requirements.lock`. Run:
+
+```bash
+pnpm install
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r packages/api/requirements.lock
+```
+
+`packages/api/tests/test_contracts.py` imports the authoritative enums and asserts these exact values:
+
+```py
+def test_contract_enums_are_authoritative():
+    assert [value.value for value in FactStatus] == ["unconfirmed", "confirmed", "rejected"]
+    assert [value.value for value in TaskStatus] == [
+        "queued", "running", "succeeded", "failed", "cancelled", "waiting_for_user"
+    ]
+    assert [value.value for value in MatchCategory] == [
+        "proved", "underexpressed", "needs_confirmation", "real_gap"
+    ]
+    assert [value.value for value in SuggestionStatus] == [
+        "pending", "accepted", "edited", "ignored", "reverted", "blocked"
+    ]
+```
+
+`packages/shared/tests/client.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { createApiClient, isInternalReturnTo, tokens } from "../src/index";
+import { createApiClient, isInternalReturnTo } from "../src/index";
 
-describe("shared contracts", () => {
+describe("shared client", () => {
   it("rejects an external return URL", () => {
     expect(isInternalReturnTo("/resumes")).toBe(true);
     expect(isInternalReturnTo("https://evil.example")).toBe(false);
@@ -79,22 +126,24 @@ describe("shared contracts", () => {
     expect(new Headers(calls[0].headers).get("Idempotency-Key")).toBe("idem_1");
     expect(new Headers(calls[0].headers).get("X-Trace-Id")).toMatch(/^tr_/);
   });
-
-  it("exports the approved brand token", () => {
-    expect(tokens.color.brand600).toBe("#4F46E5");
-  });
 });
 ```
 
+`packages/design-tokens/tests/tokens.test.ts` imports `tokens` from `../src/tokens` and asserts all twelve exact colors listed in Interfaces.
+
 - [ ] **Step 2: Run the test and confirm RED**
+
+Run: `.venv/bin/python -m pytest packages/api/tests/test_contracts.py -q`
 
 Run: `pnpm --filter @resume/shared test`
 
-Expected: FAIL because the package and exports do not exist.
+Run: `pnpm --filter @resume/design-tokens test`
 
-- [ ] **Step 3: Add the workspace and minimal shared implementation**
+Expected: the test runners collect the named tests and fail on missing `app.contracts`, `../src/index` and `../src/tokens`; “no projects matched” is not valid RED evidence.
 
-Implement literal string unions for the specified enums, strict DTOs for facts, resume snapshots, tasks and API errors, an injectable fetch-compatible client, and:
+- [ ] **Step 3: Implement Pydantic source, deterministic generation and handwritten helpers**
+
+Implement strict Pydantic models with `extra="forbid"`; use the exact enum values from Step 1. `export_openapi.py` builds a minimal FastAPI application containing those models, sorts the OpenAPI JSON deterministically, writes `packages/shared/generated/openapi.json`, and invokes the pinned OpenAPI TypeScript generator to create `packages/shared/generated/schema.ts`. Implement the injectable fetch-compatible client and:
 
 ```ts
 export function isInternalReturnTo(value: string): boolean {
@@ -102,26 +151,32 @@ export function isInternalReturnTo(value: string): boolean {
 }
 ```
 
-The root scripts invoke package scripts plus `python3.12 scripts/python_task.py <command>` through `scripts/run-python.mjs`; `docs/dependencies.md` records every production dependency, purpose, version source and license.
+`scripts/python_task.py` accepts only `lint`, `test`, `build` and `dev`: lint compiles/import-checks Python until Ruff is introduced, test runs pytest, build runs `compileall`, and dev starts Uvicorn only after Task 2 provides `app.main`. `scripts/run-python.mjs` selects `.venv/bin/python` when present and otherwise fails with the exact install command. `docs/dependencies.md` records every production dependency, purpose, locked version and license.
 
-- [ ] **Step 4: Run shared tests and typecheck**
+- [ ] **Step 4: Run RED-to-GREEN checks and prove generation stability**
 
-Run: `pnpm --filter @resume/shared test && pnpm --filter @resume/shared build`
+Run: `.venv/bin/python -m pytest packages/api/tests/test_contracts.py -q`
 
-Expected: all tests pass and TypeScript emits declarations.
+Run: `pnpm generate && pnpm --filter @resume/shared test && pnpm --filter @resume/design-tokens test && pnpm --filter @resume/shared build && pnpm --filter @resume/design-tokens build`
+
+Run: `git add packages/shared/generated && pnpm generate && git diff --exit-code -- packages/shared/generated`
+
+Run: `python3.12 scripts/python_task.py build`
+
+Expected: all tests/builds pass, regenerated files have no working-tree diff, and the root Python dispatcher returns 0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add package.json pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs packages scripts docs/dependencies.md
+git add package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json eslint.config.mjs packages scripts docs/dependencies.md
 git commit -m "chore: establish monorepo contracts"
 ```
 
 ### Task 2: FastAPI Foundation, Errors, Trace and Persistence Ports
 
 **Files:**
-- Create: `packages/api/pyproject.toml`
-- Create: `packages/api/requirements.lock`
+- Modify: `packages/api/pyproject.toml`
+- Modify: `packages/api/requirements.lock`
 - Create: `packages/api/app/main.py`
 - Create: `packages/api/app/core/config.py`
 - Create: `packages/api/app/core/errors.py`
@@ -143,7 +198,7 @@ git commit -m "chore: establish monorepo contracts"
 - Produces: `createApiError(code, message, request_id, status_code, details=None) -> HTTPException`.
 - Produces: `RequestContext(trace_id, request_id, actor_id)` and middleware headers `X-Request-Id`, `X-Trace-Id`.
 - Produces: async repository ports for users, facts, resumes, jobs, suggestions, tasks, idempotency and usage, with SQLAlchemy and deterministic in-memory implementations.
-- Consumes: enum values and response shapes defined in Task 1.
+- Consumes: authoritative Pydantic contracts from Task 1; TypeScript clients continue consuming only their generated equivalents.
 
 - [ ] **Step 1: Write failing API contract tests**
 
