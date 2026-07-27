@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import Settings, get_settings
 from app.core.errors import createApiError
 from app.core.middleware import RequestContextMiddleware, get_request_context
+from app.db.session import SessionLocal
 from app.modules.auth.router import router as auth_router
 from app.modules.auth.service import (
     AuthRepository,
@@ -18,6 +19,10 @@ from app.modules.auth.service import (
 from app.modules.auth.preflight import AuthPreflightStore
 from app.modules.privacy.router import router as privacy_router
 from app.modules.privacy.service import PrivacyRepository, build_default_privacy_service
+from app.modules.facts.router import router as facts_router
+from app.modules.facts.service import FactService
+from app.modules.resumes.router import router as resumes_router
+from app.modules.resumes.service import ResumeService
 from app.modules.usage.router import router as usage_router
 from app.modules.usage.service import UsageRepository, build_default_usage_service
 from app.modules.users.service import EmailCrypto, KeyProvider
@@ -96,12 +101,16 @@ def create_app(
         application.state.auth_service,
         dependencies.privacy_repository if dependencies else None,
     )
+    application.state.fact_service = FactService(SessionLocal)
+    application.state.resume_service = ResumeService(SessionLocal)
     application.state.ready = (
         dependencies is not None or resolved.app_env != "production"
     )
     application.include_router(auth_router)
     application.include_router(usage_router)
     application.include_router(privacy_router)
+    application.include_router(facts_router)
+    application.include_router(resumes_router)
     application.add_exception_handler(HTTPException, api_error_handler)
     application.add_exception_handler(StarletteHTTPException, framework_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)

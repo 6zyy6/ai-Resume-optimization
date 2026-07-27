@@ -1,0 +1,54 @@
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.contracts import FactStatus
+
+
+class SourceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_type: str
+    content: str
+    source_ref: str | None = None
+    source_range: dict | None = None
+
+
+class FactCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: str
+    value: str
+    status: FactStatus = Field(default=FactStatus.UNCONFIRMED, strict=False)
+    sources: list[SourceInput] = Field(default_factory=list)
+
+
+class FactUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: str | None = None
+    value: str | None = None
+
+
+class FactResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    kind: str
+    value: str
+    status: FactStatus
+    source_ids: list[str]
+    confirmed_at: datetime | None
+
+
+class FactListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[FactResponse]
+    next_cursor: str | None = None
+
+
+class FactSourcesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[SourceInput]

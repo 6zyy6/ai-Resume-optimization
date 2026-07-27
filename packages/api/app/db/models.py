@@ -228,7 +228,6 @@ class ResumeVersion(OwnerMixin, Base):
     __tablename__ = "resume_versions"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_resume_version_owner"),
-        UniqueConstraint("resume_id", "snapshot_hash", name="uq_resume_snapshot_hash"),
         ForeignKeyConstraint(
             ["resume_id", "owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
