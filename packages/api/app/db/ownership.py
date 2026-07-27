@@ -21,11 +21,16 @@ async def authorized_owner_ids(
     user_id: str,
 ) -> tuple[str, ...]:
     canonical = await canonical_user_id(session, user_id)
-    aliases = tuple(
-        await session.scalars(
-            select(UserAlias.alias_user_id).where(
-                UserAlias.canonical_user_id == canonical
+    owners = {canonical}
+    frontier = {canonical}
+    while frontier:
+        aliases = set(
+            await session.scalars(
+                select(UserAlias.alias_user_id).where(
+                    UserAlias.canonical_user_id.in_(frontier)
+                )
             )
         )
-    )
-    return (canonical, *aliases)
+        frontier = aliases - owners
+        owners.update(frontier)
+    return (canonical, *sorted(owners - {canonical}))

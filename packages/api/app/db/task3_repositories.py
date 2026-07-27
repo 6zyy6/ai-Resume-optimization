@@ -372,7 +372,7 @@ class SqlUsageRepository:
                 owner_ids = await authorized_owner_ids(session, owner_user_id)
                 existing = await session.scalar(
                     select(IdempotencyRecord).where(
-                        IdempotencyRecord.owner_user_id == owner_user_id,
+                        IdempotencyRecord.owner_user_id.in_(owner_ids),
                         IdempotencyRecord.route == route,
                         IdempotencyRecord.key == idempotency_key,
                     )

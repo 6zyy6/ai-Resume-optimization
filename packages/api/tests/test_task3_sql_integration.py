@@ -17,9 +17,9 @@ from app.db.models import (
     Task,
     UsageLedger,
     User,
-    UserAlias,
     UserIdentity,
 )
+from app.db.ownership import authorized_owner_ids
 from app.db.repositories import (
     SqlAlchemyResumeRepository,
     SqlAlchemyResumeVersionRepository,
@@ -216,12 +216,12 @@ async def test_auth_service_uses_sql_adapter_for_wechat_onboarding_and_restart(
 
 
 @pytest.mark.anyio
-async def test_sql_confirmed_merge_uses_alias_for_append_only_history_and_dependencies(
+async def test_sql_chained_merge_authorizes_all_historical_resources_and_dependencies(
     sql_session_factory,
 ):
     now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
     repository = SqlAuthRepository(sql_session_factory)
-    for user_id in ("usr_email", "usr_wechat"):
+    for user_id in ("usr_final", "usr_email", "usr_wechat"):
         await repository.save_user(
             UserAccount(
                 id=user_id,
@@ -293,10 +293,11 @@ async def test_sql_confirmed_merge_uses_alias_for_append_only_history_and_depend
         )
 
     await repository.merge_users("usr_wechat", "usr_email")
+    await repository.merge_users("usr_email", "usr_final")
 
     async with sql_session_factory() as session:
         source = await session.get(User, "usr_wechat")
-        alias = await session.get(UserAlias, "usr_wechat")
+        intermediate = await session.get(User, "usr_email")
         version_owner = await session.scalar(
             select(ResumeVersion.owner_user_id).where(
                 ResumeVersion.id == "version_wechat"
@@ -312,26 +313,34 @@ async def test_sql_confirmed_merge_uses_alias_for_append_only_history_and_depend
                 UsageLedger.id == "usage_wechat"
             )
         )
+        owner_ids = await authorized_owner_ids(session, "usr_final")
+        section = await session.scalar(
+            select(ResumeSection).where(
+                ResumeSection.id == "section_wechat",
+                ResumeSection.owner_user_id.in_(owner_ids),
+            )
+        )
     assert source is not None
     assert source.status == "merged"
-    assert alias is not None
-    assert alias.canonical_user_id == "usr_email"
+    assert intermediate is not None
+    assert intermediate.status == "merged"
     assert version_owner == section_owner == usage_owner == "usr_wechat"
+    assert section is not None
 
     async with sql_session_factory() as session:
         resume = await SqlAlchemyResumeRepository(session).get(
             "resume_wechat",
-            "usr_email",
+            "usr_final",
         )
         version = await SqlAlchemyResumeVersionRepository(session).get(
             "version_wechat",
-            "usr_email",
+            "usr_final",
         )
     assert resume is not None
     assert version is not None
     assert (
         await SqlUsageRepository(sql_session_factory).count_ai_tasks(
-            "usr_email",
+            "usr_final",
             now,
         )
         == 1
@@ -438,6 +447,97 @@ async def test_sql_atomic_admission_detects_idempotency_semantic_mismatch(
     assert caught.value.code == "IDEMPOTENCY_KEY_REUSED"
     assert caught.value.status_code == 409
     assert await repository.count_ai_tasks("usr_1", now) == 1
+
+
+async def merged_admission_harness(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    auth_repository = SqlAuthRepository(sql_session_factory)
+    for user_id in ("usr_source", "usr_target"):
+        await auth_repository.save_user(
+            UserAccount(
+                id=user_id,
+                status="active",
+                email_encrypted=None,
+                email_lookup_hash=None,
+                created_at=now,
+            )
+        )
+    service = UsageService(
+        SqlUsageRepository(sql_session_factory),
+        type("Clock", (), {"now": lambda _: now})(),
+    )
+    first = await service.admit_ai_task(
+        "usr_source",
+        "tr_first",
+        "merge-key",
+        workflow_type="quality_check",
+        cost_cny=Decimal("1.25"),
+    )
+    await auth_repository.merge_users("usr_source", "usr_target")
+    return service, first
+
+
+async def admission_row_counts(
+    sql_session_factory,
+    idempotency_key: str,
+):
+    async with sql_session_factory() as session:
+        return (
+            await session.scalar(
+                select(func.count()).select_from(Task).where(Task.type == "ai_task")
+            ),
+            await session.scalar(
+                select(func.count())
+                .select_from(UsageLedger)
+                .where(UsageLedger.usage_type == "ai_task")
+            ),
+            await session.scalar(
+                select(func.count())
+                .select_from(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.route == "/internal/ai-task-admissions",
+                    IdempotencyRecord.key == idempotency_key,
+                )
+            ),
+        )
+
+
+@pytest.mark.anyio
+async def test_sql_admission_same_input_replays_across_account_merge(
+    sql_session_factory,
+):
+    service, first = await merged_admission_harness(sql_session_factory)
+    replay = await service.admit_ai_task(
+        "usr_target",
+        "tr_replay",
+        "merge-key",
+        workflow_type="quality_check",
+        cost_cny=Decimal("1.250"),
+    )
+
+    assert replay == first
+    assert await admission_row_counts(sql_session_factory, "merge-key") == (1, 1, 1)
+
+
+@pytest.mark.anyio
+async def test_sql_admission_changed_input_is_rejected_across_account_merge(
+    sql_session_factory,
+):
+    service, _ = await merged_admission_harness(sql_session_factory)
+    with pytest.raises(UsageAdmissionError) as caught:
+        await service.admit_ai_task(
+            "usr_target",
+            "tr_changed",
+            "merge-key",
+            workflow_type="quality_check",
+            cost_cny=Decimal("2.00"),
+        )
+
+    assert caught.value.code == "IDEMPOTENCY_KEY_REUSED"
+    assert caught.value.status_code == 409
+    assert await admission_row_counts(sql_session_factory, "merge-key") == (1, 1, 1)
 
 
 @pytest.mark.anyio
