@@ -1,0 +1,13 @@
+{
+  "name": "@resume/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/tokens.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --watch --project tsconfig.json",
+    "lint": "eslint src tests",
+    "test": "vitest run"
+  }
+}

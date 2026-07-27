@@ -1,0 +1,14 @@
+:root {
+  --color-brand-600: #4F46E5;
+  --color-brand-700: #4338CA;
+  --color-ink-950: #111827;
+  --color-ink-700: #374151;
+  --color-ink-500: #6B7280;
+  --color-surface-0: #FFFFFF;
+  --color-surface-50: #F8FAFC;
+  --color-line-200: #E5E7EB;
+  --color-fact-600: #059669;
+  --color-pending-600: #D97706;
+  --color-risk-600: #DC2626;
+  --color-gap-600: #7C3AED;
+}

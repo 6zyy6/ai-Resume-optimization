@@ -1,0 +1,13 @@
+{
+  "name": "@resume/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --watch --project tsconfig.json",
+    "lint": "eslint src tests",
+    "test": "vitest run"
+  }
+}

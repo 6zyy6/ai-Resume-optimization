@@ -1,0 +1,12 @@
+{
+  "name": "@resume/test-fixtures",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --watch --project tsconfig.json",
+    "lint": "eslint src",
+    "test": "vitest run --passWithNoTests"
+  }
+}

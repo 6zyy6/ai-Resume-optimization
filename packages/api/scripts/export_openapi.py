@@ -1,0 +1,69 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+API_ROOT = ROOT / "packages" / "api"
+sys.path.insert(0, str(API_ROOT))
+
+from fastapi import FastAPI
+
+from app.contracts import (
+    ApiErrorEnvelope,
+    FactRecord,
+    MatchCategory,
+    ResumeSnapshot,
+    SuggestionStatus,
+    TaskRecord,
+)
+
+
+def build_application() -> FastAPI:
+    app = FastAPI(title="AI Resume API", version="1")
+
+    @app.get("/contracts/fact", response_model=FactRecord)
+    def fact_contract() -> FactRecord:
+        raise NotImplementedError
+
+    @app.get("/contracts/resume-snapshot", response_model=ResumeSnapshot)
+    def resume_snapshot_contract() -> ResumeSnapshot:
+        raise NotImplementedError
+
+    @app.get(
+        "/contracts/task",
+        response_model=TaskRecord,
+        responses={400: {"model": ApiErrorEnvelope}},
+    )
+    def task_contract() -> TaskRecord:
+        raise NotImplementedError
+
+    @app.get("/contracts/match-category", response_model=MatchCategory)
+    def match_category_contract() -> MatchCategory:
+        raise NotImplementedError
+
+    @app.get("/contracts/suggestion-status", response_model=SuggestionStatus)
+    def suggestion_status_contract() -> SuggestionStatus:
+        raise NotImplementedError
+
+    return app
+
+
+def main() -> None:
+    generated = ROOT / "packages" / "shared" / "generated"
+    generated.mkdir(parents=True, exist_ok=True)
+    openapi_path = generated / "openapi.json"
+    schema_path = generated / "schema.ts"
+    openapi_path.write_text(
+        json.dumps(build_application().openapi(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["pnpm", "exec", "openapi-typescript", str(openapi_path), "-o", str(schema_path)],
+        check=True,
+        cwd=ROOT,
+    )
+
+
+if __name__ == "__main__":
+    main()

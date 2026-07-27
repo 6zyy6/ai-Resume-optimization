@@ -1,0 +1,19 @@
+{
+  "name": "ai-resume-optimization",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "pnpm -r build && node scripts/run-python.mjs build",
+    "dev": "pnpm -r --parallel dev & node scripts/run-python.mjs dev",
+    "generate": "node scripts/run-python.mjs packages/api/scripts/export_openapi.py",
+    "lint": "pnpm -r lint && node scripts/run-python.mjs lint",
+    "test": "pnpm -r test && node scripts/run-python.mjs test"
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "8.65.0",
+    "eslint": "10.8.0",
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

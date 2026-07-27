@@ -1,0 +1,411 @@
+{
+  "components": {
+    "schemas": {
+      "ApiErrorBody": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id",
+          "details"
+        ],
+        "title": "ApiErrorBody",
+        "type": "object"
+      },
+      "ApiErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ApiErrorEnvelope",
+        "type": "object"
+      },
+      "FactRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Ids",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FactStatus"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "status",
+          "source_ids",
+          "confirmed_at"
+        ],
+        "title": "FactRecord",
+        "type": "object"
+      },
+      "FactStatus": {
+        "enum": [
+          "unconfirmed",
+          "confirmed",
+          "rejected"
+        ],
+        "title": "FactStatus",
+        "type": "string"
+      },
+      "MatchCategory": {
+        "enum": [
+          "proved",
+          "underexpressed",
+          "needs_confirmation",
+          "real_gap"
+        ],
+        "title": "MatchCategory",
+        "type": "string"
+      },
+      "ResumeBullet": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fact Refs",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "fact_refs"
+        ],
+        "title": "ResumeBullet",
+        "type": "object"
+      },
+      "ResumeSection": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeBullet"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "title",
+          "items"
+        ],
+        "title": "ResumeSection",
+        "type": "object"
+      },
+      "ResumeSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": "1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ResumeSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "title",
+          "target",
+          "sections"
+        ],
+        "title": "ResumeSnapshot",
+        "type": "object"
+      },
+      "SuggestionStatus": {
+        "enum": [
+          "pending",
+          "accepted",
+          "edited",
+          "ignored",
+          "reverted",
+          "blocked"
+        ],
+        "title": "SuggestionStatus",
+        "type": "string"
+      },
+      "TaskRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "trace_id": {
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "progress",
+          "stage",
+          "trace_id",
+          "result_ref",
+          "error_code"
+        ],
+        "title": "TaskRecord",
+        "type": "object"
+      },
+      "TaskStatus": {
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled",
+          "waiting_for_user"
+        ],
+        "title": "TaskStatus",
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "title": "AI Resume API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/contracts/fact": {
+      "get": {
+        "operationId": "fact_contract_contracts_fact_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Fact Contract"
+      }
+    },
+    "/contracts/match-category": {
+      "get": {
+        "operationId": "match_category_contract_contracts_match_category_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchCategory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Match Category Contract"
+      }
+    },
+    "/contracts/resume-snapshot": {
+      "get": {
+        "operationId": "resume_snapshot_contract_contracts_resume_snapshot_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumeSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Resume Snapshot Contract"
+      }
+    },
+    "/contracts/suggestion-status": {
+      "get": {
+        "operationId": "suggestion_status_contract_contracts_suggestion_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuggestionStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Suggestion Status Contract"
+      }
+    },
+    "/contracts/task": {
+      "get": {
+        "operationId": "task_contract_contracts_task_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "summary": "Task Contract"
+      }
+    }
+  }
+}
