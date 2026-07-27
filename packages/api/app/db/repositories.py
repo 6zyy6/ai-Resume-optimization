@@ -1,28 +1,52 @@
-from typing import Any, Protocol
+import hashlib
+from datetime import timezone
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Fact, IdempotencyRecord, Job, Resume, Suggestion, Task, UsageRow, User
+from app.db.models import (
+    Fact,
+    FactSource,
+    IdempotencyRecord,
+    Job,
+    Resume,
+    SourceRecord,
+    Suggestion,
+    Task,
+    UsageRow,
+    User,
+)
+from app.db.ports import (
+    FactRepository,
+    IdempotencyRepository,
+    JobRepository,
+    ResumeRepository,
+    SuggestionRepository,
+    TaskRepository,
+    UsageEntry,
+    UsageRepository,
+    UserRepository,
+)
 
-
-class Repository(Protocol):
-    async def record(self, values: dict[str, Any]) -> Any: ...
-    async def get(self, identifier: str) -> Any: ...
-    async def update(self, identifier: str, values: dict[str, Any]) -> Any: ...
-
-
-UserRepository = Repository
-FactRepository = Repository
-ResumeRepository = Repository
-JobRepository = Repository
-SuggestionRepository = Repository
-TaskRepository = Repository
-IdempotencyRepository = Repository
-UsageRepository = Repository
-
-
-class ImmutableUsageError(ValueError):
-    pass
+__all__ = [
+    "FactRepository",
+    "IdempotencyRepository",
+    "JobRepository",
+    "ResumeRepository",
+    "SqlAlchemyFactRepository",
+    "SqlAlchemyIdempotencyRepository",
+    "SqlAlchemyJobRepository",
+    "SqlAlchemyResumeRepository",
+    "SqlAlchemySuggestionRepository",
+    "SqlAlchemyTaskRepository",
+    "SqlAlchemyUsageRepository",
+    "SqlAlchemyUserRepository",
+    "SuggestionRepository",
+    "TaskRepository",
+    "UsageRepository",
+    "UserRepository",
+]
 
 
 class SqlAlchemyRepository:
@@ -37,10 +61,54 @@ class SqlAlchemyRepository:
         await self.session.flush()
         return row
 
-    async def get(self, identifier: str) -> Any:
-        return await self.session.get(self.model, identifier)
+    async def get(self, identifier: str, owner_user_id: str) -> Any:
+        return await self.session.scalar(
+            select(self.model).where(
+                self.model.id == identifier,
+                self.model.owner_user_id == owner_user_id,
+            )
+        )
 
-    async def update(self, identifier: str, values: dict[str, Any]) -> Any:
+    async def update(
+        self,
+        identifier: str,
+        owner_user_id: str,
+        values: dict[str, Any],
+    ) -> Any:
+        row = await self.get(identifier, owner_user_id)
+        if row is None:
+            return None
+        for name, value in values.items():
+            if name != "owner_user_id":
+                setattr(row, name, value)
+        await self.session.flush()
+        return row
+
+    async def delete(self, identifier: str, owner_user_id: str) -> bool:
+        row = await self.get(identifier, owner_user_id)
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.flush()
+        return True
+
+
+class SqlAlchemyUserRepository:
+    model = User
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def record(self, values: dict[str, Any]) -> User:
+        row = User(**values)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get(self, identifier: str) -> User | None:
+        return await self.session.get(User, identifier)
+
+    async def update(self, identifier: str, values: dict[str, Any]) -> User | None:
         row = await self.get(identifier)
         if row is None:
             return None
@@ -50,17 +118,48 @@ class SqlAlchemyRepository:
         return row
 
 
-class SqlAlchemyUserRepository(SqlAlchemyRepository):
-    model = User
-
-
 class SqlAlchemyFactRepository(SqlAlchemyRepository):
     model = Fact
 
-    async def record(self, values: dict[str, Any]) -> Any:
-        values = values.copy()
-        values["source_count"] = len(values.get("source_ids", []))
-        return await super().record(values)
+    async def record(self, values: dict[str, Any]) -> Fact:
+        fact_values = values.copy()
+        source_ids = tuple(fact_values.pop("source_ids", ()))
+        desired_status = fact_values["status"]
+        confirmed_at = fact_values.get("confirmed_at")
+        if desired_status == "confirmed":
+            fact_values["status"] = "unconfirmed"
+            fact_values["confirmed_at"] = None
+
+        fact = await super().record(fact_values)
+        if source_ids:
+            sources = (
+                await self.session.scalars(
+                    select(SourceRecord).where(
+                        SourceRecord.id.in_(source_ids),
+                        SourceRecord.owner_user_id == fact.owner_user_id,
+                    )
+                )
+            ).all()
+            if {source.id for source in sources} != set(source_ids):
+                raise ValueError("all fact sources must exist and belong to the fact owner")
+            self.session.add_all(
+                [
+                    FactSource(
+                        fact_id=fact.id,
+                        source_record_id=source.id,
+                        owner_user_id=fact.owner_user_id,
+                        source_hash=hashlib.sha256(source.content_encrypted.encode()).hexdigest(),
+                    )
+                    for source in sources
+                ]
+            )
+            await self.session.flush()
+
+        if desired_status == "confirmed":
+            fact.status = desired_status
+            fact.confirmed_at = confirmed_at
+            await self.session.flush()
+        return fact
 
 
 class SqlAlchemyResumeRepository(SqlAlchemyRepository):
@@ -83,11 +182,37 @@ class SqlAlchemyIdempotencyRepository(SqlAlchemyRepository):
     model = IdempotencyRecord
 
 
-class SqlAlchemyUsageRepository(SqlAlchemyRepository):
-    model = UsageRow
+class SqlAlchemyUsageRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
 
-    async def update(self, identifier: str, values: dict[str, Any]) -> Any:
-        raise ImmutableUsageError("usage rows are immutable")
+    async def append(self, values: dict[str, Any]) -> UsageEntry:
+        row = UsageRow(**values)
+        self.session.add(row)
+        await self.session.flush()
+        return self._to_entry(row)
 
+    async def list_for_owner(self, owner_user_id: str) -> tuple[UsageEntry, ...]:
+        rows = (
+            await self.session.scalars(
+                select(UsageRow)
+                .where(UsageRow.owner_user_id == owner_user_id)
+                .order_by(UsageRow.created_at, UsageRow.id)
+            )
+        ).all()
+        return tuple(self._to_entry(row) for row in rows)
 
-from app.db.memory import InMemoryUsageRepository
+    @staticmethod
+    def _to_entry(row: UsageRow) -> UsageEntry:
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return UsageEntry(
+            id=row.id,
+            owner_user_id=row.owner_user_id,
+            usage_type=row.usage_type,
+            quantity=row.quantity,
+            cost_cny=row.cost_cny,
+            trace_id=row.trace_id,
+            created_at=created_at,
+        )

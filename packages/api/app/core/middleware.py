@@ -18,7 +18,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         context = RequestContext(
             trace_id=request.headers.get("X-Trace-Id") or new_id("tr"),
             request_id=request.headers.get("X-Request-Id") or new_id("req"),
-            actor_id=request.headers.get("X-Actor-Id"),
+            actor_id=None,
         )
         request.state.context = context
         response = await call_next(request)
