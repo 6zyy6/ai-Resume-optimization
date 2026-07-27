@@ -72,6 +72,11 @@
             "title": "Code",
             "type": "string"
           },
+          "confirm_merge": {
+            "default": false,
+            "title": "Confirm Merge",
+            "type": "boolean"
+          },
           "email": {
             "maxLength": 320,
             "minLength": 3,
@@ -95,8 +100,10 @@
             "type": "string"
           },
           "document_type": {
-            "maxLength": 64,
-            "minLength": 1,
+            "enum": [
+              "user_agreement",
+              "privacy_policy"
+            ],
             "title": "Document Type",
             "type": "string"
           },
@@ -139,15 +146,20 @@
             "title": "Code",
             "type": "string"
           },
-          "consent": {
+          "consents": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ConsentInput"
+                "items": {
+                  "$ref": "#/components/schemas/ConsentInput"
+                },
+                "maxItems": 2,
+                "type": "array"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Consents"
           },
           "email": {
             "maxLength": 320,
@@ -543,6 +555,21 @@
             "minLength": 1,
             "title": "Code",
             "type": "string"
+          },
+          "consents": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConsentInput"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consents"
           }
         },
         "required": [

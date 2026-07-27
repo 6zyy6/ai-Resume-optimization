@@ -24,21 +24,21 @@ class PrivacyTask:
 
 
 class PrivacyRepository(Protocol):
-    def find_idempotent(
+    async def find_idempotent(
         self,
         owner_user_id: str,
         route: str,
         key: str,
     ) -> PrivacyTask | None: ...
 
-    def find_active_deletion(self, owner_user_id: str) -> PrivacyTask | None: ...
-    def data_exports_since(
+    async def find_active_deletion(self, owner_user_id: str) -> PrivacyTask | None: ...
+    async def data_exports_since(
         self,
         owner_user_id: str,
         since: datetime,
     ) -> tuple[PrivacyTask, ...]: ...
-    def save_task(self, task: PrivacyTask, route: str, key: str) -> None: ...
-    def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None: ...
+    async def save_task(self, task: PrivacyTask, route: str, key: str) -> None: ...
+    async def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None: ...
 
 
 class InMemoryPrivacyRepository:
@@ -46,7 +46,7 @@ class InMemoryPrivacyRepository:
         self.tasks: dict[str, PrivacyTask] = {}
         self._idempotency: dict[tuple[str, str, str], str] = {}
 
-    def find_idempotent(
+    async def find_idempotent(
         self,
         owner_user_id: str,
         route: str,
@@ -55,7 +55,7 @@ class InMemoryPrivacyRepository:
         task_id = self._idempotency.get((owner_user_id, route, key))
         return self.tasks.get(task_id) if task_id else None
 
-    def find_active_deletion(self, owner_user_id: str) -> PrivacyTask | None:
+    async def find_active_deletion(self, owner_user_id: str) -> PrivacyTask | None:
         return next(
             (
                 task
@@ -67,7 +67,7 @@ class InMemoryPrivacyRepository:
             None,
         )
 
-    def data_exports_since(
+    async def data_exports_since(
         self,
         owner_user_id: str,
         since: datetime,
@@ -80,11 +80,11 @@ class InMemoryPrivacyRepository:
             and task.queued_at > since
         )
 
-    def save_task(self, task: PrivacyTask, route: str, key: str) -> None:
+    async def save_task(self, task: PrivacyTask, route: str, key: str) -> None:
         self.tasks[task.id] = task
-        self.bind_idempotency(task, route, key)
+        await self.bind_idempotency(task, route, key)
 
-    def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None:
+    async def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None:
         self._idempotency[(task.owner_user_id, route, key)] = task.id
 
 
@@ -114,7 +114,7 @@ class PrivacyService:
         self.auth_service = auth_service
         self.clock = clock
 
-    def _create_task(
+    async def _create_task(
         self,
         authenticated: AuthenticatedSession,
         task_type: str,
@@ -122,7 +122,7 @@ class PrivacyService:
         idempotency_key: str,
         trace_id: str,
     ) -> PrivacyTask:
-        existing = self.repository.find_idempotent(
+        existing = await self.repository.find_idempotent(
             authenticated.user_id,
             route,
             idempotency_key,
@@ -139,17 +139,17 @@ class PrivacyService:
             trace_id=trace_id,
             queued_at=self.clock.now(),
         )
-        self.repository.save_task(task, route, idempotency_key)
+        await self.repository.save_task(task, route, idempotency_key)
         return task
 
-    def request_data_export(
+    async def request_data_export(
         self,
         authenticated: AuthenticatedSession,
         idempotency_key: str,
         trace_id: str,
     ) -> PrivacyTask:
         route = "/v1/me/data-exports"
-        existing = self.repository.find_idempotent(
+        existing = await self.repository.find_idempotent(
             authenticated.user_id,
             route,
             idempotency_key,
@@ -157,7 +157,7 @@ class PrivacyService:
         if existing is not None:
             return existing
         now = self.clock.now()
-        recent = self.repository.data_exports_since(
+        recent = await self.repository.data_exports_since(
             authenticated.user_id,
             now - EXPORT_RATE_WINDOW,
         )
@@ -171,7 +171,7 @@ class PrivacyService:
                 429,
                 max(1, retry_after),
             )
-        return self._create_task(
+        return await self._create_task(
             authenticated,
             "data_export",
             route,
@@ -179,14 +179,14 @@ class PrivacyService:
             trace_id,
         )
 
-    def request_deletion(
+    async def request_deletion(
         self,
         authenticated: AuthenticatedSession,
         idempotency_key: str,
         trace_id: str,
     ) -> PrivacyTask:
         route = "/v1/me/deletion-requests"
-        existing = self.repository.find_idempotent(
+        existing = await self.repository.find_idempotent(
             authenticated.user_id,
             route,
             idempotency_key,
@@ -199,25 +199,39 @@ class PrivacyService:
                 "Recent authentication is required",
                 403,
             )
-        active = self.repository.find_active_deletion(authenticated.user_id)
+        active = await self.repository.find_active_deletion(authenticated.user_id)
         if active is not None:
-            self.repository.bind_idempotency(active, route, idempotency_key)
+            await self.repository.bind_idempotency(active, route, idempotency_key)
             return active
-        task = self._create_task(
+        task = await self._create_task(
             authenticated,
             "account_deletion",
             route,
             idempotency_key,
             trace_id,
         )
-        self.auth_service.deactivate_user(authenticated.user_id)
-        self.auth_service.revoke_all_sessions(authenticated.user_id)
+        await self.auth_service.deactivate_user(authenticated.user_id)
+        await self.auth_service.revoke_all_sessions(authenticated.user_id)
         return task
 
+    async def replay_deletion(
+        self,
+        owner_user_id: str,
+        idempotency_key: str,
+    ) -> PrivacyTask | None:
+        return await self.repository.find_idempotent(
+            owner_user_id,
+            "/v1/me/deletion-requests",
+            idempotency_key,
+        )
 
-def build_default_privacy_service(auth_service: AuthService) -> PrivacyService:
+
+def build_default_privacy_service(
+    auth_service: AuthService,
+    repository: PrivacyRepository | None = None,
+) -> PrivacyService:
     return PrivacyService(
-        InMemoryPrivacyRepository(),
+        repository or InMemoryPrivacyRepository(),
         auth_service,
         auth_service.clock,
     )

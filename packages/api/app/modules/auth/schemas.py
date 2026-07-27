@@ -13,7 +13,7 @@ class EmptyRequest(StrictModel):
 
 
 class ConsentInput(StrictModel):
-    document_type: str = Field(min_length=1, max_length=64)
+    document_type: Literal["user_agreement", "privacy_policy"]
     document_version: str = Field(min_length=1, max_length=32)
     decision: Literal["accepted"]
 
@@ -25,16 +25,18 @@ class EmailStartRequest(StrictModel):
 class EmailVerifyRequest(StrictModel):
     email: str = Field(min_length=3, max_length=320)
     code: str = Field(pattern=r"^\d{6}$")
-    consent: ConsentInput | None = None
+    consents: list[ConsentInput] | None = Field(default=None, max_length=2)
 
 
 class WechatLoginRequest(StrictModel):
     code: str = Field(min_length=1, max_length=512)
+    consents: list[ConsentInput] | None = Field(default=None, max_length=2)
 
 
 class BindEmailRequest(StrictModel):
     email: str = Field(min_length=3, max_length=320)
     code: str = Field(pattern=r"^\d{6}$")
+    confirm_merge: bool = False
 
 
 class OtpStartedResponse(StrictModel):

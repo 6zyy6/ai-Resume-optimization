@@ -41,6 +41,7 @@ def raise_auth_error(request: Request, error: AuthError) -> None:
         error.message,
         get_request_context(request).request_id,
         error.status_code,
+        error.details,
     )
     if error.retry_after is not None:
         api_error.headers = {"Retry-After": str(error.retry_after)}
@@ -59,11 +60,11 @@ def set_session_cookie(response: Response, result: LoginResult, service: AuthSer
     )
 
 
-def require_session(
+async def require_session(
     request: Request,
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedSession:
-    authenticated = service.authenticate(request.cookies.get(SESSION_COOKIE))
+    authenticated = await service.authenticate(request.cookies.get(SESSION_COOKIE))
     if authenticated is None:
         raise_auth_error(
             request,
@@ -96,7 +97,7 @@ async def verify_email(
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedResponse:
     try:
-        result = await service.verify_email(payload.email, payload.code, payload.consent)
+        result = await service.verify_email(payload.email, payload.code, payload.consents)
     except AuthError as error:
         raise_auth_error(request, error)
     set_session_cookie(response, result, service)
@@ -111,7 +112,7 @@ async def login_wechat(
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedResponse:
     try:
-        result = await service.login_wechat(payload.code)
+        result = await service.login_wechat(payload.code, payload.consents)
     except AuthError as error:
         raise_auth_error(request, error)
     set_session_cookie(response, result, service)
@@ -126,7 +127,12 @@ async def bind_email(
     service: AuthService = Depends(get_auth_service),
 ) -> Response:
     try:
-        service.bind_email(authenticated, payload.email, payload.code)
+        await service.bind_email(
+            authenticated,
+            payload.email,
+            payload.code,
+            payload.confirm_merge,
+        )
     except AuthError as error:
         raise_auth_error(request, error)
     return Response(status_code=204)
@@ -140,7 +146,7 @@ async def refresh(
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedResponse:
     try:
-        result = service.refresh(request.cookies.get(SESSION_COOKIE))
+        result = await service.refresh(request.cookies.get(SESSION_COOKIE))
     except AuthError as error:
         raise_auth_error(request, error)
     set_session_cookie(response, result, service)
@@ -153,7 +159,7 @@ async def logout(
     _payload: EmptyRequest | None = Body(default=None),
     service: AuthService = Depends(get_auth_service),
 ) -> Response:
-    service.logout(request.cookies.get(SESSION_COOKIE))
+    await service.logout(request.cookies.get(SESSION_COOKIE))
     response = Response(status_code=204)
     response.delete_cookie(
         SESSION_COOKIE,

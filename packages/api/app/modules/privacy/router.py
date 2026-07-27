@@ -6,9 +6,9 @@ from pydantic import BaseModel, ConfigDict
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
 from app.core.middleware import get_request_context
-from app.modules.auth.router import require_session
+from app.modules.auth.router import SESSION_COOKIE, raise_auth_error, require_session
 from app.modules.auth.schemas import EmptyRequest
-from app.modules.auth.service import AuthenticatedSession
+from app.modules.auth.service import AuthError, AuthenticatedSession
 from app.modules.privacy.service import PrivacyError, PrivacyService, PrivacyTask
 
 
@@ -75,7 +75,7 @@ async def request_data_export(
     service: PrivacyService = Depends(get_privacy_service),
 ) -> PrivacyTaskResponse:
     try:
-        task = service.request_data_export(
+        task = await service.request_data_export(
             authenticated,
             idempotency_key,
             get_request_context(request).trace_id,
@@ -94,11 +94,26 @@ async def request_deletion(
         max_length=255,
         alias="Idempotency-Key",
     ),
-    authenticated: AuthenticatedSession = Depends(require_session),
     service: PrivacyService = Depends(get_privacy_service),
 ) -> PrivacyTaskResponse:
+    auth_service = request.app.state.auth_service
+    raw_token = request.cookies.get(SESSION_COOKIE)
+    authenticated = await auth_service.authenticate(raw_token)
+    if authenticated is None:
+        replay_identity = await auth_service.identify_deletion_replay(raw_token)
+        if replay_identity is not None:
+            replay = await service.replay_deletion(
+                replay_identity.user_id,
+                idempotency_key,
+            )
+            if replay is not None:
+                return task_response(replay)
+        raise_auth_error(
+            request,
+            AuthError("AUTH_REQUIRED", "Authentication required", 401),
+        )
     try:
-        task = service.request_deletion(
+        task = await service.request_deletion(
             authenticated,
             idempotency_key,
             get_request_context(request).trace_id,

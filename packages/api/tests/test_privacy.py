@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 
@@ -58,7 +59,7 @@ def privacy_harness():
         token_factory=lambda: f"session-token-{len(auth_repository.sessions) + 1}",
         app_env="test",
     )
-    user_id = auth_service.register_wechat_identity("known-subject")
+    user_id = asyncio.run(auth_service.register_wechat_identity("known-subject"))
     privacy_repository = InMemoryPrivacyRepository()
     privacy_service = PrivacyService(privacy_repository, auth_service, clock)
     previous_auth = app.state.auth_service
@@ -199,25 +200,25 @@ def test_deletion_creates_one_task_and_immediately_revokes_every_session(
     auth_service, auth_repository, privacy_service, privacy_repository, _, user_id = (
         privacy_harness
     )
-    authenticated = auth_service.authenticate(second_token)
+    authenticated = asyncio.run(auth_service.authenticate(second_token))
     assert authenticated is not None
 
     response = client.post(
         "/v1/me/deletion-requests",
         headers={"Idempotency-Key": "delete-key"},
     )
-    repeated = privacy_service.request_deletion(
-        authenticated,
-        "delete-key",
-        "tr_repeat",
+    repeated = client.post(
+        "/v1/me/deletion-requests",
+        headers={"Idempotency-Key": "delete-key"},
     )
 
     assert response.status_code == 202
-    assert repeated.id == response.json()["id"]
+    assert repeated.status_code == 202
+    assert repeated.json() == response.json()
     assert len(privacy_repository.tasks) == 1
     assert auth_repository.users[user_id].status == "pending_deletion"
-    assert auth_service.authenticate(first_token) is None
-    assert auth_service.authenticate(second_token) is None
+    assert asyncio.run(auth_service.authenticate(first_token)) is None
+    assert asyncio.run(auth_service.authenticate(second_token)) is None
     assert all(session.revoked_at is not None for session in auth_repository.sessions.values())
 
     unavailable = client.get("/v1/me/usage")

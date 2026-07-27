@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Protocol
 
 from app.core.ids import new_id
+from app.modules.auth.schemas import ConsentInput
 
 
 @dataclass
@@ -34,10 +35,16 @@ class ConsentRecord:
 
 
 class UserStore(Protocol):
-    def find_user_by_email_hash(self, email_hash: str) -> UserAccount | None: ...
-    def save_user(self, user: UserAccount) -> None: ...
-    def save_identity(self, identity: IdentityRecord) -> None: ...
-    def save_consent(self, consent: ConsentRecord) -> None: ...
+    async def find_user_by_email_hash(self, email_hash: str) -> UserAccount | None: ...
+    async def save_user(self, user: UserAccount) -> None: ...
+    async def save_identity(self, identity: IdentityRecord) -> None: ...
+    async def save_consent(self, consent: ConsentRecord) -> None: ...
+    async def create_user_with_identity_and_consents(
+        self,
+        user: UserAccount,
+        identity: IdentityRecord,
+        consents: tuple[ConsentRecord, ...],
+    ) -> None: ...
 
 
 class EmailCrypto(Protocol):
@@ -71,16 +78,14 @@ class UserService:
             self.keys.get_key("email-lookup"),
         )
 
-    def find_by_email(self, email: str) -> UserAccount | None:
-        return self.repository.find_user_by_email_hash(self.email_lookup_hash(email))
+    async def find_by_email(self, email: str) -> UserAccount | None:
+        return await self.repository.find_user_by_email_hash(self.email_lookup_hash(email))
 
-    def create_email_user(
+    async def create_email_user(
         self,
         email: str,
         now: datetime,
-        document_type: str,
-        document_version: str,
-        decision: str,
+        consents: tuple[ConsentInput, ...],
     ) -> UserAccount:
         normalized = self.normalize_email(email)
         lookup_hash = self.email_lookup_hash(normalized)
@@ -94,29 +99,32 @@ class UserService:
             email_lookup_hash=lookup_hash,
             created_at=now,
         )
-        self.repository.save_user(user)
-        self.repository.save_identity(
-            IdentityRecord(
-                id=new_id("idn"),
-                owner_user_id=user.id,
-                identity_type="email_otp",
-                external_subject_hash=lookup_hash,
-                verified_at=now,
-            )
+        identity = IdentityRecord(
+            id=new_id("idn"),
+            owner_user_id=user.id,
+            identity_type="email_otp",
+            external_subject_hash=lookup_hash,
+            verified_at=now,
         )
-        self.repository.save_consent(
-            ConsentRecord(
-                id=new_id("cns"),
-                owner_user_id=user.id,
-                document_type=document_type,
-                document_version=document_version,
-                decision=decision,
-                decided_at=now,
-            )
+        records = tuple(
+                ConsentRecord(
+                    id=new_id("cns"),
+                    owner_user_id=user.id,
+                    document_type=consent.document_type,
+                    document_version=consent.document_version,
+                    decision=consent.decision,
+                    decided_at=now,
+                )
+            for consent in consents
+        )
+        await self.repository.create_user_with_identity_and_consents(
+            user,
+            identity,
+            records,
         )
         return user
 
-    def bind_email(self, user: UserAccount, email: str, now: datetime) -> None:
+    async def bind_email(self, user: UserAccount, email: str, now: datetime) -> None:
         normalized = self.normalize_email(email)
         lookup_hash = self.email_lookup_hash(normalized)
         user.email_encrypted = self.email_crypto.encrypt(
@@ -124,8 +132,8 @@ class UserService:
             self.keys.get_key("email-encryption"),
         )
         user.email_lookup_hash = lookup_hash
-        self.repository.save_user(user)
-        self.repository.save_identity(
+        await self.repository.save_user(user)
+        await self.repository.save_identity(
             IdentityRecord(
                 id=new_id("idn"),
                 owner_user_id=user.id,

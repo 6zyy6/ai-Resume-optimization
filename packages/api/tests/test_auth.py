@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -104,11 +105,18 @@ def verify_email(client, harness: AuthHarness, email: str, *, consent: bool = Tr
         "code": harness.sender.latest_code(email.lower()),
     }
     if consent:
-        payload["consent"] = {
-            "document_type": "privacy_policy",
-            "document_version": "2026-07-27",
-            "decision": "accepted",
-        }
+        payload["consents"] = [
+            {
+                "document_type": "user_agreement",
+                "document_version": "2026-07-27",
+                "decision": "accepted",
+            },
+            {
+                "document_type": "privacy_policy",
+                "document_version": "2026-07-27",
+                "decision": "accepted",
+            },
+        ]
     return client.post("/v1/auth/email/verify", json=payload)
 
 
@@ -211,7 +219,13 @@ def test_first_email_login_requires_consent_and_stores_protected_email(
     assert user.email_encrypted != email.lower()
     assert email.lower() not in user.email_encrypted
     assert user.email_lookup_hash
-    assert len(auth_harness.repository.consents) == 1
+    assert {
+        (consent.document_type, consent.document_version)
+        for consent in auth_harness.repository.consents
+    } == {
+        ("user_agreement", "2026-07-27"),
+        ("privacy_policy", "2026-07-27"),
+    }
     email_identity = next(iter(auth_harness.repository.identities.values()))
     assert email_identity.identity_type == "email_otp"
 
@@ -221,24 +235,49 @@ def test_first_email_login_requires_consent_and_stores_protected_email(
     assert "Secure" not in cookie
 
 
-def test_wechat_login_only_allows_an_existing_active_identity(
+def test_explicit_wechat_login_onboards_a_new_user_only_with_current_consents(
     client,
     auth_harness: AuthHarness,
 ):
     auth_harness.wechat.subjects["unknown-code"] = "unknown-subject"
     rejected = client.post("/v1/auth/wechat/login", json={"code": "unknown-code"})
-    assert rejected.status_code == 404
-    assert rejected.json()["error"]["code"] == "AUTH_IDENTITY_NOT_FOUND"
+    assert rejected.status_code == 403
+    assert rejected.json()["error"]["code"] == "CONSENT_REQUIRED"
     assert auth_harness.repository.users == {}
 
-    user_id = auth_harness.service.register_wechat_identity(
-        "known-subject",
-        status="active",
+    accepted = client.post(
+        "/v1/auth/wechat/login",
+        json={
+            "code": "unknown-code",
+            "consents": [
+                {
+                    "document_type": "user_agreement",
+                    "document_version": "2026-07-27",
+                    "decision": "accepted",
+                },
+                {
+                    "document_type": "privacy_policy",
+                    "document_version": "2026-07-27",
+                    "decision": "accepted",
+                },
+            ],
+        },
     )
-    auth_harness.wechat.subjects["known-code"] = "known-subject"
-    accepted = client.post("/v1/auth/wechat/login", json={"code": "known-code"})
     assert accepted.status_code == 200
-    assert accepted.json()["user_id"] == user_id
+    user_id = accepted.json()["user_id"]
+    assert len(auth_harness.repository.users) == 1
+    assert len(auth_harness.repository.consents) == 2
+
+    auth_harness.wechat.subjects["known-code"] = "known-subject"
+    existing_id = asyncio.run(
+        auth_harness.service.register_wechat_identity(
+            "known-subject",
+            status="active",
+        )
+    )
+    existing = client.post("/v1/auth/wechat/login", json={"code": "known-code"})
+    assert existing.status_code == 200
+    assert existing.json()["user_id"] == existing_id
     wechat_identity = next(
         identity
         for identity in auth_harness.repository.identities.values()
@@ -246,15 +285,144 @@ def test_wechat_login_only_allows_an_existing_active_identity(
     )
     assert wechat_identity.identity_type == "wechat_miniprogram"
 
-    inactive_id = auth_harness.service.register_wechat_identity(
-        "inactive-subject",
-        status="pending_deletion",
+    inactive_id = asyncio.run(
+        auth_harness.service.register_wechat_identity(
+            "inactive-subject",
+            status="pending_deletion",
+        )
     )
     auth_harness.wechat.subjects["inactive-code"] = "inactive-subject"
     inactive = client.post("/v1/auth/wechat/login", json={"code": "inactive-code"})
     assert inactive.status_code == 403
     assert inactive.json()["error"]["code"] == "AUTH_ACCOUNT_INACTIVE"
     assert inactive_id != user_id
+
+
+@pytest.mark.parametrize(
+    "consents",
+    [
+        [
+            {
+                "document_type": "privacy_policy",
+                "document_version": "2026-07-27",
+                "decision": "accepted",
+            }
+        ],
+        [
+            {
+                "document_type": "user_agreement",
+                "document_version": "stale",
+                "decision": "accepted",
+            },
+            {
+                "document_type": "privacy_policy",
+                "document_version": "2026-07-27",
+                "decision": "accepted",
+            },
+        ],
+    ],
+)
+def test_first_login_rejects_incomplete_or_stale_consent(
+    client,
+    auth_harness: AuthHarness,
+    consents,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+
+    response = client.post(
+        "/v1/auth/email/verify",
+        json={
+            "email": email,
+            "code": auth_harness.sender.latest_code(email),
+            "consents": consents,
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "CONSENT_REQUIRED"
+    assert auth_harness.repository.users == {}
+
+
+def test_first_login_rejects_unknown_consent_document(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+
+    response = client.post(
+        "/v1/auth/email/verify",
+        json={
+            "email": email,
+            "code": auth_harness.sender.latest_code(email),
+            "consents": [
+                {
+                    "document_type": "x",
+                    "document_version": "2026-07-27",
+                    "decision": "accepted",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_binding_existing_email_requires_confirmation_and_merges_accounts(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+    email_login = verify_email(client, auth_harness, email)
+    email_user_id = email_login.json()["user_id"]
+    client.post("/v1/auth/logout")
+
+    wechat_user_id = asyncio.run(
+        auth_harness.service.register_wechat_identity("wechat-subject")
+    )
+    auth_harness.wechat.subjects["wechat-code"] = "wechat-subject"
+    wechat_login = client.post("/v1/auth/wechat/login", json={"code": "wechat-code"})
+    assert wechat_login.status_code == 200
+    assert wechat_login.json()["user_id"] == wechat_user_id
+
+    auth_harness.clock.advance(seconds=60)
+    assert start_email(client, email).status_code == 202
+    code = auth_harness.sender.latest_code(email)
+    confirmation = client.post(
+        "/v1/auth/identities/bind-email",
+        json={"email": email, "code": code},
+    )
+    assert confirmation.status_code == 409
+    assert confirmation.json()["error"]["code"] == "AUTH_MERGE_CONFIRMATION_REQUIRED"
+    assert confirmation.json()["error"]["details"] == {
+        "canonical_account": {
+            "user_id": email_user_id,
+            "has_email": True,
+        },
+        "current_account": {
+            "user_id": wechat_user_id,
+            "has_email": False,
+        },
+    }
+
+    merged = client.post(
+        "/v1/auth/identities/bind-email",
+        json={"email": email, "code": code, "confirm_merge": True},
+    )
+
+    assert merged.status_code == 204
+    assert auth_harness.repository.users[wechat_user_id].status == "merged"
+    assert all(
+        identity.owner_user_id != wechat_user_id
+        for identity in auth_harness.repository.identities.values()
+    )
+    assert any(
+        session.owner_user_id == email_user_id
+        for session in auth_harness.repository.sessions.values()
+        if session.revoked_at is None
+    )
 
 
 def test_wechat_login_rejects_client_supplied_external_identifier(
@@ -310,6 +478,7 @@ async def test_unconfigured_external_auth_providers_fail_instead_of_claiming_suc
     assert wechat_error.value.status_code == 503
 
 
-def test_production_auth_requires_injected_ports():
-    with pytest.raises(RuntimeError, match="injected auth ports"):
-        build_default_auth_service("production")
+def test_production_auth_without_injected_ports_is_unconfigured_not_an_import_crash():
+    service = build_default_auth_service("production")
+
+    assert service.cookie_secure is True

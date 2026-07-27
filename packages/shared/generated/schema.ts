@@ -277,6 +277,11 @@ export interface components {
         BindEmailRequest: {
             /** Code */
             code: string;
+            /**
+             * Confirm Merge
+             * @default false
+             */
+            confirm_merge: boolean;
             /** Email */
             email: string;
         };
@@ -287,8 +292,11 @@ export interface components {
              * @constant
              */
             decision: "accepted";
-            /** Document Type */
-            document_type: string;
+            /**
+             * Document Type
+             * @enum {string}
+             */
+            document_type: "user_agreement" | "privacy_policy";
             /** Document Version */
             document_version: string;
         };
@@ -301,7 +309,8 @@ export interface components {
         EmailVerifyRequest: {
             /** Code */
             code: string;
-            consent?: components["schemas"]["ConsentInput"] | null;
+            /** Consents */
+            consents?: components["schemas"]["ConsentInput"][] | null;
             /** Email */
             email: string;
         };
@@ -444,6 +453,8 @@ export interface components {
         WechatLoginRequest: {
             /** Code */
             code: string;
+            /** Consents */
+            consents?: components["schemas"]["ConsentInput"][] | null;
         };
     };
     responses: never;

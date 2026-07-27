@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -40,6 +41,17 @@ class UsageRepository(Protocol):
     async def count_ai_tasks(self, owner_user_id: str, since: datetime) -> int: ...
     async def running_ai_tasks(self, owner_user_id: str) -> int: ...
     async def daily_cost(self, since: datetime) -> Decimal: ...
+    async def admit_ai_task(
+        self,
+        owner_user_id: str,
+        trace_id: str,
+        idempotency_key: str,
+        created_at: datetime,
+        day_start: datetime,
+        retry_after: int,
+        is_retry: bool,
+        cost_cny: Decimal,
+    ) -> "UsageDecision": ...
 
 
 class SystemClock:
@@ -52,6 +64,9 @@ class InMemoryUsageRepository:
         self.rows: list[UsageRecord] = []
         self._running_ai_tasks: dict[str, int] = {}
         self._daily_cost_override: Decimal | None = None
+        self.tasks: dict[str, dict[str, str]] = {}
+        self.idempotency: dict[tuple[str, str], UsageDecision] = {}
+        self._admission_lock = asyncio.Lock()
 
     async def append_ai_task(
         self,
@@ -82,7 +97,13 @@ class InMemoryUsageRepository:
         )
 
     async def running_ai_tasks(self, owner_user_id: str) -> int:
-        return self._running_ai_tasks.get(owner_user_id, 0)
+        admitted = sum(
+            1
+            for task in self.tasks.values()
+            if task["owner_user_id"] == owner_user_id
+            and task["status"] in {"queued", "running"}
+        )
+        return self._running_ai_tasks.get(owner_user_id, 0) + admitted
 
     async def daily_cost(self, since: datetime) -> Decimal:
         if self._daily_cost_override is not None:
@@ -98,12 +119,80 @@ class InMemoryUsageRepository:
     def set_daily_cost(self, cost_cny: Decimal) -> None:
         self._daily_cost_override = cost_cny
 
+    async def admit_ai_task(
+        self,
+        owner_user_id: str,
+        trace_id: str,
+        idempotency_key: str,
+        created_at: datetime,
+        day_start: datetime,
+        retry_after: int,
+        is_retry: bool,
+        cost_cny: Decimal,
+    ) -> "UsageDecision":
+        async with self._admission_lock:
+            idempotency_ref = (owner_user_id, idempotency_key)
+            existing = self.idempotency.get(idempotency_ref)
+            if existing is not None:
+                return existing
+            decision = evaluate_usage(
+                await self.daily_cost(day_start),
+                await self.count_ai_tasks(owner_user_id, day_start),
+                await self.running_ai_tasks(owner_user_id),
+                retry_after,
+                is_retry,
+            )
+            if decision.allowed:
+                task_id = new_id("tsk")
+                self.tasks[task_id] = {
+                    "owner_user_id": owner_user_id,
+                    "status": "queued",
+                    "trace_id": trace_id,
+                }
+                await self.append_ai_task(
+                    owner_user_id,
+                    trace_id,
+                    created_at,
+                    cost_cny,
+                )
+                decision = UsageDecision(
+                    decision.allowed,
+                    decision.reason,
+                    decision.retry_after,
+                    task_id,
+                )
+            self.idempotency[idempotency_ref] = decision
+            return decision
+
 
 @dataclass(frozen=True)
 class UsageDecision:
     allowed: bool
     reason: str | None
     retry_after: int | None
+    task_id: str | None = None
+
+
+def evaluate_usage(
+    cost: Decimal,
+    daily_tasks: int,
+    running_tasks: int,
+    retry_after: int,
+    is_retry: bool,
+) -> UsageDecision:
+    if cost >= GLOBAL_COST_LIMIT_CNY:
+        return UsageDecision(False, "AI_LIMIT_REACHED", retry_after)
+    if daily_tasks >= AI_TASKS_PER_DAY:
+        return UsageDecision(False, "AI_LIMIT_REACHED", retry_after)
+    if running_tasks >= AI_TASKS_CONCURRENT:
+        return UsageDecision(False, "AI_CONCURRENCY_LIMIT_REACHED", None)
+    if cost >= GLOBAL_COST_DEGRADED_CNY:
+        if is_retry:
+            return UsageDecision(False, "AI_RETRY_DISABLED", None)
+        return UsageDecision(True, "AI_COST_DEGRADED", None)
+    if cost >= GLOBAL_COST_ALERT_CNY:
+        return UsageDecision(True, "AI_COST_ALERT", None)
+    return UsageDecision(True, None, None)
 
 
 @dataclass(frozen=True)
@@ -137,19 +226,33 @@ class UsageService:
     ) -> UsageDecision:
         day_start = self._day_start()
         cost = await self.repository.daily_cost(day_start)
-        if cost >= GLOBAL_COST_LIMIT_CNY:
-            return UsageDecision(False, "AI_LIMIT_REACHED", self._retry_after_day())
-        if await self.repository.count_ai_tasks(owner_user_id, day_start) >= AI_TASKS_PER_DAY:
-            return UsageDecision(False, "AI_LIMIT_REACHED", self._retry_after_day())
-        if await self.repository.running_ai_tasks(owner_user_id) >= AI_TASKS_CONCURRENT:
-            return UsageDecision(False, "AI_CONCURRENCY_LIMIT_REACHED", None)
-        if cost >= GLOBAL_COST_DEGRADED_CNY:
-            if is_retry:
-                return UsageDecision(False, "AI_RETRY_DISABLED", None)
-            return UsageDecision(True, "AI_COST_DEGRADED", None)
-        if cost >= GLOBAL_COST_ALERT_CNY:
-            return UsageDecision(True, "AI_COST_ALERT", None)
-        return UsageDecision(True, None, None)
+        return evaluate_usage(
+            cost,
+            await self.repository.count_ai_tasks(owner_user_id, day_start),
+            await self.repository.running_ai_tasks(owner_user_id),
+            self._retry_after_day(),
+            is_retry,
+        )
+
+    async def admit_ai_task(
+        self,
+        owner_user_id: str,
+        trace_id: str,
+        idempotency_key: str,
+        *,
+        is_retry: bool = False,
+        cost_cny: Decimal = Decimal("0"),
+    ) -> UsageDecision:
+        return await self.repository.admit_ai_task(
+            owner_user_id,
+            trace_id,
+            idempotency_key,
+            self.clock.now(),
+            self._day_start(),
+            self._retry_after_day(),
+            is_retry,
+            cost_cny,
+        )
 
     async def record_ai_task(
         self,
@@ -186,5 +289,11 @@ class UsageService:
         )
 
 
-def build_default_usage_service() -> UsageService:
-    return UsageService(InMemoryUsageRepository(), SystemClock())
+def build_default_usage_service(
+    repository: UsageRepository | None = None,
+    clock: Clock | None = None,
+) -> UsageService:
+    return UsageService(
+        repository or InMemoryUsageRepository(),
+        clock or SystemClock(),
+    )

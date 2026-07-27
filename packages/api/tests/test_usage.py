@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -21,7 +22,7 @@ class FakeClock:
 class AuthStub:
     cookie_secure: bool = False
 
-    def authenticate(self, raw_token: str | None) -> AuthenticatedSession | None:
+    async def authenticate(self, raw_token: str | None) -> AuthenticatedSession | None:
         if raw_token != "valid-session":
             return None
         return AuthenticatedSession(
@@ -111,6 +112,63 @@ async def test_recording_ai_usage_appends_an_auditable_row(usage_harness):
     assert recorded.quantity == 1
     assert recorded.cost_cny == Decimal("1.25")
     assert repository.rows == [recorded]
+
+
+@pytest.mark.anyio
+async def test_atomic_admission_allows_only_one_request_at_nineteen_daily_tasks(
+    usage_harness,
+):
+    service, repository = usage_harness
+    for index in range(19):
+        await repository.append_ai_task("usr_1", f"tr_seed_{index}", service.clock.now())
+
+    first, second = await asyncio.gather(
+        service.admit_ai_task("usr_1", "tr_20", "key-20"),
+        service.admit_ai_task("usr_1", "tr_21", "key-21"),
+    )
+
+    assert sorted([first.allowed, second.allowed]) == [False, True]
+    assert await repository.count_ai_tasks("usr_1", service._day_start()) == 20
+    assert len(repository.tasks) == 1
+    assert len(repository.idempotency) == 2
+
+
+@pytest.mark.anyio
+async def test_atomic_admission_allows_only_one_request_with_one_running_task(
+    usage_harness,
+):
+    service, repository = usage_harness
+    repository.set_running_ai_tasks("usr_1", 1)
+
+    first, second = await asyncio.gather(
+        service.admit_ai_task("usr_1", "tr_1", "key-1"),
+        service.admit_ai_task("usr_1", "tr_2", "key-2"),
+    )
+
+    assert sorted([first.allowed, second.allowed]) == [False, True]
+    denied = first if not first.allowed else second
+    assert denied.reason == "AI_CONCURRENCY_LIMIT_REACHED"
+    assert len(repository.tasks) == 1
+    assert len(repository.rows) == 1
+
+
+@pytest.mark.anyio
+async def test_atomic_admission_at_global_stop_creates_no_task_or_ledger_row(
+    usage_harness,
+):
+    service, repository = usage_harness
+    repository.set_daily_cost(Decimal("100.00"))
+
+    first, second = await asyncio.gather(
+        service.admit_ai_task("usr_1", "tr_1", "key-1"),
+        service.admit_ai_task("usr_2", "tr_2", "key-2"),
+    )
+
+    assert first.allowed is False
+    assert second.allowed is False
+    assert first.reason == second.reason == "AI_LIMIT_REACHED"
+    assert repository.tasks == {}
+    assert repository.rows == []
 
 
 def test_authenticated_user_can_query_usage_without_consuming_ai_quota(
