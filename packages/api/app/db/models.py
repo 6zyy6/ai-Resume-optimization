@@ -209,11 +209,16 @@ class ResumeVersion(OwnerMixin, Base):
             ["resumes.id", "resumes.owner_user_id"],
             name="fk_resume_version_resume_owner",
         ),
+        ForeignKeyConstraint(
+            ["parent_version_id", "owner_user_id"],
+            ["resume_versions.id", "resume_versions.owner_user_id"],
+            name="fk_resume_version_parent_owner",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     resume_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    parent_version_id: Mapped[str | None] = mapped_column(ForeignKey("resume_versions.id"))
+    parent_version_id: Mapped[str | None] = mapped_column(String(64))
     snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -620,6 +625,66 @@ event.listen(
           )
         BEGIN
           SELECT RAISE(ABORT, 'confirmed fact requires a source');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_confirmed_fact_keeps_source_update
+        BEFORE UPDATE OF fact_id, owner_user_id, source_record_id, source_hash
+        ON fact_sources
+        WHEN EXISTS (
+          SELECT 1
+          FROM facts
+          WHERE id = OLD.fact_id
+            AND owner_user_id = OLD.owner_user_id
+            AND status = 'confirmed'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM fact_sources
+          WHERE fact_id = OLD.fact_id
+            AND owner_user_id = OLD.owner_user_id
+            AND NOT (
+              source_record_id = OLD.source_record_id
+              AND source_hash = OLD.source_hash
+            )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'confirmed fact requires a source');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_versions_no_update
+        BEFORE UPDATE ON resume_versions
+        BEGIN
+          SELECT RAISE(ABORT, 'resume versions are append-only');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_versions_no_delete
+        BEFORE DELETE ON resume_versions
+        BEGIN
+          SELECT RAISE(ABORT, 'resume versions are append-only');
         END
         """
     ).execute_if(dialect="sqlite"),

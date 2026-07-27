@@ -115,6 +115,49 @@ def _install_sqlite_triggers() -> None:
     )
     op.execute(
         """
+        CREATE TRIGGER trg_confirmed_fact_keeps_source_update
+        BEFORE UPDATE OF fact_id, owner_user_id, source_record_id, source_hash
+        ON fact_sources
+        WHEN EXISTS (
+          SELECT 1 FROM facts
+          WHERE id = OLD.fact_id
+            AND owner_user_id = OLD.owner_user_id
+            AND status = 'confirmed'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM fact_sources
+          WHERE fact_id = OLD.fact_id
+            AND owner_user_id = OLD.owner_user_id
+            AND NOT (
+              source_record_id = OLD.source_record_id
+              AND source_hash = OLD.source_hash
+            )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'confirmed fact requires a source');
+        END
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_resume_versions_no_update
+        BEFORE UPDATE ON resume_versions
+        BEGIN
+          SELECT RAISE(ABORT, 'resume versions are append-only');
+        END
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_resume_versions_no_delete
+        BEFORE DELETE ON resume_versions
+        BEGIN
+          SELECT RAISE(ABORT, 'resume versions are append-only');
+        END
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_usage_ledger_no_update
         BEFORE UPDATE ON usage_ledger
         BEGIN
@@ -238,6 +281,26 @@ def _install_postgresql_triggers() -> None:
         CREATE TRIGGER trg_usage_ledger_append_only
         BEFORE UPDATE OR DELETE ON usage_ledger
         FOR EACH ROW EXECUTE FUNCTION reject_usage_ledger_mutation()
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION reject_resume_version_mutation()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          RAISE EXCEPTION 'resume versions are append-only'
+            USING ERRCODE = '55000';
+        END
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_resume_versions_append_only
+        BEFORE UPDATE OR DELETE ON resume_versions
+        FOR EACH ROW EXECUTE FUNCTION reject_resume_version_mutation()
         """
     )
     op.execute(
@@ -449,7 +512,11 @@ def upgrade() -> None:
         sa.Column("snapshot_hash", sa.String(128), nullable=False),
         sa.Column("created_by", sa.String(64), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["parent_version_id"], ["resume_versions.id"]),
+        sa.ForeignKeyConstraint(
+            ["parent_version_id", "owner_user_id"],
+            ["resume_versions.id", "resume_versions.owner_user_id"],
+            name="fk_resume_version_parent_owner",
+        ),
         sa.ForeignKeyConstraint(
             ["resume_id", "owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
@@ -781,11 +848,13 @@ def downgrade() -> None:
         op.execute("DROP TRIGGER IF EXISTS trg_confirmed_fact_requires_source ON facts")
         op.execute("DROP TRIGGER IF EXISTS trg_confirmed_fact_keeps_source ON fact_sources")
         op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_append_only ON usage_ledger")
+        op.execute("DROP TRIGGER IF EXISTS trg_resume_versions_append_only ON resume_versions")
         op.execute("DROP TRIGGER IF EXISTS trg_terminal_task_result_immutable ON tasks")
         op.execute("DROP TRIGGER IF EXISTS trg_suggestion_accept_from_pending ON suggestions")
         op.execute("DROP TRIGGER IF EXISTS trg_export_version_immutable ON exports")
         op.execute("DROP FUNCTION IF EXISTS enforce_confirmed_fact_source()")
         op.execute("DROP FUNCTION IF EXISTS reject_usage_ledger_mutation()")
+        op.execute("DROP FUNCTION IF EXISTS reject_resume_version_mutation()")
         op.execute("DROP FUNCTION IF EXISTS enforce_immutable_state()")
 
     for table_name in reversed(TABLES):

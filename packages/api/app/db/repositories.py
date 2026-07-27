@@ -11,6 +11,7 @@ from app.db.models import (
     IdempotencyRecord,
     Job,
     Resume,
+    ResumeVersion,
     SourceRecord,
     Suggestion,
     Task,
@@ -22,6 +23,8 @@ from app.db.ports import (
     IdempotencyRepository,
     JobRepository,
     ResumeRepository,
+    ResumeVersionEntry,
+    ResumeVersionRepository,
     SuggestionRepository,
     TaskRepository,
     UsageEntry,
@@ -34,10 +37,12 @@ __all__ = [
     "IdempotencyRepository",
     "JobRepository",
     "ResumeRepository",
+    "ResumeVersionRepository",
     "SqlAlchemyFactRepository",
     "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyJobRepository",
     "SqlAlchemyResumeRepository",
+    "SqlAlchemyResumeVersionRepository",
     "SqlAlchemySuggestionRepository",
     "SqlAlchemyTaskRepository",
     "SqlAlchemyUsageRepository",
@@ -164,6 +169,46 @@ class SqlAlchemyFactRepository(SqlAlchemyRepository):
 
 class SqlAlchemyResumeRepository(SqlAlchemyRepository):
     model = Resume
+
+
+class SqlAlchemyResumeVersionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, values: dict[str, Any]) -> ResumeVersionEntry:
+        row = ResumeVersion(**values)
+        self.session.add(row)
+        await self.session.flush()
+        return self._to_entry(row)
+
+    async def get(
+        self,
+        identifier: str,
+        owner_user_id: str,
+    ) -> ResumeVersionEntry | None:
+        row = await self.session.scalar(
+            select(ResumeVersion).where(
+                ResumeVersion.id == identifier,
+                ResumeVersion.owner_user_id == owner_user_id,
+            )
+        )
+        return self._to_entry(row) if row else None
+
+    @staticmethod
+    def _to_entry(row: ResumeVersion) -> ResumeVersionEntry:
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return ResumeVersionEntry(
+            id=row.id,
+            owner_user_id=row.owner_user_id,
+            resume_id=row.resume_id,
+            parent_version_id=row.parent_version_id,
+            snapshot_json=row.snapshot_json.copy(),
+            snapshot_hash=row.snapshot_hash,
+            created_by=row.created_by,
+            created_at=created_at,
+        )
 
 
 class SqlAlchemyJobRepository(SqlAlchemyRepository):

@@ -37,6 +37,27 @@ class ResumeRepository(OwnerScopedRepository[RecordT], Protocol[RecordT]):
     pass
 
 
+@dataclass(frozen=True)
+class ResumeVersionEntry:
+    id: str
+    owner_user_id: str
+    resume_id: str
+    parent_version_id: str | None
+    snapshot_json: dict[str, Any]
+    snapshot_hash: str
+    created_by: str
+    created_at: datetime
+
+
+class ResumeVersionRepository(Protocol):
+    async def create(self, values: dict[str, Any]) -> ResumeVersionEntry: ...
+    async def get(
+        self,
+        identifier: str,
+        owner_user_id: str,
+    ) -> ResumeVersionEntry | None: ...
+
+
 class JobRepository(OwnerScopedRepository[RecordT], Protocol[RecordT]):
     pass
 

@@ -15,6 +15,7 @@ from sqlalchemy import (
     MetaData,
     Table,
     create_engine,
+    delete,
     event,
     func,
     inspect,
@@ -23,8 +24,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session as SyncSession
 
 from app.contracts import FactStatus
+from app.db import repositories as repository_module
 from app.db.models import (
     AiTraceEvent,
     Base,
@@ -32,6 +35,7 @@ from app.db.models import (
     FactSource,
     JobDescription,
     Resume,
+    ResumeVersion,
     SourceRecord,
     UsageLedger,
     User,
@@ -50,6 +54,32 @@ from app.db.repositories import (
     SqlAlchemyResumeRepository,
     SqlAlchemyUsageRepository,
 )
+
+
+def migrated_sqlite_engine(database_path, monkeypatch):
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "head")
+    return create_engine(f"sqlite:///{database_path}")
+
+
+def seed_resume_version(session):
+    session.add(User(id="user_a"))
+    session.flush()
+    session.add(Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"))
+    session.flush()
+    session.add(
+        ResumeVersion(
+            id="version_a",
+            owner_user_id="user_a",
+            resume_id="resume_a",
+            snapshot_json={"title": "A"},
+            snapshot_hash="hash_a",
+            created_by="user_a",
+        )
+    )
 
 
 def test_metadata_contains_complete_owner_scoped_foundation():
@@ -146,6 +176,47 @@ def test_sql_resource_repository_is_owner_scoped():
     asyncio.run(run())
 
 
+def test_sql_resume_version_repository_is_owner_scoped_create_read_only():
+    async def run():
+        repository_type = getattr(
+            repository_module,
+            "SqlAlchemyResumeVersionRepository",
+            None,
+        )
+        assert repository_type is not None
+
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(User(id="user_a"))
+            await session.flush()
+            session.add(Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"))
+            await session.flush()
+            repository = repository_type(session)
+
+            assert not hasattr(repository, "update")
+            assert not hasattr(repository, "delete")
+            created = await repository.create(
+                {
+                    "id": "version_a",
+                    "owner_user_id": "user_a",
+                    "resume_id": "resume_a",
+                    "snapshot_json": {"title": "A"},
+                    "snapshot_hash": "hash_a",
+                    "created_by": "user_a",
+                }
+            )
+            await session.commit()
+            assert created.id == "version_a"
+            assert await repository.get("version_a", "user_b") is None
+            assert (await repository.get("version_a", "user_a")).snapshot_hash == "hash_a"
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_targeted_resume_cannot_reference_another_owners_base_or_job():
     async def run():
         engine = create_async_engine("sqlite+aiosqlite://")
@@ -186,6 +257,56 @@ def test_targeted_resume_cannot_reference_another_owners_base_or_job():
                     title="Cross-owner targeted resume",
                     base_resume_id="resume_base",
                     job_description_id="job_1",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_resume_version_cannot_reference_another_owners_parent():
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite://")
+
+        def enable_foreign_keys(dbapi_connection, _):
+            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+        event.listen(engine.sync_engine, "connect", enable_foreign_keys)
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add_all([User(id="user_a"), User(id="user_b")])
+            await session.flush()
+            session.add_all(
+                [
+                    Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"),
+                    Resume(id="resume_b", owner_user_id="user_b", kind="base", title="B"),
+                ]
+            )
+            await session.flush()
+            session.add(
+                ResumeVersion(
+                    id="version_b",
+                    owner_user_id="user_b",
+                    resume_id="resume_b",
+                    snapshot_json={"title": "B"},
+                    snapshot_hash="hash_b",
+                    created_by="user_b",
+                )
+            )
+            await session.flush()
+            session.add(
+                ResumeVersion(
+                    id="version_a",
+                    owner_user_id="user_a",
+                    resume_id="resume_a",
+                    parent_version_id="version_b",
+                    snapshot_json={"title": "A"},
+                    snapshot_hash="hash_a",
+                    created_by="user_a",
                 )
             )
             with pytest.raises(IntegrityError):
@@ -302,6 +423,119 @@ def test_confirmed_fact_with_a_source_is_persisted():
     asyncio.run(run())
 
 
+def test_confirmed_fact_last_source_link_cannot_be_moved_by_sql_update():
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(User(id="user_a"))
+            session.add(
+                SourceRecord(
+                    id="source_1",
+                    owner_user_id="user_a",
+                    source_type="user_confirmation",
+                    content_encrypted="encrypted",
+                )
+            )
+            session.add(
+                Fact(
+                    id="fact_target",
+                    owner_user_id="user_a",
+                    kind="achievement",
+                    value_encrypted="encrypted target",
+                    status=FactStatus.UNCONFIRMED,
+                )
+            )
+            await session.flush()
+            repository = SqlAlchemyFactRepository(session)
+            await repository.record(
+                {
+                    "id": "fact_confirmed",
+                    "owner_user_id": "user_a",
+                    "kind": "achievement",
+                    "value_encrypted": "encrypted confirmed",
+                    "status": FactStatus.CONFIRMED,
+                    "confirmed_at": datetime.now(timezone.utc),
+                    "source_ids": ["source_1"],
+                }
+            )
+            await session.commit()
+
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    update(FactSource)
+                    .where(FactSource.fact_id == "fact_confirmed")
+                    .values(fact_id="fact_target")
+                )
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_resume_version_rejects_direct_orm_update():
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(User(id="user_a"))
+            await session.flush()
+            session.add(Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"))
+            await session.flush()
+            version = ResumeVersion(
+                id="version_a",
+                owner_user_id="user_a",
+                resume_id="resume_a",
+                snapshot_json={"title": "A"},
+                snapshot_hash="hash_a",
+                created_by="user_a",
+            )
+            session.add(version)
+            await session.commit()
+
+            version.snapshot_json = {"title": "mutated"}
+            with pytest.raises(IntegrityError):
+                await session.commit()
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_resume_version_rejects_direct_sql_delete():
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(User(id="user_a"))
+            await session.flush()
+            session.add(Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"))
+            await session.flush()
+            session.add(
+                ResumeVersion(
+                    id="version_a",
+                    owner_user_id="user_a",
+                    resume_id="resume_a",
+                    snapshot_json={"title": "A"},
+                    snapshot_hash="hash_a",
+                    created_by="user_a",
+                )
+            )
+            await session.commit()
+
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    delete(ResumeVersion).where(ResumeVersion.id == "version_a")
+                )
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
 def test_historical_usage_rows_cannot_be_updated_through_sql():
     async def run():
         engine = create_async_engine("sqlite+aiosqlite://")
@@ -390,4 +624,128 @@ def test_migration_0001_is_complete_and_downgrade_is_revision_scoped(tmp_path, m
         assert required_tables.isdisjoint(remaining_tables)
     finally:
         future_table.drop(engine, checkfirst=True)
+        engine.dispose()
+
+
+def test_migration_0001_rejects_resume_version_update(tmp_path, monkeypatch):
+    engine = migrated_sqlite_engine(tmp_path / "version-update.db", monkeypatch)
+    try:
+        with SyncSession(engine) as session:
+            seed_resume_version(session)
+            session.commit()
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    update(ResumeVersion)
+                    .where(ResumeVersion.id == "version_a")
+                    .values(snapshot_hash="mutated")
+                )
+    finally:
+        engine.dispose()
+
+
+def test_migration_0001_rejects_resume_version_delete(tmp_path, monkeypatch):
+    engine = migrated_sqlite_engine(tmp_path / "version-delete.db", monkeypatch)
+    try:
+        with SyncSession(engine) as session:
+            seed_resume_version(session)
+            session.commit()
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    delete(ResumeVersion).where(ResumeVersion.id == "version_a")
+                )
+    finally:
+        engine.dispose()
+
+
+def test_migration_0001_rejects_cross_owner_parent_version(tmp_path, monkeypatch):
+    engine = migrated_sqlite_engine(tmp_path / "version-parent.db", monkeypatch)
+
+    def enable_foreign_keys(dbapi_connection, _):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    event.listen(engine, "connect", enable_foreign_keys)
+    try:
+        with SyncSession(engine) as session:
+            session.add_all([User(id="user_a"), User(id="user_b")])
+            session.flush()
+            session.add_all(
+                [
+                    Resume(id="resume_a", owner_user_id="user_a", kind="base", title="A"),
+                    Resume(id="resume_b", owner_user_id="user_b", kind="base", title="B"),
+                ]
+            )
+            session.flush()
+            session.add(
+                ResumeVersion(
+                    id="version_b",
+                    owner_user_id="user_b",
+                    resume_id="resume_b",
+                    snapshot_json={"title": "B"},
+                    snapshot_hash="hash_b",
+                    created_by="user_b",
+                )
+            )
+            session.flush()
+            session.add(
+                ResumeVersion(
+                    id="version_a",
+                    owner_user_id="user_a",
+                    resume_id="resume_a",
+                    parent_version_id="version_b",
+                    snapshot_json={"title": "A"},
+                    snapshot_hash="hash_a",
+                    created_by="user_a",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        engine.dispose()
+
+
+def test_migration_0001_rejects_moving_confirmed_facts_last_source(tmp_path, monkeypatch):
+    engine = migrated_sqlite_engine(tmp_path / "fact-source-update.db", monkeypatch)
+    try:
+        with SyncSession(engine) as session:
+            session.add(User(id="user_a"))
+            session.flush()
+            session.add(
+                SourceRecord(
+                    id="source_1",
+                    owner_user_id="user_a",
+                    source_type="user_confirmation",
+                    content_encrypted="encrypted",
+                )
+            )
+            facts = [
+                Fact(
+                    id=identifier,
+                    owner_user_id="user_a",
+                    kind="achievement",
+                    value_encrypted="encrypted",
+                    status=FactStatus.UNCONFIRMED,
+                )
+                for identifier in ("fact_confirmed", "fact_target")
+            ]
+            session.add_all(facts)
+            session.flush()
+            session.add(
+                FactSource(
+                    fact_id="fact_confirmed",
+                    source_record_id="source_1",
+                    source_hash="source_hash",
+                    owner_user_id="user_a",
+                )
+            )
+            session.flush()
+            facts[0].status = FactStatus.CONFIRMED
+            facts[0].confirmed_at = datetime.now(timezone.utc)
+            session.commit()
+            with pytest.raises(IntegrityError):
+                session.execute(
+                    update(FactSource)
+                    .where(FactSource.fact_id == "fact_confirmed")
+                    .values(fact_id="fact_target")
+                )
+    finally:
         engine.dispose()
