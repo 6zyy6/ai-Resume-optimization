@@ -220,6 +220,22 @@ class Resume(OwnerMixin, Base):
             "AND job_description_id IS NOT NULL AND job_description_owner_user_id IS NOT NULL)",
             name="ck_targeted_resume_has_base_and_job",
         ),
+        CheckConstraint(
+            "(base_resume_id IS NULL AND base_resume_owner_user_id IS NULL) OR "
+            "(base_resume_id IS NOT NULL AND base_resume_owner_user_id IS NOT NULL)",
+            name="ck_resume_base_reference_paired",
+        ),
+        CheckConstraint(
+            "(job_description_id IS NULL AND job_description_owner_user_id IS NULL) OR "
+            "(job_description_id IS NOT NULL AND job_description_owner_user_id IS NOT NULL)",
+            name="ck_resume_job_reference_paired",
+        ),
+        CheckConstraint(
+            "kind <> 'base' OR "
+            "(base_resume_id IS NULL AND base_resume_owner_user_id IS NULL "
+            "AND job_description_id IS NULL AND job_description_owner_user_id IS NULL)",
+            name="ck_base_resume_has_no_references",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -714,8 +730,8 @@ event.listen(
         """
         CREATE TRIGGER trg_resume_references_same_canonical_owner_insert
         BEFORE INSERT ON resumes
-        WHEN NEW.kind = 'job_targeted' AND (
-          NOT EXISTS (
+        WHEN (
+          NEW.base_resume_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION ALL
@@ -729,7 +745,7 @@ event.listen(
             )
             SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
           )
-          OR NOT EXISTS (
+          OR NEW.job_description_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION ALL
@@ -759,8 +775,8 @@ event.listen(
         CREATE TRIGGER trg_resume_references_same_canonical_owner_update
         BEFORE UPDATE OF owner_user_id, base_resume_id, base_resume_owner_user_id,
           job_description_id, job_description_owner_user_id ON resumes
-        WHEN NEW.kind = 'job_targeted' AND (
-          NOT EXISTS (
+        WHEN (
+          NEW.base_resume_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION ALL
@@ -774,7 +790,7 @@ event.listen(
             )
             SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
           )
-          OR NOT EXISTS (
+          OR NEW.job_description_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION ALL

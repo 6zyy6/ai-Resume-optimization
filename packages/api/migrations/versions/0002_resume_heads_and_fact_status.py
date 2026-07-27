@@ -62,6 +62,22 @@ def upgrade() -> None:
             "(base_resume_id IS NOT NULL AND base_resume_owner_user_id IS NOT NULL "
             "AND job_description_id IS NOT NULL AND job_description_owner_user_id IS NOT NULL)",
         )
+        batch.create_check_constraint(
+            "ck_resume_base_reference_paired",
+            "(base_resume_id IS NULL AND base_resume_owner_user_id IS NULL) OR "
+            "(base_resume_id IS NOT NULL AND base_resume_owner_user_id IS NOT NULL)",
+        )
+        batch.create_check_constraint(
+            "ck_resume_job_reference_paired",
+            "(job_description_id IS NULL AND job_description_owner_user_id IS NULL) OR "
+            "(job_description_id IS NOT NULL AND job_description_owner_user_id IS NOT NULL)",
+        )
+        batch.create_check_constraint(
+            "ck_base_resume_has_no_references",
+            "kind <> 'base' OR "
+            "(base_resume_id IS NULL AND base_resume_owner_user_id IS NULL "
+            "AND job_description_id IS NULL AND job_description_owner_user_id IS NULL)",
+        )
 
     with op.batch_alter_table("resume_versions") as batch:
         batch.drop_constraint("uq_resume_snapshot_hash", type_="unique")
@@ -123,9 +139,13 @@ def downgrade() -> None:
         sa.text(
             """
             SELECT 1 FROM resumes
-            WHERE (base_resume_id IS NOT NULL
+            WHERE ((base_resume_id IS NULL AND base_resume_owner_user_id IS NOT NULL)
+                   OR (base_resume_id IS NOT NULL AND base_resume_owner_user_id IS NULL))
+               OR ((job_description_id IS NULL AND job_description_owner_user_id IS NOT NULL)
+                   OR (job_description_id IS NOT NULL AND job_description_owner_user_id IS NULL))
+               OR (base_resume_owner_user_id IS NOT NULL
                    AND base_resume_owner_user_id <> owner_user_id)
-               OR (job_description_id IS NOT NULL
+               OR (job_description_owner_user_id IS NOT NULL
                    AND job_description_owner_user_id <> owner_user_id)
             UNION ALL
             SELECT 1 FROM bullet_fact_links
@@ -201,6 +221,9 @@ def downgrade() -> None:
     with op.batch_alter_table("resumes") as batch:
         batch.drop_constraint("fk_resume_base_owner", type_="foreignkey")
         batch.drop_constraint("fk_resume_job_owner", type_="foreignkey")
+        batch.drop_constraint("ck_base_resume_has_no_references", type_="check")
+        batch.drop_constraint("ck_resume_job_reference_paired", type_="check")
+        batch.drop_constraint("ck_resume_base_reference_paired", type_="check")
         batch.drop_constraint("ck_targeted_resume_has_base_and_job", type_="check")
         batch.create_foreign_key(
             "fk_resume_base_owner",
@@ -286,8 +309,8 @@ def _sqlite_resume_reference_trigger(suffix: str, event: str) -> str:
     return f"""
         CREATE TRIGGER trg_resume_references_same_canonical_owner_{suffix}
         {event} ON resumes
-        WHEN NEW.kind = 'job_targeted' AND (
-          NOT EXISTS (
+        WHEN (
+          NEW.base_resume_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION
@@ -301,7 +324,7 @@ def _sqlite_resume_reference_trigger(suffix: str, event: str) -> str:
             )
             SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
           )
-          OR NOT EXISTS (
+          OR NEW.job_description_owner_user_id IS NOT NULL AND NOT EXISTS (
             WITH RECURSIVE resource_owner(id) AS (
               SELECT NEW.owner_user_id
               UNION
@@ -394,11 +417,12 @@ def _install_postgresql_resume_triggers() -> None:
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
           IF TG_TABLE_NAME = 'resumes'
-             AND NEW.kind = 'job_targeted'
              AND (
-               canonical_owner(NEW.owner_user_id)
+               NEW.base_resume_owner_user_id IS NOT NULL
+               AND canonical_owner(NEW.owner_user_id)
                  IS DISTINCT FROM canonical_owner(NEW.base_resume_owner_user_id)
-               OR canonical_owner(NEW.owner_user_id)
+               OR NEW.job_description_owner_user_id IS NOT NULL
+               AND canonical_owner(NEW.owner_user_id)
                  IS DISTINCT FROM canonical_owner(NEW.job_description_owner_user_id)
              ) THEN
             RAISE EXCEPTION 'resume references must share a canonical owner'

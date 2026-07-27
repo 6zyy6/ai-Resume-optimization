@@ -135,11 +135,20 @@ def test_seeded_0001_upgrade_backfills_head_and_keeps_next_parent(
                 "WHERE resume_version_id = 'version_targeted'"
             )
         ).scalar_one()
+        resume_checks = {
+            check["name"]
+            for check in inspect(connection).get_check_constraints("resumes")
+        }
     engine.dispose()
 
     assert row == (2, "version_2")
     assert targeted == ("usr_1", "usr_1")
     assert fact_owner == "usr_1"
+    assert {
+        "ck_base_resume_has_no_references",
+        "ck_resume_base_reference_paired",
+        "ck_resume_job_reference_paired",
+    } <= resume_checks
 
     async def save_next():
         async_engine = create_async_engine(
@@ -229,5 +238,59 @@ def test_duplicate_restore_downgrade_refuses_before_schema_mutation(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
         assert version == "0002"
+    finally:
+        engine.dispose()
+
+
+def test_nullable_reference_downgrade_refuses_before_schema_mutation(
+    tmp_path, monkeypatch
+):
+    """SQL NULL must not make an incompatible physical-owner pair evade preflight."""
+    database_path = tmp_path / "nullable-reference-downgrade.db"
+    config = _config(database_path, monkeypatch)
+    command.upgrade(config, "0002")
+    engine = create_engine(f"sqlite:///{database_path}")
+    now = datetime.now(timezone.utc).isoformat()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, status, locale, created_at) "
+                "VALUES ('usr_1', 'active', 'zh-CN', :now)"
+            ),
+            {"now": now},
+        )
+        connection.execute(text("PRAGMA ignore_check_constraints=ON"))
+        connection.execute(
+            text(
+                "INSERT INTO resumes "
+                "(id, owner_user_id, kind, title, base_resume_id, "
+                "base_resume_owner_user_id, head_version, created_at) "
+                "VALUES ('resume_bad', 'usr_1', 'base', 'Bad', "
+                "'missing_resume', NULL, 0, :now)"
+            ),
+            {"now": now},
+        )
+        connection.execute(text("PRAGMA ignore_check_constraints=OFF"))
+    before_columns = [
+        column["name"] for column in inspect(engine).get_columns("resumes")
+    ]
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="alias-owned references"):
+        command.downgrade(config, "0001")
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        assert [
+            column["name"] for column in inspect(engine).get_columns("resumes")
+        ] == before_columns
+        with engine.connect() as connection:
+            assert (
+                connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one()
+                == "0002"
+            )
     finally:
         engine.dispose()

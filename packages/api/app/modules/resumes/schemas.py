@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from app.contracts import ResumeSnapshot
 
@@ -13,6 +13,14 @@ class ResumeCreate(BaseModel):
     title: str
     base_resume_id: str | None = None
     job_description_id: str | None = None
+
+    @model_validator(mode="after")
+    def base_resume_has_no_references(self) -> "ResumeCreate":
+        if self.kind == "base" and (
+            self.base_resume_id is not None or self.job_description_id is not None
+        ):
+            raise ValueError("Base resumes cannot reference a base resume or job description")
+        return self
 
 
 class ResumeUpdate(BaseModel):

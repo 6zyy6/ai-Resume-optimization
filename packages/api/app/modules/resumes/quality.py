@@ -3,6 +3,51 @@ import re
 from typing import Any, Iterable
 
 
+_ENGLISH_STOPWORDS = {
+    "achieved",
+    "and",
+    "created",
+    "delivered",
+    "developed",
+    "enhanced",
+    "for",
+    "from",
+    "improved",
+    "increased",
+    "into",
+    "managed",
+    "optimized",
+    "reduced",
+    "resolved",
+    "supported",
+    "the",
+    "through",
+    "using",
+    "via",
+    "with",
+}
+_CHINESE_STOPWORDS = {
+    "以及",
+    "使用",
+    "优化",
+    "减少",
+    "协助",
+    "参与",
+    "完成",
+    "实现",
+    "支持",
+    "改进",
+    "提升",
+    "提高",
+    "推动",
+    "管理",
+    "负责",
+    "进行",
+    "通过",
+    "降低",
+}
+
+
 @dataclass(frozen=True)
 class QualityIssue:
     code: str
@@ -77,6 +122,16 @@ def _numbers(text: str) -> set[str]:
 
 
 def _shares_textual_evidence(claim: str, evidence: str) -> bool:
-    claim_terms = {term.lower() for term in re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}", claim)}
-    evidence_terms = {term.lower() for term in re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}", evidence)}
-    return bool(claim_terms & evidence_terms)
+    return bool(_content_terms(claim) & _content_terms(evidence))
+
+
+def _content_terms(text: str) -> set[str]:
+    english = {
+        term
+        for raw in re.findall(r"[A-Za-z]+", text)
+        if len(term := raw.lower()) >= 3 and term not in _ENGLISH_STOPWORDS
+    }
+    chinese: set[str] = set()
+    for span in re.findall(r"[\u4e00-\u9fff]+", text):
+        chinese.update(span[index : index + 2] for index in range(len(span) - 1))
+    return english | (chinese - _CHINESE_STOPWORDS)

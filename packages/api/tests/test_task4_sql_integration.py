@@ -251,6 +251,77 @@ def test_number_bearing_claim_still_requires_textual_evidence():
     ]
 
 
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        ("Increased revenue with 20%", "Resolved tickets with 20%"),
+        ("Increased revenue and retention", "Resolved tickets and incidents"),
+        ("Increased the conversion rate", "Reduced the response time"),
+        ("Improved revenue by 20%", "Improved response time by 20%"),
+        ("通过增长策略提升转化率20%", "通过客服流程解决工单20%"),
+        ("提升营收20%", "提升工单处理量20%"),
+    ],
+)
+def test_common_words_do_not_count_as_textual_evidence(claim, evidence):
+    facts = [
+        SimpleNamespace(
+            id="fact_common",
+            status="confirmed",
+            value_encrypted=evidence,
+        )
+    ]
+    snapshot = {
+        "sections": [
+            {
+                "items": [
+                    {
+                        "id": "bullet_common",
+                        "text": claim,
+                        "fact_refs": ["fact_common"],
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert [issue.code for issue in check_exportable(snapshot, facts)] == [
+        "BULLET_CLAIM_NOT_COVERED"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        ("Increased conversion by 12.5%", "Conversion increased by 12.5%"),
+        ("Processed 1,000 orders", "Handled 1000 customer orders"),
+        ("将转化率提升20%", "转化率同比提升20%"),
+    ],
+)
+def test_meaningful_english_and_chinese_terms_cover_valid_claims(claim, evidence):
+    facts = [
+        SimpleNamespace(
+            id="fact_meaningful",
+            status="confirmed",
+            value_encrypted=evidence,
+        )
+    ]
+    snapshot = {
+        "sections": [
+            {
+                "items": [
+                    {
+                        "id": "bullet_meaningful",
+                        "text": claim,
+                        "fact_refs": ["fact_meaningful"],
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert check_exportable(snapshot, facts) == []
+
+
 def test_claim_fact_mapping_requires_exact_cardinality():
     """Accepting surplus refs maps them onto the final claim range."""
     facts = [
@@ -577,6 +648,58 @@ async def test_alias_reference_trigger_rejects_an_unrelated_physical_owner(
                 base_resume_owner_user_id="usr_a",
                 job_description_id="job_b",
                 job_description_owner_user_id="usr_b",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+
+@pytest.mark.anyio
+async def test_base_resume_cannot_bypass_reference_owner_with_null(task4_sessions):
+    """MATCH SIMPLE accepts an arbitrary id when its physical-owner column is NULL."""
+    async with task4_sessions.begin() as session:
+        session.add(User(id="usr_nullable"))
+
+    async with task4_sessions.begin() as session:
+        session.add(
+            Resume(
+                id="resume_nullable_bypass",
+                owner_user_id="usr_nullable",
+                kind="base",
+                title="Invalid base",
+                base_resume_id="arbitrary_missing_resume",
+                base_resume_owner_user_id=None,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+
+@pytest.mark.anyio
+async def test_every_non_null_resume_reference_enforces_canonical_owner(
+    task4_sessions,
+):
+    """Canonical-owner enforcement must not depend on the public kind enum."""
+    async with task4_sessions.begin() as session:
+        session.add_all([User(id="usr_reference_a"), User(id="usr_reference_b")])
+        await session.flush()
+        session.add(
+            Resume(
+                id="resume_reference_b",
+                owner_user_id="usr_reference_b",
+                kind="base",
+                title="B",
+            )
+        )
+        await session.flush()
+        session.add(
+            Resume(
+                id="resume_reference_bypass",
+                owner_user_id="usr_reference_a",
+                kind="legacy",
+                title="Invalid legacy",
+                base_resume_id="resume_reference_b",
+                base_resume_owner_user_id="usr_reference_b",
             )
         )
         with pytest.raises(IntegrityError):

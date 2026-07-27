@@ -122,9 +122,15 @@ class FactService:
     async def set_status(self, owner_id: str, fact_id: str, status: str, idempotency_key: str) -> FactWriteResult:
         async with self.idempotency.transaction(self.sessions) as session:
             canonical = await canonical_user_id(session, owner_id)
-            route = f"/v1/facts/{fact_id}/{status}"
+            route = f"/v1/facts/{fact_id}/status"
             try:
-                claim = await self.idempotency.claim(session, canonical, route, idempotency_key, {})
+                claim = await self.idempotency.claim(
+                    session,
+                    canonical,
+                    route,
+                    idempotency_key,
+                    {"status": status},
+                )
             except IdempotencyConflict:
                 raise FactError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request", 409)
             if claim.is_replay:

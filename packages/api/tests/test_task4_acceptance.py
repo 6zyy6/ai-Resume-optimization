@@ -5,12 +5,18 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    BulletFactLink,
     Fact,
+    FactRevision,
     FactSource,
     IdempotencyRecord,
+    Resume,
     ResumeVersion,
+    SourceRecord,
+    VersionOperation,
 )
 from app.modules.facts.service import FactService
 from app.modules.resumes.service import ResumeService
@@ -21,6 +27,33 @@ from test_resume_versions import (
     _resume,
     _snapshot,
     resume_client,
+)
+
+SEMANTIC_CONFLICT_OPERATIONS = (
+    "fact_create",
+    "fact_update",
+    "fact_status",
+    "resume_create",
+    "resume_update",
+    "version_save",
+    "version_restore",
+)
+TRANSACTION_OPERATIONS = (
+    "fact_create",
+    "fact_update",
+    "fact_confirm",
+    "fact_reject",
+    "resume_create",
+    "resume_update",
+    "version_save",
+    "version_restore",
+)
+FAILURE_POINTS = (
+    "claim_before",
+    "claim_after",
+    "complete_before",
+    "complete_after",
+    "commit_before",
 )
 
 
@@ -213,36 +246,202 @@ def test_five_resource_owner_matrix_stays_hidden(fact_client, resume_client):
         ).status_code == 404
 
 
-def test_failure_injection_rolls_back_resource_and_claim(
-    fact_client, resume_client, monkeypatch
+@pytest.mark.parametrize("operation", SEMANTIC_CONFLICT_OPERATIONS)
+def test_twenty_semantic_conflicts_per_public_write_class(
+    operation, fact_client, resume_client
 ):
+    """Every Task 4 public write class binds one key to one semantic body."""
     fact_http, fact_sessions = fact_client
-    fact_service = fact_http.app.state.fact_service
-
-    async def fail_complete(*_):
-        raise RuntimeError("injected failure")
-
-    monkeypatch.setattr(fact_service.idempotency, "complete", fail_complete)
-    with pytest.raises(RuntimeError, match="injected failure"):
-        fact_http.post(
-            "/v1/facts",
-            json={"kind": "metric", "value": "rolled back"},
-            headers=fact_headers("failure-fact"),
-        )
-    assert _run(_counts(fact_sessions, Fact, IdempotencyRecord)) == (0, 0)
-
     resume_http, resume_sessions = resume_client
-    resume_id = _resume(resume_http, "failure-resume-create")
-    resume_service = resume_http.app.state.resume_service
-    monkeypatch.setattr(resume_service.idempotency, "complete", fail_complete)
-    with pytest.raises(RuntimeError, match="injected failure"):
-        resume_http.post(
-            f"/v1/resumes/{resume_id}/versions",
-            json={"base_version": 0, "snapshot": _snapshot("rolled back")},
-            headers=_headers("failure-version"),
+    key_prefix = f"semantic-{operation}-"
+
+    if operation == "fact_create":
+        for index in range(20):
+            winner = fact_http.post(
+                "/v1/facts",
+                json={
+                    "kind": "metric",
+                    "value": f"Increased revenue {index}%",
+                    "status": "confirmed",
+                    "sources": [
+                        {
+                            "source_type": "user_confirmation",
+                            "content": f"Increased revenue {index}%",
+                        }
+                    ],
+                },
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            loser = fact_http.post(
+                "/v1/facts",
+                json={"kind": "metric", "value": f"Resolved tickets {index}%"},
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 201)
+        assert _run(_counts(fact_sessions, Fact, SourceRecord, FactSource)) == (
+            20,
+            20,
+            20,
         )
-    assert _run(_counts(resume_sessions, ResumeVersion)) == (0,)
-    assert _run(_route_claim_count(resume_sessions, "failure-version")) == 0
+        sessions = fact_sessions
+    elif operation == "fact_update":
+        fact_id = fact_http.post(
+            "/v1/facts",
+            json={"kind": "metric", "value": "initial"},
+            headers=fact_headers("semantic-update-setup"),
+        ).json()["id"]
+        for index in range(20):
+            winner = fact_http.patch(
+                f"/v1/facts/{fact_id}",
+                json={"value": f"winner-{index}"},
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            loser = fact_http.patch(
+                f"/v1/facts/{fact_id}",
+                json={"value": f"loser-{index}"},
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 200)
+        assert _run(_counts(fact_sessions, Fact, FactRevision)) == (1, 20)
+        sessions = fact_sessions
+    elif operation == "fact_status":
+        fact_id = fact_http.post(
+            "/v1/facts",
+            json={
+                "kind": "metric",
+                "value": "sourced",
+                "sources": [
+                    {"source_type": "user_confirmation", "content": "sourced"}
+                ],
+            },
+            headers=fact_headers("semantic-status-setup"),
+        ).json()["id"]
+        for index in range(20):
+            winner = fact_http.post(
+                f"/v1/facts/{fact_id}/confirm",
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            loser = fact_http.post(
+                f"/v1/facts/{fact_id}/reject",
+                headers=fact_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 200)
+        assert _run(_counts(fact_sessions, Fact, SourceRecord, FactSource)) == (
+            1,
+            1,
+            1,
+        )
+        assert _run(_fact_status(fact_sessions, fact_id)) == "confirmed"
+        sessions = fact_sessions
+    elif operation == "resume_create":
+        for index in range(20):
+            winner = resume_http.post(
+                "/v1/resumes",
+                json={"kind": "base", "title": f"Winner {index}"},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            loser = resume_http.post(
+                "/v1/resumes",
+                json={"kind": "base", "title": f"Loser {index}"},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 201)
+        assert _run(_counts(resume_sessions, Resume)) == (20,)
+        sessions = resume_sessions
+    elif operation == "resume_update":
+        resume_id = _resume(resume_http, "semantic-resume-update-setup")
+        for index in range(20):
+            winner = resume_http.patch(
+                f"/v1/resumes/{resume_id}",
+                json={"title": f"Winner {index}"},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            loser = resume_http.patch(
+                f"/v1/resumes/{resume_id}",
+                json={"title": f"Loser {index}"},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 200)
+        assert _run(_counts(resume_sessions, Resume)) == (1,)
+        sessions = resume_sessions
+    elif operation == "version_save":
+        resume_id = _resume(resume_http, "semantic-version-save-setup")
+        for index in range(20):
+            winner = resume_http.post(
+                f"/v1/resumes/{resume_id}/versions",
+                json={
+                    "base_version": index,
+                    "snapshot": _snapshot(f"Winner {index}"),
+                },
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            loser = resume_http.post(
+                f"/v1/resumes/{resume_id}/versions",
+                json={
+                    "base_version": index,
+                    "snapshot": _snapshot(f"Loser {index}"),
+                },
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 201)
+        assert _run(_counts(resume_sessions, ResumeVersion, VersionOperation)) == (
+            20,
+            20,
+        )
+        sessions = resume_sessions
+    else:
+        resume_id = _resume(resume_http, "semantic-version-restore-setup")
+        source_id = resume_http.post(
+            f"/v1/resumes/{resume_id}/versions",
+            json={"base_version": 0, "snapshot": _snapshot("Source")},
+            headers=_headers("semantic-version-restore-source"),
+        ).json()["id"]
+        for index in range(20):
+            winner = resume_http.post(
+                f"/v1/resumes/{resume_id}/versions/{source_id}/restore",
+                json={"base_version": index + 1},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            loser = resume_http.post(
+                f"/v1/resumes/{resume_id}/versions/{source_id}/restore",
+                json={"base_version": index + 2},
+                headers=_headers(f"{key_prefix}{index}"),
+            )
+            _assert_semantic_conflict(winner, loser, 201)
+        assert _run(_counts(resume_sessions, ResumeVersion, VersionOperation)) == (
+            21,
+            21,
+        )
+        assert _run(_operation_count(resume_sessions, "restore")) == 20
+        sessions = resume_sessions
+
+    claims = _run(_claims_for_prefix(sessions, key_prefix))
+    assert len(claims) == 20
+    assert {claim.response_status for claim in claims} <= {200, 201}
+    if operation == "fact_status":
+        assert {claim.route for claim in claims} == {
+            f"/v1/facts/{fact_id}/status"
+        }
+
+
+@pytest.mark.parametrize("operation", TRANSACTION_OPERATIONS)
+@pytest.mark.parametrize("failure_point", FAILURE_POINTS)
+def test_task4_transaction_failure_matrix_has_no_partial_state(
+    operation, failure_point, fact_client, resume_client, monkeypatch
+):
+    """Eight transaction classes stay atomic at five generic failure points."""
+    service, sessions, invoke = _prepare_failure_operation(
+        operation,
+        fact_client,
+        resume_client,
+    )
+    before = _run(_durable_task4_state(sessions))
+    _inject_failure(monkeypatch, service, failure_point)
+
+    with pytest.raises(RuntimeError, match=f"injected {failure_point}"):
+        _run(invoke())
+
+    assert _run(_durable_task4_state(sessions)) == before
 
 
 def test_confirmed_source_database_audit_has_no_orphans(fact_client):
@@ -421,6 +620,365 @@ def test_one_thousand_edit_history_preserves_parent_chain_and_hashes(
     _run(_create_history(service, resume.id))
 
     assert _run(_history_audit(sessions, resume.id)) == (1000, 1000, True)
+
+
+def _assert_semantic_conflict(winner, loser, winner_status):
+    assert winner.status_code == winner_status
+    assert loser.status_code == 409
+    assert loser.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+
+
+def _prepare_failure_operation(operation, fact_client, resume_client):
+    _, fact_sessions = fact_client
+    _, resume_sessions = resume_client
+    if operation.startswith("fact_"):
+        service = FactService(fact_sessions)
+        sessions = fact_sessions
+        if operation == "fact_create":
+            return service, sessions, lambda: service.create_fact(
+                "usr_a",
+                kind="metric",
+                value="Increased conversion by 20%",
+                status="confirmed",
+                sources=[
+                    {
+                        "source_type": "user_confirmation",
+                        "content": "Increased conversion by 20%",
+                    }
+                ],
+                idempotency_key="failure-fact-create",
+            )
+        fact = _run(
+            service.create_fact(
+                "usr_a",
+                kind="metric",
+                value="Increased conversion by 20%",
+                sources=(
+                    [
+                        {
+                            "source_type": "user_confirmation",
+                            "content": "Increased conversion by 20%",
+                        }
+                    ]
+                    if operation == "fact_confirm"
+                    else []
+                ),
+            )
+        )
+        if operation == "fact_update":
+            return service, sessions, lambda: service.update_fact(
+                "usr_a",
+                fact.id,
+                {"value": "Increased conversion by 25%"},
+                "failure-fact-update",
+            )
+        status = "confirmed" if operation == "fact_confirm" else "rejected"
+        return service, sessions, lambda: service.set_status(
+            "usr_a",
+            fact.id,
+            status,
+            f"failure-fact-{status}",
+        )
+
+    service = ResumeService(resume_sessions)
+    sessions = resume_sessions
+    if operation == "resume_create":
+        return service, sessions, lambda: service.create_resume(
+            "usr_a",
+            {
+                "kind": "base",
+                "title": "Atomic create",
+                "base_resume_id": None,
+                "job_description_id": None,
+            },
+            "failure-resume-create",
+        )
+    resume = _run(
+        service.create_resume(
+            "usr_a",
+            {
+                "kind": "base",
+                "title": "Atomic setup",
+                "base_resume_id": None,
+                "job_description_id": None,
+            },
+            f"failure-{operation}-setup",
+        )
+    )
+    if operation == "resume_update":
+        return service, sessions, lambda: service.update_resume(
+            "usr_a",
+            resume.id,
+            "Atomic update",
+            "failure-resume-update",
+        )
+    if operation == "version_save":
+        fact = _run(
+            FactService(resume_sessions).create_fact(
+                "usr_a",
+                kind="metric",
+                value="Increased conversion by 20%",
+                status="confirmed",
+                sources=[
+                    {
+                        "source_type": "user_confirmation",
+                        "content": "Increased conversion by 20%",
+                    }
+                ],
+            )
+        )
+        snapshot = {
+            **_snapshot("Atomic version"),
+            "sections": [
+                {
+                    "id": "section_atomic",
+                    "type": "experience",
+                    "title": "Experience",
+                    "items": [
+                        {
+                            "id": "bullet_atomic",
+                            "text": "Increased conversion by 20%",
+                            "fact_refs": [fact.id],
+                        }
+                    ],
+                }
+            ],
+        }
+        return service, sessions, lambda: service.save_resume_version(
+            "usr_a",
+            resume.id,
+            0,
+            snapshot,
+            "failure-version-save",
+        )
+    source = _run(
+        service.save_resume_version(
+            "usr_a",
+            resume.id,
+            0,
+            _snapshot("Restore source"),
+            "failure-restore-source",
+        )
+    )
+    return service, sessions, lambda: service.restore(
+        "usr_a",
+        resume.id,
+        source.row.id,
+        1,
+        "failure-version-restore",
+    )
+
+
+def _inject_failure(monkeypatch, service, failure_point):
+    if failure_point.startswith("claim_"):
+        original = service.idempotency.claim
+
+        async def fail_claim(*args, **kwargs):
+            if failure_point == "claim_before":
+                raise RuntimeError(f"injected {failure_point}")
+            claim = await original(*args, **kwargs)
+            raise RuntimeError(f"injected {failure_point}")
+
+        monkeypatch.setattr(service.idempotency, "claim", fail_claim)
+        return
+    if failure_point.startswith("complete_"):
+        original = service.idempotency.complete
+
+        async def fail_complete(*args, **kwargs):
+            if failure_point == "complete_before":
+                raise RuntimeError(f"injected {failure_point}")
+            await original(*args, **kwargs)
+            raise RuntimeError(f"injected {failure_point}")
+
+        monkeypatch.setattr(service.idempotency, "complete", fail_complete)
+        return
+
+    async def fail_commit(_session):
+        raise RuntimeError(f"injected {failure_point}")
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+
+
+async def _claims_for_prefix(sessions, prefix):
+    async with sessions() as session:
+        rows = (
+            await session.scalars(
+                select(IdempotencyRecord).order_by(IdempotencyRecord.key)
+            )
+        ).all()
+        return [row for row in rows if row.key.startswith(prefix)]
+
+
+async def _fact_status(sessions, fact_id):
+    async with sessions() as session:
+        return await session.scalar(select(Fact.status).where(Fact.id == fact_id))
+
+
+async def _operation_count(sessions, operation_type):
+    async with sessions() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(VersionOperation)
+            .where(VersionOperation.operation_type == operation_type)
+        )
+
+
+async def _durable_task4_state(sessions):
+    async with sessions() as session:
+        facts = list(
+            (
+                await session.execute(
+                    select(
+                        Fact.id,
+                        Fact.owner_user_id,
+                        Fact.kind,
+                        Fact.value_encrypted,
+                        Fact.status,
+                        Fact.confirmed_at,
+                    ).order_by(Fact.id)
+                )
+            ).all()
+        )
+        sources = list(
+            (
+                await session.execute(
+                    select(
+                        SourceRecord.id,
+                        SourceRecord.owner_user_id,
+                        SourceRecord.source_type,
+                        SourceRecord.source_ref,
+                        SourceRecord.content_encrypted,
+                    ).order_by(SourceRecord.id)
+                )
+            ).all()
+        )
+        fact_sources = list(
+            (
+                await session.execute(
+                    select(
+                        FactSource.fact_id,
+                        FactSource.source_record_id,
+                        FactSource.owner_user_id,
+                        FactSource.source_hash,
+                    ).order_by(
+                        FactSource.fact_id,
+                        FactSource.source_record_id,
+                        FactSource.source_hash,
+                    )
+                )
+            ).all()
+        )
+        fact_revisions = list(
+            (
+                await session.execute(
+                    select(
+                        FactRevision.id,
+                        FactRevision.fact_id,
+                        FactRevision.owner_user_id,
+                        FactRevision.previous_value_hash,
+                        FactRevision.new_value_encrypted,
+                        FactRevision.actor,
+                    ).order_by(FactRevision.id)
+                )
+            ).all()
+        )
+        resumes = list(
+            (
+                await session.execute(
+                    select(
+                        Resume.id,
+                        Resume.owner_user_id,
+                        Resume.kind,
+                        Resume.title,
+                        Resume.base_resume_id,
+                        Resume.base_resume_owner_user_id,
+                        Resume.job_description_id,
+                        Resume.job_description_owner_user_id,
+                        Resume.head_version,
+                        Resume.head_version_id,
+                    ).order_by(Resume.id)
+                )
+            ).all()
+        )
+        versions = [
+            (
+                row.id,
+                row.owner_user_id,
+                row.resume_id,
+                row.parent_version_id,
+                json.dumps(row.snapshot_json, sort_keys=True),
+                row.snapshot_hash,
+                row.created_by,
+            )
+            for row in (
+                await session.scalars(
+                    select(ResumeVersion).order_by(ResumeVersion.id)
+                )
+            ).all()
+        ]
+        operations = [
+            (
+                row.id,
+                row.owner_user_id,
+                row.version_id,
+                row.operation_type,
+                row.actor,
+                json.dumps(row.metadata_json, sort_keys=True),
+            )
+            for row in (
+                await session.scalars(
+                    select(VersionOperation).order_by(VersionOperation.id)
+                )
+            ).all()
+        ]
+        links = [
+            (
+                row.resume_version_id,
+                row.bullet_id,
+                row.fact_id,
+                row.fact_owner_user_id,
+                row.owner_user_id,
+                json.dumps(row.claim_range, sort_keys=True),
+            )
+            for row in (
+                await session.scalars(
+                    select(BulletFactLink).order_by(
+                        BulletFactLink.resume_version_id,
+                        BulletFactLink.bullet_id,
+                        BulletFactLink.fact_id,
+                    )
+                )
+            ).all()
+        ]
+        claims = [
+            (
+                row.id,
+                row.owner_user_id,
+                row.route,
+                row.key,
+                row.body_hash,
+                row.response_status,
+                json.dumps(row.response_json, sort_keys=True)
+                if row.response_json is not None
+                else None,
+            )
+            for row in (
+                await session.scalars(
+                    select(IdempotencyRecord).order_by(IdempotencyRecord.id)
+                )
+            ).all()
+        ]
+        return (
+            facts,
+            sources,
+            fact_sources,
+            fact_revisions,
+            resumes,
+            versions,
+            operations,
+            links,
+            claims,
+        )
 
 
 async def _counts(sessions, *models):

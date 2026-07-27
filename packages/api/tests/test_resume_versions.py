@@ -7,11 +7,18 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
-from app.db.models import Base, IdempotencyRecord, JobDescription, ResumeVersion, User
+from app.db.models import (
+    Base,
+    IdempotencyRecord,
+    JobDescription,
+    Resume,
+    ResumeVersion,
+    User,
+)
 from app.main import create_app
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
-from app.modules.resumes.service import ResumeService
+from app.modules.resumes.service import ResumeError, ResumeService
 
 
 def _run(awaitable):
@@ -132,6 +139,74 @@ def test_owner_cannot_read_or_write_another_users_resume(resume_client):
     assert client.patch(
         f"/v1/resumes/{other.id}", json={"title": "Stolen"}, headers=_headers("other-write")
     ).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "kind": "base",
+            "title": "Arbitrary resume",
+            "base_resume_id": "missing_resume",
+        },
+        {
+            "kind": "base",
+            "title": "Arbitrary job",
+            "job_description_id": "missing_job",
+        },
+    ],
+)
+def test_base_resume_rejects_arbitrary_references(resume_client, payload):
+    client, _ = resume_client
+
+    response = client.post(
+        "/v1/resumes",
+        json=payload,
+        headers=_headers(f"base-arbitrary-{payload['title']}"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_base_resume_rejects_cross_user_references(resume_client):
+    client, sessions = resume_client
+    _run(_seed_cross_user_references(sessions))
+
+    response = client.post(
+        "/v1/resumes",
+        json={
+            "kind": "base",
+            "title": "Cross-user base",
+            "base_resume_id": "resume_usr_b",
+            "job_description_id": "job_usr_b",
+        },
+        headers=_headers("base-cross-user"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_resume_service_rejects_base_references_with_stable_error(resume_client):
+    _, sessions = resume_client
+
+    with pytest.raises(ResumeError) as caught:
+        _run(
+            ResumeService(sessions).create_resume(
+                "usr_a",
+                {
+                    "kind": "base",
+                    "title": "Service bypass",
+                    "base_resume_id": "missing_resume",
+                    "job_description_id": None,
+                },
+                "base-service-bypass",
+            )
+        )
+
+    assert caught.value.code == "VALIDATION_FAILED"
+    assert caught.value.status_code == 422
 
 
 def test_identical_snapshot_does_not_create_a_second_version(resume_client):
@@ -266,6 +341,27 @@ def test_rejected_version_write_rolls_back_its_idempotency_record(resume_client)
 async def _job(sessions):
     async with sessions.begin() as session:
         session.add(JobDescription(id="job_1", owner_user_id="usr_a", title="Role", raw_encrypted="jd", status="ready"))
+
+
+async def _seed_cross_user_references(sessions):
+    async with sessions.begin() as session:
+        session.add_all(
+            [
+                Resume(
+                    id="resume_usr_b",
+                    owner_user_id="usr_b",
+                    kind="base",
+                    title="B",
+                ),
+                JobDescription(
+                    id="job_usr_b",
+                    owner_user_id="usr_b",
+                    title="B",
+                    raw_encrypted="jd",
+                    status="ready",
+                ),
+            ]
+        )
 
 
 async def _version_count(sessions, resume_id: str) -> int:

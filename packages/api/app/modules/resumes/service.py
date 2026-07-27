@@ -50,6 +50,15 @@ class ResumeService:
         self.idempotency = IdempotencyService()
 
     async def create_resume(self, owner_id: str, values: dict[str, Any], idempotency_key: str) -> SavedResume:
+        if values["kind"] == "base" and (
+            values.get("base_resume_id") is not None
+            or values.get("job_description_id") is not None
+        ):
+            raise ResumeError(
+                "VALIDATION_FAILED",
+                "Base resumes cannot reference a base resume or job description",
+                422,
+            )
         async with self.idempotency.transaction(self.sessions) as session:
             canonical = await canonical_user_id(session, owner_id)
             route = "/v1/resumes"
