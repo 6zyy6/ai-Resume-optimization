@@ -205,17 +205,19 @@ class Resume(OwnerMixin, Base):
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_resume_owner"),
         ForeignKeyConstraint(
-            ["base_resume_id", "owner_user_id"],
+            ["base_resume_id", "base_resume_owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
             name="fk_resume_base_owner",
         ),
         ForeignKeyConstraint(
-            ["job_description_id", "owner_user_id"],
+            ["job_description_id", "job_description_owner_user_id"],
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_resume_job_owner",
         ),
         CheckConstraint(
-            "kind <> 'job_targeted' OR (base_resume_id IS NOT NULL AND job_description_id IS NOT NULL)",
+            "kind <> 'job_targeted' OR "
+            "(base_resume_id IS NOT NULL AND base_resume_owner_user_id IS NOT NULL "
+            "AND job_description_id IS NOT NULL AND job_description_owner_user_id IS NOT NULL)",
             name="ck_targeted_resume_has_base_and_job",
         ),
     )
@@ -224,7 +226,9 @@ class Resume(OwnerMixin, Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     base_resume_id: Mapped[str | None] = mapped_column(String(64))
+    base_resume_owner_user_id: Mapped[str | None] = mapped_column(String(64))
     job_description_id: Mapped[str | None] = mapped_column(String(64))
+    job_description_owner_user_id: Mapped[str | None] = mapped_column(String(64))
     head_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     head_version_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -281,7 +285,7 @@ class BulletFactLink(OwnerMixin, Base):
             name="fk_bullet_fact_version_owner",
         ),
         ForeignKeyConstraint(
-            ["fact_id", "owner_user_id"],
+            ["fact_id", "fact_owner_user_id"],
             ["facts.id", "facts.owner_user_id"],
             name="fk_bullet_fact_fact_owner",
         ),
@@ -290,6 +294,7 @@ class BulletFactLink(OwnerMixin, Base):
     resume_version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     bullet_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     fact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    fact_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_range: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
@@ -655,6 +660,194 @@ event.listen(
           )
         BEGIN
           SELECT RAISE(ABORT, 'confirmed fact requires a source');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_head_insert_matches_version
+        BEFORE INSERT ON resumes
+        WHEN NEW.head_version_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM resume_versions
+            WHERE id = NEW.head_version_id
+              AND resume_id = NEW.id
+              AND owner_user_id = NEW.owner_user_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'resume head must reference its own version');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_head_matches_version
+        BEFORE UPDATE OF head_version, head_version_id ON resumes
+        WHEN NEW.head_version_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM resume_versions
+            WHERE id = NEW.head_version_id
+              AND resume_id = NEW.id
+              AND owner_user_id = NEW.owner_user_id
+          )
+        BEGIN
+          SELECT RAISE(ABORT, 'resume head must reference its own version');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_references_same_canonical_owner_insert
+        BEFORE INSERT ON resumes
+        WHEN NEW.kind = 'job_targeted' AND (
+          NOT EXISTS (
+            WITH RECURSIVE resource_owner(id) AS (
+              SELECT NEW.owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+            ), reference_owner(id) AS (
+              SELECT NEW.base_resume_owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+            )
+            SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+          )
+          OR NOT EXISTS (
+            WITH RECURSIVE resource_owner(id) AS (
+              SELECT NEW.owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+            ), reference_owner(id) AS (
+              SELECT NEW.job_description_owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+            )
+            SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+          )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'resume references must share a canonical owner');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_resume_references_same_canonical_owner_update
+        BEFORE UPDATE OF owner_user_id, base_resume_id, base_resume_owner_user_id,
+          job_description_id, job_description_owner_user_id ON resumes
+        WHEN NEW.kind = 'job_targeted' AND (
+          NOT EXISTS (
+            WITH RECURSIVE resource_owner(id) AS (
+              SELECT NEW.owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+            ), reference_owner(id) AS (
+              SELECT NEW.base_resume_owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+            )
+            SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+          )
+          OR NOT EXISTS (
+            WITH RECURSIVE resource_owner(id) AS (
+              SELECT NEW.owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+            ), reference_owner(id) AS (
+              SELECT NEW.job_description_owner_user_id
+              UNION ALL
+              SELECT ua.canonical_user_id
+              FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+            )
+            SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+          )
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'resume references must share a canonical owner');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_bullet_fact_same_canonical_owner_insert
+        BEFORE INSERT ON bullet_fact_links
+        WHEN NOT EXISTS (
+          WITH RECURSIVE resource_owner(id) AS (
+            SELECT NEW.owner_user_id
+            UNION ALL
+            SELECT ua.canonical_user_id
+            FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+          ), reference_owner(id) AS (
+            SELECT NEW.fact_owner_user_id
+            UNION ALL
+            SELECT ua.canonical_user_id
+            FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+          )
+          SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'bullet fact must share a canonical owner');
+        END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+
+event.listen(
+    Base.metadata,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_bullet_fact_same_canonical_owner_update
+        BEFORE UPDATE OF owner_user_id, fact_id, fact_owner_user_id
+        ON bullet_fact_links
+        WHEN NOT EXISTS (
+          WITH RECURSIVE resource_owner(id) AS (
+            SELECT NEW.owner_user_id
+            UNION ALL
+            SELECT ua.canonical_user_id
+            FROM user_aliases ua JOIN resource_owner ro ON ua.alias_user_id = ro.id
+          ), reference_owner(id) AS (
+            SELECT NEW.fact_owner_user_id
+            UNION ALL
+            SELECT ua.canonical_user_id
+            FROM user_aliases ua JOIN reference_owner ro ON ua.alias_user_id = ro.id
+          )
+          SELECT 1 FROM resource_owner JOIN reference_owner USING (id)
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'bullet fact must share a canonical owner');
         END
         """
     ).execute_if(dialect="sqlite"),

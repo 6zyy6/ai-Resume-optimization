@@ -7,7 +7,7 @@ from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.facts.schemas import FactCreate, FactListResponse, FactResponse, FactSourcesResponse, FactUpdate, SourceInput
 from app.contracts import FactStatus
-from app.modules.facts.service import FactError, FactService
+from app.modules.facts.service import FactError, FactService, FactWriteResult
 
 
 router = APIRouter(prefix="/v1/facts", tags=["facts"], responses={status: {"model": ApiErrorEnvelope} for status in (401, 404, 409, 422)})
@@ -28,6 +28,8 @@ def _raise(request: Request, error: FactError) -> None:
 
 
 async def _response(service: FactService, fact) -> FactResponse:
+    if isinstance(fact, FactWriteResult):
+        return FactResponse.model_validate(fact.response, strict=False)
     async with service.sessions() as session:
         return FactResponse(id=fact.id, kind=fact.kind, value=fact.value_encrypted, status=FactStatus(fact.status), source_ids=await service.source_ids(session, fact), confirmed_at=fact.confirmed_at)
 

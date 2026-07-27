@@ -324,6 +324,7 @@ def test_sql_and_memory_adapters_import_independently():
             check=False,
             capture_output=True,
             text=True,
+            cwd=Path(__file__).resolve().parents[1],
         )
         assert completed.returncode == 0, completed.stderr
 

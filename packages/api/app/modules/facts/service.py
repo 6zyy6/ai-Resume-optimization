@@ -1,5 +1,5 @@
 import hashlib
-from base64 import urlsafe_b64decode, urlsafe_b64encode
+from base64 import b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -13,11 +13,20 @@ from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 
 
-@dataclass(frozen=True)
+@dataclass
 class FactError(Exception):
     code: str
     message: str
     status_code: int
+
+
+@dataclass(frozen=True)
+class FactWriteResult:
+    response: dict[str, Any]
+
+    @property
+    def id(self) -> str:
+        return self.response["id"]
 
 
 class FactService:
@@ -48,19 +57,18 @@ class FactService:
         sources: list[dict[str, Any]],
         status: str = "unconfirmed",
         idempotency_key: str | None = None,
-    ) -> Fact:
+    ) -> FactWriteResult:
         body = {"kind": kind, "value": value, "sources": sources, "status": status}
-        async with self.sessions.begin() as session:
+        async with self.idempotency.transaction(self.sessions) as session:
             canonical = await canonical_user_id(session, owner_id)
+            claim = None
             if idempotency_key:
                 try:
-                    replay = await self.idempotency.replay(session, canonical, "/v1/facts", idempotency_key, body)
+                    claim = await self.idempotency.claim(session, canonical, "/v1/facts", idempotency_key, body)
                 except IdempotencyConflict:
                     raise FactError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request", 409)
-                if replay:
-                    result = await self._fact(session, owner_id, replay[1]["id"])
-                    if result:
-                        return result
+                if claim.is_replay:
+                    return FactWriteResult(claim.replay_response or {})
 
             if status == "confirmed" and not sources:
                 raise FactError("FACT_SOURCE_REQUIRED", "Confirmed facts require a source", 422)
@@ -75,24 +83,26 @@ class FactService:
             elif status == "rejected":
                 fact.status = "rejected"
                 await session.flush()
-            if idempotency_key:
-                await self.idempotency.store(session, canonical, "/v1/facts", idempotency_key, body, 201, {"id": fact.id})
-            return fact
+            response = await self._response_json(session, fact)
+            if claim:
+                await self.idempotency.complete(session, claim, 201, response)
+            return FactWriteResult(response)
 
-    async def update_fact(self, owner_id: str, fact_id: str, values: dict[str, Any], idempotency_key: str) -> Fact:
-        async with self.sessions.begin() as session:
+    async def update_fact(self, owner_id: str, fact_id: str, values: dict[str, Any], idempotency_key: str) -> FactWriteResult:
+        async with self.idempotency.transaction(self.sessions) as session:
             canonical = await canonical_user_id(session, owner_id)
             try:
-                replay = await self.idempotency.replay(session, canonical, f"/v1/facts/{fact_id}", idempotency_key, values)
+                claim = await self.idempotency.claim(session, canonical, f"/v1/facts/{fact_id}", idempotency_key, values)
             except IdempotencyConflict:
                 raise FactError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request", 409)
-            if replay:
-                result = await self._fact(session, owner_id, fact_id)
-                if result:
-                    return result
-            fact = await self._fact(session, owner_id, fact_id)
+            if claim.is_replay:
+                return FactWriteResult(claim.replay_response or {})
+            fact = await self._fact(session, owner_id, fact_id, lock=True)
             if fact is None:
                 raise FactError("RESOURCE_NOT_FOUND", "Fact not found", 404)
+            replay = await self.idempotency.recheck(session, claim)
+            if replay:
+                return FactWriteResult(replay[1])
             material_change = (
                 values.get("value") is not None and values["value"] != fact.value_encrypted
             ) or (values.get("kind") is not None and values["kind"] != fact.kind)
@@ -105,24 +115,26 @@ class FactService:
                 fact.status = "unconfirmed"
                 fact.confirmed_at = None
             await session.flush()
-            await self.idempotency.store(session, canonical, f"/v1/facts/{fact_id}", idempotency_key, values, 200, {"id": fact.id})
-            return fact
+            response = await self._response_json(session, fact)
+            await self.idempotency.complete(session, claim, 200, response)
+            return FactWriteResult(response)
 
-    async def set_status(self, owner_id: str, fact_id: str, status: str, idempotency_key: str) -> Fact:
-        async with self.sessions.begin() as session:
+    async def set_status(self, owner_id: str, fact_id: str, status: str, idempotency_key: str) -> FactWriteResult:
+        async with self.idempotency.transaction(self.sessions) as session:
             canonical = await canonical_user_id(session, owner_id)
             route = f"/v1/facts/{fact_id}/{status}"
             try:
-                replay = await self.idempotency.replay(session, canonical, route, idempotency_key, {})
+                claim = await self.idempotency.claim(session, canonical, route, idempotency_key, {})
             except IdempotencyConflict:
                 raise FactError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was reused with a different request", 409)
-            if replay:
-                result = await self._fact(session, owner_id, fact_id)
-                if result:
-                    return result
-            fact = await self._fact(session, owner_id, fact_id)
+            if claim.is_replay:
+                return FactWriteResult(claim.replay_response or {})
+            fact = await self._fact(session, owner_id, fact_id, lock=True)
             if fact is None:
                 raise FactError("RESOURCE_NOT_FOUND", "Fact not found", 404)
+            replay = await self.idempotency.recheck(session, claim)
+            if replay:
+                return FactWriteResult(replay[1])
             if status == "confirmed":
                 has_source = await session.scalar(select(FactSource.fact_id).where(FactSource.fact_id == fact.id, FactSource.owner_user_id == fact.owner_user_id))
                 if has_source is None:
@@ -132,8 +144,9 @@ class FactService:
                 fact.confirmed_at = None
             fact.status = status
             await session.flush()
-            await self.idempotency.store(session, canonical, route, idempotency_key, {}, 200, {"id": fact.id})
-            return fact
+            response = await self._response_json(session, fact)
+            await self.idempotency.complete(session, claim, 200, response)
+            return FactWriteResult(response)
 
     async def sources(self, owner_id: str, fact_id: str) -> list[SourceRecord] | None:
         async with self.sessions() as session:
@@ -145,9 +158,20 @@ class FactService:
     async def source_ids(self, session: AsyncSession, fact: Fact) -> list[str]:
         return list((await session.scalars(select(FactSource.source_record_id).where(FactSource.fact_id == fact.id, FactSource.owner_user_id == fact.owner_user_id))).all())
 
-    async def _fact(self, session: AsyncSession, owner_id: str, fact_id: str) -> Fact | None:
+    async def _fact(self, session: AsyncSession, owner_id: str, fact_id: str, lock: bool = False) -> Fact | None:
         owners = await authorized_owner_ids(session, owner_id)
-        return await session.scalar(select(Fact).where(Fact.id == fact_id, Fact.owner_user_id.in_(owners)))
+        query = select(Fact).where(Fact.id == fact_id, Fact.owner_user_id.in_(owners))
+        return await session.scalar(query.with_for_update() if lock else query)
+
+    async def _response_json(self, session: AsyncSession, fact: Fact) -> dict[str, Any]:
+        return {
+            "id": fact.id,
+            "kind": fact.kind,
+            "value": fact.value_encrypted,
+            "status": fact.status,
+            "source_ids": await self.source_ids(session, fact),
+            "confirmed_at": fact.confirmed_at.isoformat() if fact.confirmed_at else None,
+        }
 
     async def _add_sources(self, session: AsyncSession, fact: Fact, sources: list[dict[str, Any]]) -> None:
         for item in sources:
@@ -164,7 +188,10 @@ def _cursor(row: Fact) -> str:
 
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     try:
-        created_at, identifier = urlsafe_b64decode(cursor.encode()).decode().split("|", 1)
+        parts = b64decode(cursor.encode("ascii"), altchars=b"-_", validate=True).decode().split("|")
+        if len(parts) != 2 or not parts[1]:
+            raise ValueError("invalid cursor tuple")
+        created_at, identifier = parts
         return datetime.fromisoformat(created_at), identifier
-    except Exception as error:
+    except (UnicodeError, ValueError) as error:
         raise FactError("VALIDATION_FAILED", "Invalid cursor", 422) from error

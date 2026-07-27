@@ -6,7 +6,7 @@ from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.resumes.schemas import QualityCheckResponse, QualityIssueResponse, RestoreRequest, ResumeCreate, ResumeListResponse, ResumeResponse, ResumeUpdate, ResumeVersionResponse, ResumeVersionsResponse, VersionCreate
-from app.modules.resumes.service import ResumeError, ResumeService, SavedVersion
+from app.modules.resumes.service import ResumeError, ResumeService, SavedResume, SavedVersion
 
 
 router = APIRouter(prefix="/v1/resumes", tags=["resumes"], responses={status: {"model": ApiErrorEnvelope} for status in (401, 404, 409, 422)})
@@ -27,10 +27,14 @@ def _raise(request: Request, error: ResumeError) -> None:
 
 
 def _resume(row) -> ResumeResponse:
+    if isinstance(row, SavedResume):
+        return ResumeResponse.model_validate(row.response, strict=False)
     return ResumeResponse(id=row.id, kind=row.kind, title=row.title, base_resume_id=row.base_resume_id, job_description_id=row.job_description_id, version=row.head_version)
 
 
 def _version(saved: SavedVersion) -> ResumeVersionResponse:
+    if saved.response:
+        return ResumeVersionResponse.model_validate(saved.response, strict=False)
     row = saved.row
     return ResumeVersionResponse(id=row.id, resume_id=row.resume_id, parent_version_id=row.parent_version_id, snapshot=row.snapshot_json, snapshot_hash=row.snapshot_hash, operation=saved.operation, created_at=row.created_at)
 
