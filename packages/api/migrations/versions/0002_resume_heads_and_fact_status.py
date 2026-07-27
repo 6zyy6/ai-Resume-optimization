@@ -37,6 +37,14 @@ def upgrade() -> None:
         ) BEGIN SELECT RAISE(ABORT, 'resume head must reference its own version'); END
         """)
         op.execute("""
+        CREATE TRIGGER trg_resume_head_insert_matches_version
+        BEFORE INSERT ON resumes
+        WHEN NEW.head_version_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM resume_versions
+          WHERE id = NEW.head_version_id AND resume_id = NEW.id AND owner_user_id = NEW.owner_user_id
+        ) BEGIN SELECT RAISE(ABORT, 'resume head must reference its own version'); END
+        """)
+        op.execute("""
         CREATE TRIGGER trg_resume_versions_no_update
         BEFORE UPDATE ON resume_versions
         BEGIN SELECT RAISE(ABORT, 'resume versions are append-only'); END
@@ -97,6 +105,7 @@ def downgrade() -> None:
         raise RuntimeError("cannot downgrade 0002 while restored duplicate snapshots exist")
     if op.get_bind().dialect.name == "sqlite":
         op.execute("DROP TRIGGER IF EXISTS trg_resume_head_matches_version")
+        op.execute("DROP TRIGGER IF EXISTS trg_resume_head_insert_matches_version")
         for trigger in (
             "trg_confirmed_fact_requires_source_insert",
             "trg_confirmed_fact_requires_source_update",

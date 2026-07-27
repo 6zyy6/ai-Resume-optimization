@@ -36,8 +36,11 @@ def _version(saved: SavedVersion) -> ResumeVersionResponse:
 
 
 @router.get("", response_model=ResumeListResponse)
-async def list_resumes(cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
-    rows, next_cursor = await service.list_resumes(authenticated.user_id, cursor, limit)
+async def list_resumes(request: Request, cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeListResponse:
+    try:
+        rows, next_cursor = await service.list_resumes(authenticated.user_id, cursor, limit)
+    except ResumeError as error:
+        _raise(request, error)
     return ResumeListResponse(items=[_resume(row) for row in rows], next_cursor=next_cursor)
 
 
@@ -67,7 +70,10 @@ async def update_resume(resume_id: str, payload: ResumeUpdate, request: Request,
 
 @router.get("/{resume_id}/versions", response_model=ResumeVersionsResponse)
 async def list_versions(resume_id: str, request: Request, cursor: str | None = Query(default=None), limit: int = Query(default=20, ge=1, le=100), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionsResponse:
-    page = await service.versions(authenticated.user_id, resume_id, cursor, limit)
+    try:
+        page = await service.versions(authenticated.user_id, resume_id, cursor, limit)
+    except ResumeError as error:
+        _raise(request, error)
     if page is None:
         _raise(request, ResumeError("RESOURCE_NOT_FOUND", "Resume not found", 404))
     rows, next_cursor = page
