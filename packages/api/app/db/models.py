@@ -204,13 +204,6 @@ class Resume(OwnerMixin, Base):
     __tablename__ = "resumes"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_resume_owner"),
-        UniqueConstraint(
-            "owner_user_id",
-            "kind",
-            "base_resume_id",
-            "job_description_id",
-            name="uq_targeted_resume_per_job",
-        ),
         ForeignKeyConstraint(
             ["base_resume_id", "base_resume_owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
@@ -255,6 +248,43 @@ class Resume(OwnerMixin, Base):
     head_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     head_version_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TargetedResumeKey(Base):
+    __tablename__ = "targeted_resume_keys"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["base_resume_id", "owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_targeted_key_base_owner",
+        ),
+        ForeignKeyConstraint(
+            ["job_description_id", "owner_user_id"],
+            ["job_descriptions.id", "job_descriptions.owner_user_id"],
+            name="fk_targeted_key_job_owner",
+        ),
+        ForeignKeyConstraint(
+            ["resume_id", "owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_targeted_key_resume_owner",
+        ),
+        UniqueConstraint(
+            "resume_id",
+            "owner_user_id",
+            name="uq_targeted_key_resume_owner",
+        ),
+    )
+
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"),
+        primary_key=True,
+    )
+    base_resume_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_description_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    resume_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class ResumeVersion(OwnerMixin, Base):

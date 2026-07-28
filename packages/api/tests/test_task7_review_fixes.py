@@ -95,6 +95,52 @@ def test_export_rejects_claim_not_supported_by_immutable_version_evidence(
         )
 
 
+def test_export_allows_exact_supported_claim_made_only_of_stopwords(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    fact = client.post(
+        "/v1/facts",
+        json={
+            "kind": "responsibility",
+            "value": "负责管理",
+            "status": "confirmed",
+            "sources": [
+                {
+                    "source_type": "user_confirmation",
+                    "content": "负责管理",
+                }
+            ],
+        },
+        headers={"Idempotency-Key": "review-stopword-fact"},
+    )
+    version_id = asyncio.run(
+        _seed_forged_version(
+            sessions,
+            fact.json()["id"],
+            "负责管理",
+            fact_value="负责管理",
+        )
+    )
+    created = client.post(
+        "/v1/exports",
+        json={
+            "resume_version_id": version_id,
+            "template_version": "clear-standard",
+        },
+        headers={"Idempotency-Key": "review-stopword-export"},
+    )
+    result_id = asyncio.run(
+        client.app.state.export_service.process_export(
+            "usr_a",
+            created.json()["id"],
+        )
+    )
+
+    assert created.status_code == 202
+    assert result_id == created.json()["id"]
+
+
 def test_matching_base_resume_creates_targeted_resume_and_decision_keeps_base_head(
     pipeline_client,
 ):
@@ -472,10 +518,16 @@ def test_0006_adds_job_task_correlation_and_targeted_resume_uniqueness(
             index["name"]
             for index in schema.get_indexes("job_descriptions")
         }
-        assert "uq_targeted_resume_per_job" in {
-            constraint["name"]
-            for constraint in schema.get_unique_constraints("resumes")
-        }
+        assert "targeted_resume_keys" in schema.get_table_names()
+        assert {
+            "owner_user_id",
+            "base_resume_id",
+            "job_description_id",
+        } == set(
+            schema.get_pk_constraint("targeted_resume_keys")[
+                "constrained_columns"
+            ]
+        )
     finally:
         engine.dispose()
     command.downgrade(config, "0005")
@@ -486,15 +538,12 @@ def test_0006_adds_job_task_correlation_and_targeted_resume_uniqueness(
             column["name"]
             for column in schema.get_columns("job_descriptions")
         }
-        assert "uq_targeted_resume_per_job" not in {
-            constraint["name"]
-            for constraint in schema.get_unique_constraints("resumes")
-        }
+        assert "targeted_resume_keys" not in schema.get_table_names()
     finally:
         engine.dispose()
 
 
-def test_0006_merges_historical_duplicate_targeted_resumes(
+def test_0006_preserves_duplicate_history_and_selects_canonical_resume(
     tmp_path,
     monkeypatch,
 ):
@@ -531,21 +580,50 @@ def test_0006_merges_historical_duplicate_targeted_resumes(
                     ),
                     {"id": resume_id, "head_version": head_version},
                 )
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO resume_versions (
+                            id, owner_user_id, resume_id, parent_version_id,
+                            snapshot_json, snapshot_hash, created_by, created_at
+                        ) VALUES (
+                            :version_id, 'usr_history', :resume_id, NULL,
+                            '{}', :snapshot_hash, 'usr_history',
+                            CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "version_id": f"version_{resume_id}",
+                        "resume_id": resume_id,
+                        "snapshot_hash": "0" * 64,
+                    },
+                )
         command.upgrade(config, "0006")
         with engine.connect() as connection:
-            remaining = connection.execute(
+            canonical = connection.execute(
                 sa.text(
                     """
-                    SELECT id
-                    FROM resumes
+                    SELECT resume_id
+                    FROM targeted_resume_keys
                     WHERE owner_user_id = 'usr_history'
-                      AND kind = 'job_targeted'
                       AND base_resume_id = 'resume_base'
                       AND job_description_id = 'job_history'
                     """
                 )
             ).scalars().all()
-        assert remaining == ["resume_target_new"]
+            versions = connection.execute(
+                sa.text(
+                    """
+                    SELECT resume_id
+                    FROM resume_versions
+                    WHERE owner_user_id = 'usr_history'
+                    ORDER BY resume_id
+                    """
+                )
+            ).scalars().all()
+        assert canonical == ["resume_target_new"]
+        assert versions == ["resume_target_new", "resume_target_old"]
     finally:
         engine.dispose()
 
@@ -648,7 +726,13 @@ async def _run_ai(client):
     )
 
 
-async def _seed_forged_version(sessions, fact_id: str, claim: str) -> str:
+async def _seed_forged_version(
+    sessions,
+    fact_id: str,
+    claim: str,
+    *,
+    fact_value: str = "Python",
+) -> str:
     async with sessions.begin() as session:
         resume = Resume(
             id="review_forged_resume",
@@ -705,10 +789,10 @@ async def _seed_forged_version(sessions, fact_id: str, claim: str) -> str:
                     owner_user_id="usr_a",
                     fact_owner_user_id="usr_a",
                     claim_range={"start": 0, "end": len(claim)},
-                    fact_value_encrypted_at_link="Python",
+                    fact_value_encrypted_at_link=fact_value,
                     fact_status_at_link="confirmed",
                     fact_source_hashes_at_link=[
-                        hashlib.sha256(b"Python").hexdigest()
+                        hashlib.sha256(fact_value.encode()).hexdigest()
                     ],
                 ),
             ]

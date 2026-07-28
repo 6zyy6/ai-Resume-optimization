@@ -19,6 +19,7 @@ from app.db.models import (
     ResumeVersion,
     Suggestion,
     SuggestionFactLink,
+    TargetedResumeKey,
     VersionOperation,
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
@@ -335,20 +336,37 @@ class MatchingService:
                     "Targeted resume belongs to another job",
                     409,
                 )
-            return source_version
+            canonical = await MatchingService._canonical_targeted_resume(
+                session,
+                source_resume.owner_user_id,
+                source_resume.base_resume_id,
+                source_resume.job_description_id,
+            )
+            if canonical is None or canonical.id == source_resume.id:
+                return source_version
+            if canonical.head_version_id is None:
+                raise RuntimeError("Canonical targeted resume is missing")
+            canonical_version = await session.scalar(
+                select(ResumeVersion).where(
+                    ResumeVersion.id == canonical.head_version_id,
+                    ResumeVersion.resume_id == canonical.id,
+                    ResumeVersion.owner_user_id == canonical.owner_user_id,
+                )
+            )
+            if canonical_version is None:
+                raise RuntimeError("Canonical targeted resume head is missing")
+            return canonical_version
         if source_resume.kind != "base":
             raise MatchServiceError(
                 "VALIDATION_FAILED",
                 "Only base or job-targeted resumes can be matched",
                 422,
             )
-        targeted = await session.scalar(
-            select(Resume).where(
-                Resume.owner_user_id == source_resume.owner_user_id,
-                Resume.kind == "job_targeted",
-                Resume.base_resume_id == source_resume.id,
-                Resume.job_description_id == job.id,
-            )
+        targeted = await MatchingService._canonical_targeted_resume(
+            session,
+            source_resume.owner_user_id,
+            source_resume.id,
+            job.id,
         )
         if targeted is not None and targeted.head_version_id:
             current = await session.scalar(
@@ -375,6 +393,14 @@ class MatchingService:
             )
             session.add(targeted)
             await session.flush()
+            session.add(
+                TargetedResumeKey(
+                    owner_user_id=owner,
+                    base_resume_id=source_resume.id,
+                    job_description_id=job.id,
+                    resume_id=targeted.id,
+                )
+            )
         target_version = ResumeVersion(
             id=new_id("rver"),
             owner_user_id=owner,
@@ -434,6 +460,32 @@ class MatchingService:
         targeted.head_version_id = target_version.id
         await session.flush()
         return target_version
+
+    @staticmethod
+    async def _canonical_targeted_resume(
+        session: AsyncSession,
+        owner_user_id: str,
+        base_resume_id: str | None,
+        job_description_id: str | None,
+    ) -> Resume | None:
+        if base_resume_id is None or job_description_id is None:
+            return None
+        return await session.scalar(
+            select(Resume)
+            .join(
+                TargetedResumeKey,
+                (TargetedResumeKey.resume_id == Resume.id)
+                & (
+                    TargetedResumeKey.owner_user_id
+                    == Resume.owner_user_id
+                ),
+            )
+            .where(
+                TargetedResumeKey.owner_user_id == owner_user_id,
+                TargetedResumeKey.base_resume_id == base_resume_id,
+                TargetedResumeKey.job_description_id == job_description_id,
+            )
+        )
 
     async def attach_task(
         self,
