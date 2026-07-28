@@ -409,6 +409,7 @@ class MatchAnalysis(OwnerMixin, Base):
     job_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -453,7 +454,11 @@ class Suggestion(OwnerMixin, Base):
     analysis_id: Mapped[str] = mapped_column(String(64), nullable=False)
     target_path: Mapped[str] = mapped_column(String(255), nullable=False)
     original_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    original_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
     suggested_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    requirement_id: Mapped[str | None] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    risk_flags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -492,6 +497,7 @@ class SuggestionDecision(OwnerMixin, Base):
     suggestion_id: Mapped[str] = mapped_column(String(64), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     edited_text_encrypted: Mapped[str | None] = mapped_column(Text)
+    final_version_id: Mapped[str | None] = mapped_column(String(64))
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -501,11 +507,36 @@ class File(OwnerMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="resume")
     object_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     mime: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_upload")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ResumeImport(OwnerMixin, Base):
+    __tablename__ = "resume_imports"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uq_resume_import_owner"),
+        ForeignKeyConstraint(
+            ["file_id", "owner_user_id"],
+            ["files.id", "files.owner_user_id"],
+            name="fk_resume_import_file_owner",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    parsed_text_encrypted: Mapped[str | None] = mapped_column(Text)
+    draft_facts: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    fallback_reason: Mapped[str | None] = mapped_column(String(64))
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Task(OwnerMixin, Base):
@@ -665,6 +696,8 @@ class Export(OwnerMixin, Base):
     file_id: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    download_name: Mapped[str] = mapped_column(String(255), nullable=False, default="resume.pdf")
+    task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

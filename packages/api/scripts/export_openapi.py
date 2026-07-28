@@ -19,8 +19,13 @@ from app.contracts import (
 )
 from app.modules.auth.router import router as auth_router
 from app.modules.facts.router import router as facts_router
+from app.modules.exports.router import router as exports_router
+from app.modules.imports.router import router as imports_router
+from app.modules.jobs.router import router as jobs_router
+from app.modules.matching.router import router as matching_router
 from app.modules.privacy.router import router as privacy_router
 from app.modules.resumes.router import router as resumes_router
+from app.modules.suggestions.router import router as suggestions_router
 from app.modules.tasks.router import router as tasks_router
 from app.modules.usage.router import router as usage_router
 
@@ -32,6 +37,11 @@ def build_application() -> FastAPI:
     app.include_router(privacy_router)
     app.include_router(facts_router)
     app.include_router(resumes_router)
+    app.include_router(imports_router)
+    app.include_router(jobs_router)
+    app.include_router(matching_router)
+    app.include_router(suggestions_router)
+    app.include_router(exports_router)
     app.include_router(tasks_router)
 
     @app.get("/contracts/fact", response_model=FactRecord)

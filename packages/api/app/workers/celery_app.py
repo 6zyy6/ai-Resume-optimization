@@ -41,7 +41,11 @@ def initialize_worker_runtime(**_kwargs) -> None:
 
     from app.core.config import get_settings
     from app.modules.tasks.service import TaskService
+    from app.workers.pipeline import configure_pipeline_operations
 
-    engine = create_async_engine(get_settings().database_url)
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    configure_worker(TaskService(sessions), resolve_operation)
+    task_service = TaskService(sessions)
+    configure_pipeline_operations(sessions, settings, task_service)
+    configure_worker(task_service, resolve_operation)
