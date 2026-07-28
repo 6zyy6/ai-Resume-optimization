@@ -59,6 +59,12 @@ def test_openapi_includes_auth_usage_and_privacy_routes():
     assert "/v1/me/usage" in paths
     assert "/v1/me/data-exports" in paths
     assert "/v1/me/deletion-requests" in paths
+    assert "/v1/files/upload-tokens" in paths
+    assert "/v1/imports" in paths
+    assert "/v1/jobs" in paths
+    assert "/v1/match-analyses" in paths
+    assert "/v1/suggestions/{suggestion_id}/accept" in paths
+    assert "/v1/exports" in paths
 
 
 def test_openapi_declares_the_runtime_error_envelope():

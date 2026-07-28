@@ -143,6 +143,10 @@ def supports_high_risk_entities(claim: str, evidence: str) -> bool:
     )
 
 
+def high_risk_terms(text: str) -> set[str]:
+    return _high_risk_terms(text)
+
+
 _NUMBER_TOKEN = r"(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?![\d.,])"
 _ENGLISH_DIRECTION = {
     "boost": "up",

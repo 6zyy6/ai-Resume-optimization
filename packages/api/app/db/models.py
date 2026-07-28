@@ -250,6 +250,51 @@ class Resume(OwnerMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class TargetedResumeKey(Base):
+    __tablename__ = "targeted_resume_keys"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["base_resume_id", "base_resume_owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_targeted_key_base_owner",
+        ),
+        ForeignKeyConstraint(
+            ["job_description_id", "job_description_owner_user_id"],
+            ["job_descriptions.id", "job_descriptions.owner_user_id"],
+            name="fk_targeted_key_job_owner",
+        ),
+        ForeignKeyConstraint(
+            ["resume_id", "owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_targeted_key_resume_owner",
+        ),
+        UniqueConstraint(
+            "resume_id",
+            "owner_user_id",
+            name="uq_targeted_key_resume_owner",
+        ),
+    )
+
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id"),
+        primary_key=True,
+    )
+    base_resume_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    base_resume_owner_user_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    job_description_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    job_description_owner_user_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    resume_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class ResumeVersion(OwnerMixin, Base):
     __tablename__ = "resume_versions"
     __table_args__ = (
@@ -366,6 +411,7 @@ class JobDescription(OwnerMixin, Base):
     company: Mapped[str | None] = mapped_column(String(255))
     raw_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -398,7 +444,7 @@ class MatchAnalysis(OwnerMixin, Base):
             name="fk_match_analysis_version_owner",
         ),
         ForeignKeyConstraint(
-            ["job_id", "owner_user_id"],
+            ["job_id", "job_owner_user_id"],
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_match_analysis_job_owner",
         ),
@@ -407,8 +453,10 @@ class MatchAnalysis(OwnerMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     resume_version_id: Mapped[str] = mapped_column(String(64), nullable=False)
     job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -421,7 +469,7 @@ class MatchItem(OwnerMixin, Base):
             name="fk_match_item_analysis_owner",
         ),
         ForeignKeyConstraint(
-            ["requirement_id", "owner_user_id"],
+            ["requirement_id", "requirement_owner_user_id"],
             ["jd_requirements.id", "jd_requirements.owner_user_id"],
             name="fk_match_item_requirement_owner",
         ),
@@ -430,6 +478,7 @@ class MatchItem(OwnerMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     analysis_id: Mapped[str] = mapped_column(String(64), nullable=False)
     requirement_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    requirement_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False)
 
@@ -453,7 +502,11 @@ class Suggestion(OwnerMixin, Base):
     analysis_id: Mapped[str] = mapped_column(String(64), nullable=False)
     target_path: Mapped[str] = mapped_column(String(255), nullable=False)
     original_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    original_text_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
     suggested_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    requirement_id: Mapped[str | None] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    risk_flags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -492,6 +545,7 @@ class SuggestionDecision(OwnerMixin, Base):
     suggestion_id: Mapped[str] = mapped_column(String(64), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     edited_text_encrypted: Mapped[str | None] = mapped_column(Text)
+    final_version_id: Mapped[str | None] = mapped_column(String(64))
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -501,11 +555,36 @@ class File(OwnerMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="resume")
     object_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     mime: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_upload")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ResumeImport(OwnerMixin, Base):
+    __tablename__ = "resume_imports"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uq_resume_import_owner"),
+        ForeignKeyConstraint(
+            ["file_id", "owner_user_id"],
+            ["files.id", "files.owner_user_id"],
+            name="fk_resume_import_file_owner",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    parsed_text_encrypted: Mapped[str | None] = mapped_column(Text)
+    draft_facts: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    fallback_reason: Mapped[str | None] = mapped_column(String(64))
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Task(OwnerMixin, Base):
@@ -536,6 +615,9 @@ class Task(OwnerMixin, Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     result_ref: Mapped[str | None] = mapped_column(String(255))
     cancellation_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    usage_type: Mapped[str | None] = mapped_column(String(64))
+    claim_token: Mapped[str | None] = mapped_column(String(128))
+    claim_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskEvent(OwnerMixin, Base):
@@ -555,6 +637,29 @@ class TaskEvent(OwnerMixin, Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     stage: Mapped[str] = mapped_column(String(64), nullable=False)
     progress: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class Outbox(OwnerMixin, Base):
+    __tablename__ = "outbox"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["task_id", "owner_user_id"],
+            ["tasks.id", "tasks.owner_user_id"],
+            name="fk_outbox_task_owner",
+        ),
+        UniqueConstraint("task_id", name="uq_outbox_task"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    queue: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -639,6 +744,8 @@ class Export(OwnerMixin, Base):
     file_id: Mapped[str] = mapped_column(String(64), nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    download_name: Mapped[str] = mapped_column(String(255), nullable=False, default="resume.pdf")
+    task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

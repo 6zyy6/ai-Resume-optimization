@@ -21,15 +21,30 @@ from app.modules.auth.service import (
     build_default_auth_service,
 )
 from app.modules.auth.preflight import AuthPreflightStore
+from app.integrations.ai_client import AiClient, InternalAiClient
+from app.integrations.storage import StoragePort, build_storage
+from app.modules.exports.router import router as exports_router
+from app.modules.exports.service import ExportService
+from app.modules.imports.router import router as imports_router
+from app.modules.imports.service import ImportService
+from app.modules.jobs.router import router as jobs_router
+from app.modules.jobs.service import JobService
+from app.modules.matching.router import router as matching_router
+from app.modules.matching.service import MatchingService
 from app.modules.privacy.router import router as privacy_router
 from app.modules.privacy.service import PrivacyRepository, build_default_privacy_service
 from app.modules.facts.router import router as facts_router
 from app.modules.facts.service import FactService
 from app.modules.resumes.router import router as resumes_router
 from app.modules.resumes.service import ResumeService
+from app.modules.suggestions.router import router as suggestions_router
+from app.modules.suggestions.service import SuggestionService
+from app.modules.tasks.router import router as tasks_router
+from app.modules.tasks.service import TaskService
 from app.modules.usage.router import router as usage_router
 from app.modules.usage.service import UsageRepository, build_default_usage_service
 from app.modules.users.service import EmailCrypto, KeyProvider
+from app.workers.dispatcher import OutboxDispatcher, build_default_dispatcher
 
 
 @dataclass(frozen=True)
@@ -43,6 +58,9 @@ class ApplicationDependencies:
     email_crypto: EmailCrypto
     keys: KeyProvider
     task4_sessions: async_sessionmaker[AsyncSession] | None = None
+    task_dispatcher: OutboxDispatcher | None = None
+    storage: StoragePort | None = None
+    ai_client: AiClient | None = None
 
 def api_error_response(
     request: Request,
@@ -113,6 +131,32 @@ def create_app(
     task4_sessions = dependencies.task4_sessions if dependencies and dependencies.task4_sessions else async_sessionmaker(create_async_engine(resolved.database_url), expire_on_commit=False)
     application.state.fact_service = FactService(task4_sessions)
     application.state.resume_service = ResumeService(task4_sessions)
+    application.state.task_service = TaskService(task4_sessions)
+    storage = (
+        dependencies.storage
+        if dependencies and dependencies.storage
+        else build_storage(resolved)
+    )
+    ai_client = (
+        dependencies.ai_client
+        if dependencies and dependencies.ai_client
+        else (
+            InternalAiClient(resolved.ai_internal_url, resolved.ai_service_token)
+            if resolved.app_env == "production" and resolved.ai_service_token
+            else None
+        )
+    )
+    application.state.storage = storage
+    application.state.import_service = ImportService(task4_sessions, storage)
+    application.state.job_service = JobService(task4_sessions, ai_client)
+    application.state.matching_service = MatchingService(task4_sessions, ai_client)
+    application.state.suggestion_service = SuggestionService(task4_sessions)
+    application.state.export_service = ExportService(task4_sessions, storage)
+    application.state.task_dispatcher = (
+        dependencies.task_dispatcher
+        if dependencies and dependencies.task_dispatcher
+        else build_default_dispatcher(task4_sessions)
+    )
     application.state.ready = (
         dependencies is not None or resolved.app_env != "production"
     )
@@ -121,6 +165,12 @@ def create_app(
     application.include_router(privacy_router)
     application.include_router(facts_router)
     application.include_router(resumes_router)
+    application.include_router(imports_router)
+    application.include_router(jobs_router)
+    application.include_router(matching_router)
+    application.include_router(suggestions_router)
+    application.include_router(exports_router)
+    application.include_router(tasks_router)
     application.add_exception_handler(HTTPException, api_error_handler)
     application.add_exception_handler(StarletteHTTPException, framework_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)
