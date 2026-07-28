@@ -47,7 +47,7 @@ async def test_task_api_is_read_only_owner_scoped_and_cursor_paginated(
         queue="ai.batch",
         trace_id="tr_list_1",
         idempotency_key="list-1",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     second = await service.create_task(
         "usr_api_a",
@@ -55,7 +55,7 @@ async def test_task_api_is_read_only_owner_scoped_and_cursor_paginated(
         queue="ai.batch",
         trace_id="tr_list_2",
         idempotency_key="list-2",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     await service.create_task(
         "usr_api_b",
@@ -119,7 +119,7 @@ async def test_sse_resumes_from_last_event_id_and_declares_event_stream(
         queue="ai.interactive",
         trace_id="tr_sse_resume",
         idempotency_key="sse-resume",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     claim = await service.claim_task("usr_api_a", task.id)
     assert claim is not None
@@ -169,7 +169,7 @@ async def test_sse_tails_new_events_emits_heartbeat_and_closes_at_terminal(
         queue="ai.interactive",
         trace_id="tr_sse_tail",
         idempotency_key="sse-tail",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     claim = await service.claim_task("usr_api_a", task.id)
     assert claim is not None

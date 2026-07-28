@@ -24,7 +24,7 @@ async def test_task_progress_events_start_at_one_and_follow_state(sql_session_fa
         queue="ai.interactive",
         trace_id="tr_state",
         idempotency_key="state-1",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     claimed = await service.claim_task("usr_tasks", created.id)
     progressed = await service.report_progress(
@@ -93,7 +93,7 @@ async def test_cancelled_task_discards_late_business_result(sql_session_factory)
         queue="ai.batch",
         trace_id="tr_cancel",
         idempotency_key="cancel-1",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     claim = await service.claim_task("usr_tasks", task.id)
     assert claim is not None

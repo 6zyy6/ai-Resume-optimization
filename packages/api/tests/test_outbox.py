@@ -61,7 +61,7 @@ async def test_dispatch_retry_reuses_one_task_and_one_outbox_row(sql_session_fac
         queue="ai.interactive",
         trace_id="tr_retry",
         idempotency_key="outbox-2",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     publisher = FlakyPublisher()
     dispatcher = OutboxDispatcher(

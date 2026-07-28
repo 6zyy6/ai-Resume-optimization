@@ -17,6 +17,8 @@ from app.workers.execution import QUEUE_NAMES
 
 
 DEFAULT_LEASE_SECONDS = 300
+AI_QUEUE_NAMES = frozenset({"ai.interactive", "ai.batch"})
+SUPPORTED_ADMISSION_USAGE_TYPES = frozenset({None, "ai_task"})
 
 
 class Clock(Protocol):
@@ -95,6 +97,18 @@ class TaskService:
             raise TypeError("admission must be a TaskAdmission")
         if queue not in QUEUE_NAMES:
             raise TaskServiceError("TASK_QUEUE_INVALID", "Unsupported task queue", 422)
+        if (
+            admission.usage_type not in SUPPORTED_ADMISSION_USAGE_TYPES
+            or (
+                queue in AI_QUEUE_NAMES
+                and admission.usage_type != "ai_task"
+            )
+        ):
+            raise TaskServiceError(
+                "TASK_ADMISSION_INVALID",
+                "Unsupported admission strategy for task queue",
+                422,
+            )
         body = {
             "type": task_type,
             "queue": queue,

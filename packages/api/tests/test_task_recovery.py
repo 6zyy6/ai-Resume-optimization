@@ -55,7 +55,7 @@ async def test_worker_crash_then_reclaim_completes_one_result(sql_session_factor
         queue="ai.batch",
         trace_id="tr_crash",
         idempotency_key="recovery-1",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     abandoned = await first_process.claim_task("usr_recovery", task.id)
     assert abandoned is not None
@@ -102,7 +102,7 @@ async def test_executor_retries_only_transient_failures(sql_session_factory):
         queue="ai.interactive",
         trace_id="tr_transient",
         idempotency_key="recovery-2",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     permanent = await service.create_task(
         "usr_recovery",
@@ -110,7 +110,7 @@ async def test_executor_retries_only_transient_failures(sql_session_factory):
         queue="ai.interactive",
         trace_id="tr_permanent",
         idempotency_key="recovery-3",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
     transient_attempts = 0
@@ -159,7 +159,7 @@ async def test_worker_shutdown_leaves_claimed_task_recoverable(sql_session_facto
         queue="ai.batch",
         trace_id="tr_shutdown",
         idempotency_key="recovery-shutdown",
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
     executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
 
@@ -231,7 +231,7 @@ def test_redis_failure_returns_queue_busy_without_breaking_fact_reads(tmp_path):
             queue="ai.interactive",
             trace_id="tr_queue_down",
             idempotency_key="queue-down-1",
-            admission=TaskAdmission.unmetered(),
+            admission=TaskAdmission.ai(),
         )
     )
     with pytest.raises(TaskQueueBusy):

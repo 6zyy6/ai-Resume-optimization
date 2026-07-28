@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
-from app.db.models import Task, UsageLedger, User
+from app.db.models import Outbox, Task, UsageLedger, User
 from app.modules.tasks.service import (
     TaskAdmission,
     TaskClaimError,
@@ -46,6 +46,45 @@ async def test_task_creation_requires_an_explicit_admission(sql_session_factory)
 
     async with sql_session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(Task)) == 0
+
+
+@pytest.mark.parametrize(
+    ("queue", "admission"),
+    (
+        ("ai.interactive", TaskAdmission.unmetered()),
+        ("ai.batch", TaskAdmission.unmetered()),
+        ("ai.interactive", TaskAdmission("custom")),
+        ("ai.batch", TaskAdmission("custom")),
+    ),
+)
+async def test_ai_queues_reject_non_ai_admission_without_writes(
+    sql_session_factory,
+    queue,
+    admission,
+):
+    """Removing the queue-strategy binding would let AI work bypass metering."""
+    await _seed_users(sql_session_factory)
+    service = TaskService(sql_session_factory)
+
+    with pytest.raises(TaskServiceError) as rejected:
+        await service.create_task(
+            "usr_claim_a",
+            task_type="resume_optimize",
+            queue=queue,
+            trace_id=f"tr_{queue}_{admission.usage_type}",
+            idempotency_key=f"{queue}-{admission.usage_type}",
+            admission=admission,
+        )
+
+    assert rejected.value.code == "TASK_ADMISSION_INVALID"
+    assert rejected.value.status_code == 422
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(UsageLedger))
+            == 0
+        )
 
 
 async def test_concurrent_admission_consumes_one_slot_and_replay_does_not_recount(

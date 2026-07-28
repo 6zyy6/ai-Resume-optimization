@@ -50,7 +50,7 @@ async def _task(service: TaskService, key: str):
         queue="ai.interactive",
         trace_id=f"tr_{key}",
         idempotency_key=key,
-        admission=TaskAdmission.unmetered(),
+        admission=TaskAdmission.ai(),
     )
 
 
