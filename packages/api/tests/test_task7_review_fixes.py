@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 import httpx
 import pytest
+import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
 from pypdf import PdfReader, PdfWriter
@@ -43,7 +44,10 @@ from app.modules.tasks.service import TaskServiceError
 from app.workers.execution import HttpServiceError, should_retry
 
 
-@pytest.mark.parametrize("claim", ["获得诺贝尔奖", "创建 Linux 内核"])
+@pytest.mark.parametrize(
+    "claim",
+    ["获得诺贝尔奖", "创建 Linux 内核", "负责管理"],
+)
 def test_export_rejects_claim_not_supported_by_immutable_version_evidence(
     pipeline_client,
     claim,
@@ -114,6 +118,14 @@ def test_matching_base_resume_creates_targeted_resume_and_decision_keeps_base_he
     assert targeted[1].base_resume_id == base_resume_id
     assert targeted[1].job_description_id == job_id
 
+    asyncio.run(
+        client.app.state.matching_service.process_match(
+            "usr_a",
+            match.json()["id"],
+            trace_id="trace_review_target",
+            task_id=match.json()["task_id"],
+        )
+    )
     suggestions = client.get(
         f"/v1/match-analyses/{match.json()['id']}/suggestions"
     )
@@ -180,7 +192,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     client, sessions, _ = pipeline_client
     _, base_version_id, _, fact_id = _create_base_version(client)
     job_id, requirement_id = _create_parsed_job(
-        client, sessions, "Kubernetes", "review-pi-job"
+        client, sessions, "Python SQL", "review-pi-job"
     )
     client.app.state.matching_service = MatchingService(
         sessions,
@@ -206,6 +218,26 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
         headers={"Idempotency-Key": "review-pi-match"},
     )
     assert match.status_code == 202, match.text
+    queued_suggestions = client.get(
+        f"/v1/match-analyses/{match.json()['id']}/suggestions"
+    )
+    assert queued_suggestions.status_code == 409
+    assert (
+        queued_suggestions.json()["error"]["code"]
+        == "MATCH_ANALYSIS_NOT_READY"
+    )
+    queued_id = asyncio.run(
+        _first_suggestion_id(sessions, match.json()["id"])
+    )
+    queued_decision = client.post(
+        f"/v1/suggestions/{queued_id}/accept",
+        headers={"Idempotency-Key": "review-queued-decision"},
+    )
+    assert queued_decision.status_code == 409
+    assert (
+        queued_decision.json()["error"]["code"]
+        == "MATCH_ANALYSIS_NOT_READY"
+    )
     asyncio.run(
         client.app.state.matching_service.process_match(
             "usr_a",
@@ -223,7 +255,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     assert response.status_code == 200
     assert len(response.json()["items"]) == 1
     assert response.json()["items"][0]["fact_refs"] == [fact_id]
-    assert response.json()["items"][0]["requirement_text"] == "Kubernetes"
+    assert response.json()["items"][0]["requirement_text"] == "Python SQL"
     assert persisted == [
         (
             response.json()["items"][0]["id"],
@@ -314,6 +346,48 @@ def test_internal_ai_transport_timeout_is_retryable():
     with pytest.raises(TimeoutError) as raised:
         asyncio.run(_run_ai(client))
     assert should_retry(raised.value) is True
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_exception", "expected_retryable"),
+    [
+        ("provider_429", HttpServiceError, True),
+        ("provider_unavailable", HttpServiceError, True),
+        ("provider_timeout", TimeoutError, True),
+        ("invalid_json", RuntimeError, False),
+    ],
+)
+def test_internal_ai_terminal_failure_maps_to_worker_retry_policy(
+    error_code,
+    expected_exception,
+    expected_retryable,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                202,
+                json={"ai_run_id": "run_terminal", "status": "queued"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "run": {
+                    "ai_run_id": "run_terminal",
+                    "status": "failed",
+                    "error_code": error_code,
+                }
+            },
+        )
+
+    client = InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        poll_interval_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(expected_exception) as raised:
+        asyncio.run(_run_ai(client))
+    assert should_retry(raised.value) is expected_retryable
 
 
 def test_export_file_retention_is_seven_days(pipeline_client):
@@ -416,6 +490,62 @@ def test_0006_adds_job_task_correlation_and_targeted_resume_uniqueness(
             constraint["name"]
             for constraint in schema.get_unique_constraints("resumes")
         }
+    finally:
+        engine.dispose()
+
+
+def test_0006_merges_historical_duplicate_targeted_resumes(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "task7-duplicate-targeted.db"
+    monkeypatch.setenv(
+        "ALEMBIC_DATABASE_URL",
+        f"sqlite+aiosqlite:///{database_path}",
+    )
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0005")
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        with engine.begin() as connection:
+            for resume_id, head_version in (
+                ("resume_target_old", 1),
+                ("resume_target_new", 2),
+            ):
+                connection.execute(
+                    sa.text(
+                        """
+                        INSERT INTO resumes (
+                            id, owner_user_id, kind, title, head_version,
+                            base_resume_id, base_resume_owner_user_id,
+                            job_description_id, job_description_owner_user_id,
+                            created_at
+                        ) VALUES (
+                            :id, 'usr_history', 'job_targeted', :id,
+                            :head_version, 'resume_base', 'usr_history',
+                            'job_history', 'usr_history', CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {"id": resume_id, "head_version": head_version},
+                )
+        command.upgrade(config, "0006")
+        with engine.connect() as connection:
+            remaining = connection.execute(
+                sa.text(
+                    """
+                    SELECT id
+                    FROM resumes
+                    WHERE owner_user_id = 'usr_history'
+                      AND kind = 'job_targeted'
+                      AND base_resume_id = 'resume_base'
+                      AND job_description_id = 'job_history'
+                    """
+                )
+            ).scalars().all()
+        assert remaining == ["resume_target_new"]
     finally:
         engine.dispose()
 
@@ -689,6 +819,18 @@ async def _first_requirement_id(sessions, job_id: str):
                 JdRequirement.owner_user_id == "usr_a",
             )
             .order_by(JdRequirement.priority, JdRequirement.id)
+        )
+
+
+async def _first_suggestion_id(sessions, analysis_id: str):
+    async with sessions() as session:
+        return await session.scalar(
+            select(Suggestion.id)
+            .where(
+                Suggestion.analysis_id == analysis_id,
+                Suggestion.owner_user_id == "usr_a",
+            )
+            .order_by(Suggestion.id)
         )
 
 

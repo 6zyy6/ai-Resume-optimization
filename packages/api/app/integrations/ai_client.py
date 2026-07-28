@@ -108,9 +108,13 @@ class InternalAiClient:
                     run = status_response.json()["run"]
                     if run["status"] == "succeeded":
                         return {"result": run.get("output"), "run": run}
-                    if run["status"] in {"failed", "cancelled"}:
+                    if run["status"] == "failed":
+                        _raise_terminal_failure(
+                            str(run.get("error_code", "unknown"))
+                        )
+                    if run["status"] == "cancelled":
                         raise RuntimeError(
-                            f"AI_RUN_{run['status'].upper()}: "
+                            "AI_RUN_CANCELLED: "
                             f"{run.get('error_code', 'unknown')}"
                         )
                     await asyncio.sleep(self.poll_interval_seconds)
@@ -125,3 +129,14 @@ class InternalAiClient:
             raise HttpServiceError(error.response.status_code) from error
         except (httpx.TimeoutException, httpx.TransportError) as error:
             raise TimeoutError("AI internal transport failed") from error
+
+
+def _raise_terminal_failure(error_code: str) -> None:
+    normalized = error_code.lower()
+    if normalized == "provider_429":
+        raise HttpServiceError(429)
+    if normalized in {"provider_unavailable", "provider_error"}:
+        raise HttpServiceError(503)
+    if normalized == "provider_timeout":
+        raise TimeoutError("AI provider timed out")
+    raise RuntimeError(f"AI_RUN_FAILED: {error_code}")

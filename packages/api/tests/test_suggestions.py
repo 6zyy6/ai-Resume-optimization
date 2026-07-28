@@ -197,6 +197,14 @@ def _setup_suggestion(client):
         },
         headers={"Idempotency-Key": "pipeline-match"},
     )
+    asyncio.run(
+        client.app.state.matching_service.process_match(
+            "usr_a",
+            match.json()["id"],
+            trace_id="trace_pipeline_match",
+            task_id=match.json()["task_id"],
+        )
+    )
     suggestions = client.get(
         f"/v1/match-analyses/{match.json()['id']}/suggestions"
     )

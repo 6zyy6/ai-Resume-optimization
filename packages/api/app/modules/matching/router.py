@@ -193,6 +193,15 @@ async def get_match_suggestions(
             request,
             MatchServiceError("RESOURCE_NOT_FOUND", "Match analysis not found", 404),
         )
+    if result.analysis.status != "succeeded":
+        _raise(
+            request,
+            MatchServiceError(
+                "MATCH_ANALYSIS_NOT_READY",
+                "Match analysis is not ready for suggestions",
+                409,
+            ),
+        )
     return SuggestionListResponse(
         items=[
             _suggestion(

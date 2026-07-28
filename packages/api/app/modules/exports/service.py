@@ -366,10 +366,11 @@ class ExportService:
                 evidence = " ".join(
                     fact.value_encrypted for fact in claim.facts
                 )
+                claim_terms = high_risk_terms(claim_text)
                 if (
                     not supports_high_risk_entities(claim_text, evidence)
-                    or not high_risk_terms(claim_text)
-                    <= high_risk_terms(evidence)
+                    or not claim_terms
+                    or not claim_terms <= high_risk_terms(evidence)
                 ):
                     self._blocked()
                 cursor = claim.end

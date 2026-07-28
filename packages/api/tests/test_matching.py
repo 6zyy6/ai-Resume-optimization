@@ -143,9 +143,6 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
         json={"resume_version_id": version_id, "job_id": job.json()["id"]},
         headers={"Idempotency-Key": "match-create"},
     )
-    suggestions = client.get(
-        f"/v1/match-analyses/{match.json()['id']}/suggestions"
-    )
     asyncio.run(
         client.app.state.matching_service.process_match(
             "usr_a",
@@ -153,6 +150,9 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
             trace_id="trace_match",
             task_id=match.json()["task_id"],
         )
+    )
+    suggestions = client.get(
+        f"/v1/match-analyses/{match.json()['id']}/suggestions"
     )
     completed = client.get(f"/v1/match-analyses/{match.json()['id']}")
 

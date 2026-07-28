@@ -192,6 +192,12 @@ class SuggestionService:
             )
             if analysis is None:
                 raise RuntimeError("Suggestion analysis is missing")
+            if analysis.status != "succeeded":
+                raise SuggestionServiceError(
+                    "MATCH_ANALYSIS_NOT_READY",
+                    "Match analysis is not ready for suggestion decisions",
+                    409,
+                )
             seed_version = await session.scalar(
                 select(ResumeVersion).where(
                     ResumeVersion.id == analysis.resume_version_id,
