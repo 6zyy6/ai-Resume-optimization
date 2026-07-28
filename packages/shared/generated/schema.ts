@@ -460,6 +460,17 @@ export interface components {
             /** Email */
             email: string;
         };
+        /** ClaimEvidenceInput */
+        ClaimEvidenceInput: {
+            /** Bullet Id */
+            bullet_id: string;
+            /** End */
+            end: number;
+            /** Fact Refs */
+            fact_refs: string[];
+            /** Start */
+            start: number;
+        };
         /** ConsentInput */
         ConsentInput: {
             /**
@@ -777,6 +788,8 @@ export interface components {
         VersionCreate: {
             /** Base Version */
             base_version: number;
+            /** Claim Evidence */
+            claim_evidence: components["schemas"]["ClaimEvidenceInput"][];
             snapshot: components["schemas"]["ResumeSnapshot"];
         };
         /** WechatLoginRequest */

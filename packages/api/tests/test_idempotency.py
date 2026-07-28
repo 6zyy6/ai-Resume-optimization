@@ -7,6 +7,7 @@ from test_resume_versions import (
     _resume,
     _run,
     _snapshot,
+    _version_request,
     _version_count,
     resume_client,
 )
@@ -23,7 +24,7 @@ def test_ten_identical_writes_replay_one_resume_version(resume_client):
     responses = [
         client.post(
             f"/v1/resumes/{resume_id}/versions",
-            json={"base_version": 0, "snapshot": _snapshot("one")},
+            json=_version_request(0, _snapshot("one")),
             headers=_headers("same-key"),
         )
         for _ in range(10)
@@ -40,12 +41,12 @@ def test_same_key_with_a_different_semantic_body_conflicts(resume_client):
     resume_id = _resume(client, "r-idem-conflict")
     first = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("reused"),
     )
     second = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("two")},
+        json=_version_request(0, _snapshot("two")),
         headers=_headers("reused"),
     )
 
@@ -202,17 +203,17 @@ def test_task4_write_replays_are_immutable_after_later_mutations(
 
     version_one = resume_http.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("immutable-version"),
     )
     resume_http.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 1, "snapshot": _snapshot("two")},
+        json=_version_request(1, _snapshot("two")),
         headers=_headers("immutable-version-two"),
     )
     assert resume_http.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("immutable-version"),
     ).json() == version_one.json()
 
@@ -223,7 +224,7 @@ def test_task4_write_replays_are_immutable_after_later_mutations(
     )
     resume_http.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 3, "snapshot": _snapshot("four")},
+        json=_version_request(3, _snapshot("four")),
         headers=_headers("immutable-version-four"),
     )
     replayed_restore = resume_http.post(

@@ -18,6 +18,7 @@ from app.db.models import (
 from app.main import create_app
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
+from app.modules.facts.service import FactService
 from app.modules.resumes.service import ResumeError, ResumeService
 
 
@@ -37,6 +38,7 @@ def resume_client(tmp_path):
     sql_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     _run(_seed_users(sql_session_factory))
     application = create_app(Settings(app_env="test", database_url="sqlite+aiosqlite://"))
+    application.state.fact_service = FactService(sql_session_factory)
     application.state.resume_service = ResumeService(sql_session_factory)
     application.dependency_overrides[require_session] = _authenticated
     with TestClient(application) as client:
@@ -67,6 +69,18 @@ def _snapshot(title: str) -> dict:
     return {"schema_version": "1", "title": title, "target": None, "sections": []}
 
 
+def _version_request(
+    base_version: int,
+    snapshot: dict,
+    claim_evidence: list[dict] | None = None,
+) -> dict:
+    return {
+        "base_version": base_version,
+        "snapshot": snapshot,
+        "claim_evidence": claim_evidence or [],
+    }
+
+
 def _resume(client, key="r-1") -> str:
     response = client.post(
         "/v1/resumes", json={"kind": "base", "title": "Base"}, headers=_headers(key)
@@ -81,12 +95,12 @@ def test_stale_resume_write_returns_visible_conflict(resume_client):
     resume_id = _resume(client)
     first = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("v-1"),
     )
     second = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("two")},
+        json=_version_request(0, _snapshot("two")),
         headers=_headers("v-2"),
     )
 
@@ -101,7 +115,7 @@ def test_normal_version_endpoint_rejects_forged_restore_operation(resume_client)
     resume_id = _resume(client, "forged-restore-resume")
     response = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one"), "operation": "restore"},
+        json={**_version_request(0, _snapshot("one")), "operation": "restore"},
         headers=_headers("forged-restore"),
     )
 
@@ -115,10 +129,16 @@ def test_nested_unknown_snapshot_field_is_rejected(resume_client):
     resume_id = _resume(client, "strict-snapshot-resume")
     response = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={
-            "base_version": 0,
-            "snapshot": {"schema_version": "1", "title": "one", "target": None, "sections": [], "unexpected": True},
-        },
+        json=_version_request(
+            0,
+            {
+                "schema_version": "1",
+                "title": "one",
+                "target": None,
+                "sections": [],
+                "unexpected": True,
+            },
+        ),
         headers=_headers("strict-snapshot"),
     )
 
@@ -215,12 +235,12 @@ def test_identical_snapshot_does_not_create_a_second_version(resume_client):
     resume_id = _resume(client)
     first = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("v-3"),
     )
     duplicate = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 1, "snapshot": _snapshot("one")},
+        json=_version_request(1, _snapshot("one")),
         headers=_headers("v-4"),
     )
 
@@ -234,9 +254,9 @@ def test_saving_an_old_snapshot_creates_a_new_current_head(resume_client):
     """Deduplicating against history leaves the authoritative head on unrelated content."""
     client, sessions = resume_client
     resume_id = _resume(client, "old-head-resume")
-    one = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 0, "snapshot": _snapshot("one")}, headers=_headers("old-head-1"))
-    two = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 1, "snapshot": _snapshot("two")}, headers=_headers("old-head-2"))
-    replayed = client.post(f"/v1/resumes/{resume_id}/versions", json={"base_version": 2, "snapshot": _snapshot("one")}, headers=_headers("old-head-3"))
+    one = client.post(f"/v1/resumes/{resume_id}/versions", json=_version_request(0, _snapshot("one")), headers=_headers("old-head-1"))
+    two = client.post(f"/v1/resumes/{resume_id}/versions", json=_version_request(1, _snapshot("two")), headers=_headers("old-head-2"))
+    replayed = client.post(f"/v1/resumes/{resume_id}/versions", json=_version_request(2, _snapshot("one")), headers=_headers("old-head-3"))
 
     assert one.status_code == 201
     assert two.status_code == 201
@@ -265,12 +285,12 @@ def test_restore_copies_history_into_a_new_immutable_row(resume_client):
     resume_id = _resume(client)
     one = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("one")},
+        json=_version_request(0, _snapshot("one")),
         headers=_headers("v-5"),
     ).json()
     client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 1, "snapshot": _snapshot("two")},
+        json=_version_request(1, _snapshot("two")),
         headers=_headers("v-6"),
     )
     restored = client.post(
@@ -291,7 +311,7 @@ def test_targeted_resume_does_not_change_the_base_snapshot_hash(resume_client):
     base_id = _resume(client)
     base = client.post(
         f"/v1/resumes/{base_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("base")},
+        json=_version_request(0, _snapshot("base")),
         headers=_headers("v-8"),
     ).json()
     _run(_job(sessions))
@@ -307,7 +327,7 @@ def test_targeted_resume_does_not_change_the_base_snapshot_hash(resume_client):
     )
     targeted_write = client.post(
         f"/v1/resumes/{targeted.json()['id']}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("tailored")},
+        json=_version_request(0, _snapshot("tailored")),
         headers=_headers("v-9"),
     )
 
@@ -321,15 +341,15 @@ def test_rejected_version_write_rolls_back_its_idempotency_record(resume_client)
     resume_id = _resume(client, "rollback-resume")
     response = client.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={
-            "base_version": 0,
-            "snapshot": {
+        json=_version_request(
+            0,
+            {
                 "schema_version": "1",
                 "title": "invalid",
                 "target": None,
                 "sections": [{"items": [{"text": "Unsupported claim", "fact_refs": []}]}],
             },
-        },
+        ),
         headers=_headers("rollback-version"),
     )
 

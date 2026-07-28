@@ -11,6 +11,21 @@ depends_on = None
 
 
 def upgrade() -> None:
+    legacy_base_references = op.get_bind().execute(
+        sa.text(
+            """
+            SELECT COUNT(*) FROM resumes
+            WHERE kind = 'base'
+              AND (base_resume_id IS NOT NULL OR job_description_id IS NOT NULL)
+            """
+        )
+    ).scalar_one()
+    if legacy_base_references:
+        raise RuntimeError(
+            f"legacy base references detected ({legacy_base_references}); "
+            "run scripts/audit_legacy_resume_references.py before retrying"
+        )
+
     with op.batch_alter_table("resumes") as batch:
         batch.add_column(sa.Column("head_version", sa.Integer(), nullable=False, server_default="0"))
         batch.add_column(sa.Column("head_version_id", sa.String(64), nullable=True))

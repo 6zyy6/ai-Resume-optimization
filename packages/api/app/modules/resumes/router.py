@@ -87,7 +87,14 @@ async def list_versions(resume_id: str, request: Request, cursor: str | None = Q
 @router.post("/{resume_id}/versions", status_code=201, response_model=ResumeVersionResponse)
 async def save_version(resume_id: str, payload: VersionCreate, request: Request, response: Response, idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), authenticated: AuthenticatedSession = Depends(require_session), service: ResumeService = Depends(get_resume_service)) -> ResumeVersionResponse:
     try:
-        saved = await service.save_resume_version(authenticated.user_id, resume_id, payload.base_version, payload.snapshot.model_dump(mode="json"), _key(idempotency_key, request))
+        saved = await service.save_resume_version(
+            authenticated.user_id,
+            resume_id,
+            payload.base_version,
+            payload.snapshot.model_dump(mode="json"),
+            _key(idempotency_key, request),
+            [item.model_dump() for item in payload.claim_evidence],
+        )
         response.status_code = saved.status_code
         return _version(saved)
     except ResumeError as error:

@@ -26,6 +26,7 @@ from test_resume_versions import (
     _headers,
     _resume,
     _snapshot,
+    _version_request,
     resume_client,
 )
 
@@ -145,7 +146,7 @@ def test_resumes_and_versions_have_terminal_page_contract(resume_client):
     for version in range(3):
         response = client.post(
             f"/v1/resumes/{resume_id}/versions",
-            json={"base_version": version, "snapshot": _snapshot(str(version))},
+            json=_version_request(version, _snapshot(str(version))),
             headers=_headers(f"version-page-{version}"),
         )
         assert response.status_code == 201
@@ -369,18 +370,12 @@ def test_twenty_semantic_conflicts_per_public_write_class(
         for index in range(20):
             winner = resume_http.post(
                 f"/v1/resumes/{resume_id}/versions",
-                json={
-                    "base_version": index,
-                    "snapshot": _snapshot(f"Winner {index}"),
-                },
+                json=_version_request(index, _snapshot(f"Winner {index}")),
                 headers=_headers(f"{key_prefix}{index}"),
             )
             loser = resume_http.post(
                 f"/v1/resumes/{resume_id}/versions",
-                json={
-                    "base_version": index,
-                    "snapshot": _snapshot(f"Loser {index}"),
-                },
+                json=_version_request(index, _snapshot(f"Loser {index}")),
                 headers=_headers(f"{key_prefix}{index}"),
             )
             _assert_semantic_conflict(winner, loser, 201)
@@ -393,7 +388,7 @@ def test_twenty_semantic_conflicts_per_public_write_class(
         resume_id = _resume(resume_http, "semantic-version-restore-setup")
         source_id = resume_http.post(
             f"/v1/resumes/{resume_id}/versions",
-            json={"base_version": 0, "snapshot": _snapshot("Source")},
+            json=_version_request(0, _snapshot("Source")),
             headers=_headers("semantic-version-restore-source"),
         ).json()["id"]
         for index in range(20):
@@ -480,7 +475,7 @@ def test_fifty_unknown_field_shapes_use_validation_envelope(
     resume_id = _resume(resume_http, "unknown-resume")
     version_id = resume_http.post(
         f"/v1/resumes/{resume_id}/versions",
-        json={"base_version": 0, "snapshot": _snapshot("known")},
+        json=_version_request(0, _snapshot("known")),
         headers=_headers("unknown-version"),
     ).json()["id"]
 
@@ -527,25 +522,24 @@ def test_fifty_unknown_field_shapes_use_validation_envelope(
                 resume_http.post(
                     f"/v1/resumes/{resume_id}/versions",
                     json={
-                        "base_version": 1,
-                        "snapshot": _snapshot("x"),
+                        **_version_request(1, _snapshot("x")),
                         extra: True,
                     },
                     headers=_headers(f"unknown-version-outer-{index}"),
                 ),
                 resume_http.post(
                     f"/v1/resumes/{resume_id}/versions",
-                    json={
-                        "base_version": 1,
-                        "snapshot": {**_snapshot("x"), extra: True},
-                    },
+                    json=_version_request(
+                        1,
+                        {**_snapshot("x"), extra: True},
+                    ),
                     headers=_headers(f"unknown-snapshot-{index}"),
                 ),
                 resume_http.post(
                     f"/v1/resumes/{resume_id}/versions",
-                    json={
-                        "base_version": 1,
-                        "snapshot": {
+                    json=_version_request(
+                        1,
+                        {
                             **_snapshot("x"),
                             "sections": [
                                 {
@@ -557,14 +551,14 @@ def test_fifty_unknown_field_shapes_use_validation_envelope(
                                 }
                             ],
                         },
-                    },
+                    ),
                     headers=_headers(f"unknown-section-{index}"),
                 ),
                 resume_http.post(
                     f"/v1/resumes/{resume_id}/versions",
-                    json={
-                        "base_version": 1,
-                        "snapshot": {
+                    json=_version_request(
+                        1,
+                        {
                             **_snapshot("x"),
                             "sections": [
                                 {
@@ -582,7 +576,7 @@ def test_fifty_unknown_field_shapes_use_validation_envelope(
                                 }
                             ],
                         },
-                    },
+                    ),
                     headers=_headers(f"unknown-bullet-{index}"),
                 ),
                 resume_http.post(
@@ -750,6 +744,14 @@ def _prepare_failure_operation(operation, fact_client, resume_client):
             0,
             snapshot,
             "failure-version-save",
+            [
+                {
+                    "bullet_id": "bullet_atomic",
+                    "start": 0,
+                    "end": len("Increased conversion by 20%"),
+                    "fact_refs": [fact.id],
+                }
+            ],
         )
     source = _run(
         service.save_resume_version(

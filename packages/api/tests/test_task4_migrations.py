@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -294,3 +297,48 @@ def test_nullable_reference_downgrade_refuses_before_schema_mutation(
             )
     finally:
         engine.dispose()
+
+
+def test_legacy_base_reference_upgrade_refuses_before_schema_or_data_mutation(
+    tmp_path, monkeypatch
+):
+    """A formerly valid base reference must fail preflight before 0002 DDL."""
+    database_path = tmp_path / "legacy-base-reference.db"
+    config = _config(database_path, monkeypatch)
+    command.upgrade(config, "0001")
+    engine = create_engine(f"sqlite:///{database_path}")
+    now = datetime.now(timezone.utc).isoformat()
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO users (id, status, locale, created_at) VALUES ('usr_legacy', 'active', 'zh-CN', :now)"), {"now": now})
+        connection.execute(text("INSERT INTO resumes (id, owner_user_id, kind, title, created_at) VALUES ('base_source', 'usr_legacy', 'base', 'Source', :now)"), {"now": now})
+        connection.execute(text("INSERT INTO job_descriptions (id, owner_user_id, title, raw_encrypted, status, created_at) VALUES ('job_legacy', 'usr_legacy', 'Role', 'redacted', 'ready', :now)"), {"now": now})
+        connection.execute(text("INSERT INTO resumes (id, owner_user_id, kind, title, base_resume_id, job_description_id, created_at) VALUES ('legacy_base', 'usr_legacy', 'base', 'Legacy', 'base_source', 'job_legacy', :now)"), {"now": now})
+    columns_before = [column["name"] for column in inspect(engine).get_columns("resumes")]
+    checks_before = inspect(engine).get_check_constraints("resumes")
+    with engine.connect() as connection:
+        data_before = hashlib.sha256(str(connection.execute(text("SELECT id, base_resume_id, job_description_id FROM resumes ORDER BY id")).all()).encode()).hexdigest()
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="legacy base references"):
+        command.upgrade(config, "0002")
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        assert [column["name"] for column in inspect(engine).get_columns("resumes")] == columns_before
+        assert inspect(engine).get_check_constraints("resumes") == checks_before
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001"
+            data_after = hashlib.sha256(str(connection.execute(text("SELECT id, base_resume_id, job_description_id FROM resumes ORDER BY id")).all()).encode()).hexdigest()
+        assert data_after == data_before
+    finally:
+        engine.dispose()
+
+
+def test_legacy_reference_audit_script_is_read_only_and_pii_safe(tmp_path):
+    """Operators need an audit path before a deliberately refusing migration."""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "audit_legacy_resume_references.py"
+    result = subprocess.run([sys.executable, str(script), "--database", str(tmp_path / "audit.db")], capture_output=True, text=True)
+
+    assert result.returncode in (0, 1)
+    assert "legacy_base_reference_count" in result.stdout
+    assert "redacted" not in result.stdout

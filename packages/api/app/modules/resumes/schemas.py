@@ -47,11 +47,21 @@ class ResumeListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class ClaimEvidenceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    bullet_id: str
+    start: int
+    end: int
+    fact_refs: list[str]
+
+
 class VersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     base_version: int
     snapshot: ResumeSnapshot
+    claim_evidence: list[ClaimEvidenceInput]
 
 
 class RestoreRequest(BaseModel):

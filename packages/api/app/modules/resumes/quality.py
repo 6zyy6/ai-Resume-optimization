@@ -17,8 +17,10 @@ _ENGLISH_STOPWORDS = {
     "into",
     "managed",
     "optimized",
+    "processed",
     "reduced",
     "resolved",
+    "handled",
     "supported",
     "the",
     "through",
@@ -27,6 +29,8 @@ _ENGLISH_STOPWORDS = {
     "with",
 }
 _CHINESE_STOPWORDS = {
+    "将",
+    "同比",
     "以及",
     "使用",
     "优化",
@@ -86,7 +90,7 @@ def check_exportable(snapshot: dict[str, Any], facts: Iterable[Any]) -> list[Qua
                 evidence_numbers = _numbers(evidence)
                 if claim_numbers - evidence_numbers:
                     issues.append(QualityIssue("BULLET_NEW_NUMBER", f"{path}.claims.{index}", "Bullet introduces an unsupported number"))
-                elif not _shares_textual_evidence(claim[0], evidence):
+                elif not supports_high_risk_entities(claim[0], evidence):
                     issues.append(QualityIssue("BULLET_CLAIM_NOT_COVERED", f"{path}.claims.{index}", "Bullet claim is unrelated to its fact"))
     return issues
 
@@ -121,11 +125,14 @@ def _numbers(text: str) -> set[str]:
     return {token.replace(",", "") for token in tokens}
 
 
-def _shares_textual_evidence(claim: str, evidence: str) -> bool:
-    return bool(_content_terms(claim) & _content_terms(evidence))
+def supports_high_risk_entities(claim: str, evidence: str) -> bool:
+    if _numbers(claim) - _numbers(evidence):
+        return False
+    claim_terms = _high_risk_terms(claim)
+    return claim_terms <= _high_risk_terms(evidence)
 
 
-def _content_terms(text: str) -> set[str]:
+def _high_risk_terms(text: str) -> set[str]:
     english = {
         term
         for raw in re.findall(r"[A-Za-z]+", text)
@@ -133,5 +140,7 @@ def _content_terms(text: str) -> set[str]:
     }
     chinese: set[str] = set()
     for span in re.findall(r"[\u4e00-\u9fff]+", text):
+        for stopword in _CHINESE_STOPWORDS:
+            span = span.replace(stopword, "")
         chinese.update(span[index : index + 2] for index in range(len(span) - 1))
-    return english | (chinese - _CHINESE_STOPWORDS)
+    return english | chinese

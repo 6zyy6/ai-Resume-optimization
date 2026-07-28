@@ -482,6 +482,20 @@ async def test_claim_links_persist_exact_rows_and_ranges(task4_sessions):
             ],
         },
         "claims-save",
+        [
+            {
+                "bullet_id": "bullet_claims",
+                "start": 0,
+                "end": 31,
+                "fact_refs": ["fact_claim_1"],
+            },
+            {
+                "bullet_id": "bullet_claims",
+                "start": 31,
+                "end": 53,
+                "fact_refs": ["fact_claim_2"],
+            },
+        ],
     )
     async with task4_sessions() as session:
         links = list(
@@ -495,7 +509,7 @@ async def test_claim_links_persist_exact_rows_and_ranges(task4_sessions):
         )
     assert [link.fact_id for link in links] == ["fact_claim_1", "fact_claim_2"]
     assert [link.claim_range for link in links] == [
-        {"start": 0, "end": 29},
+        {"start": 0, "end": 31},
         {"start": 31, "end": 53},
     ]
 
@@ -595,6 +609,14 @@ async def test_chained_aliases_support_mixed_target_references_and_fact_links(
             ],
         },
         "target-save",
+        [
+            {
+                "bullet_id": "bullet_1",
+                "start": 0,
+                "end": len("Increased conversion by 12.5%"),
+                "fact_refs": ["fact_historical"],
+            }
+        ],
     )
 
     async with task4_sessions() as session:

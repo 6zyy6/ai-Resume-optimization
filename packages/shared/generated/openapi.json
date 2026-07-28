@@ -91,6 +91,38 @@
         "title": "BindEmailRequest",
         "type": "object"
       },
+      "ClaimEvidenceInput": {
+        "additionalProperties": false,
+        "properties": {
+          "bullet_id": {
+            "title": "Bullet Id",
+            "type": "string"
+          },
+          "end": {
+            "title": "End",
+            "type": "integer"
+          },
+          "fact_refs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fact Refs",
+            "type": "array"
+          },
+          "start": {
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bullet_id",
+          "start",
+          "end",
+          "fact_refs"
+        ],
+        "title": "ClaimEvidenceInput",
+        "type": "object"
+      },
       "ConsentInput": {
         "additionalProperties": false,
         "properties": {
@@ -1031,13 +1063,21 @@
             "title": "Base Version",
             "type": "integer"
           },
+          "claim_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimEvidenceInput"
+            },
+            "title": "Claim Evidence",
+            "type": "array"
+          },
           "snapshot": {
             "$ref": "#/components/schemas/ResumeSnapshot"
           }
         },
         "required": [
           "base_version",
-          "snapshot"
+          "snapshot",
+          "claim_evidence"
         ],
         "title": "VersionCreate",
         "type": "object"
