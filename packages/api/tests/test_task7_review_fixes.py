@@ -26,6 +26,7 @@ from app.db.models import (
     BulletFactLink,
     Export,
     File,
+    JdRequirement,
     JobDescription,
     MatchAnalysis,
     Outbox,
@@ -34,6 +35,7 @@ from app.db.models import (
     Suggestion,
     SuggestionFactLink,
     Task,
+    UserAlias,
     VersionOperation,
 )
 from app.integrations.ai_client import FixtureAiClient, InternalAiClient
@@ -230,6 +232,60 @@ def test_targeted_resume_creation_locks_the_source_resume_row():
         )
     )
     assert sql.rstrip().endswith("FOR UPDATE")
+
+
+def test_targeted_key_supports_alias_owned_base_and_job(pipeline_client):
+    client, sessions, _ = pipeline_client
+    version_id, job_id = asyncio.run(
+        _seed_alias_owned_match_input(sessions)
+    )
+    client.app.state.matching_service = MatchingService(
+        sessions,
+        FixtureAiClient(
+            {
+                "match_resume_to_jd": {
+                    "result": {
+                        "matches": [
+                            {
+                                "category": "needs_evidence",
+                                "requirement_refs": [
+                                    "review_alias_requirement"
+                                ],
+                                "fact_refs": [],
+                            }
+                        ]
+                    }
+                }
+            }
+        ),
+    )
+
+    response = client.post(
+        "/v1/match-analyses",
+        json={"resume_version_id": version_id, "job_id": job_id},
+        headers={"Idempotency-Key": "review-alias-targeted"},
+    )
+    targeted = asyncio.run(
+        _version_and_resume(sessions, response.json()["resume_version_id"])
+    )
+
+    assert response.status_code == 202
+    assert targeted[1].owner_user_id == "usr_a"
+    assert targeted[1].base_resume_owner_user_id == "usr_b"
+    assert targeted[1].job_description_owner_user_id == "usr_b"
+    asyncio.run(
+        client.app.state.matching_service.process_match(
+            "usr_a",
+            response.json()["id"],
+            trace_id="trace-review-alias-targeted",
+            task_id=response.json()["task_id"],
+        )
+    )
+    suggestions = client.get(
+        f"/v1/match-analyses/{response.json()['id']}/suggestions"
+    )
+    assert suggestions.status_code == 200
+    assert suggestions.json()["items"][0]["requirement_text"] == "Python"
 
 
 def test_pi_final_match_creates_suggestion_links_used_by_public_response(
@@ -522,7 +578,9 @@ def test_0006_adds_job_task_correlation_and_targeted_resume_uniqueness(
         assert {
             "owner_user_id",
             "base_resume_id",
+            "base_resume_owner_user_id",
             "job_description_id",
+            "job_description_owner_user_id",
         } == set(
             schema.get_pk_constraint("targeted_resume_keys")[
                 "constrained_columns"
@@ -608,7 +666,9 @@ def test_0006_preserves_duplicate_history_and_selects_canonical_resume(
                     FROM targeted_resume_keys
                     WHERE owner_user_id = 'usr_history'
                       AND base_resume_id = 'resume_base'
+                      AND base_resume_owner_user_id = 'usr_history'
                       AND job_description_id = 'job_history'
+                      AND job_description_owner_user_id = 'usr_history'
                     """
                 )
             ).scalars().all()
@@ -916,6 +976,55 @@ async def _first_suggestion_id(sessions, analysis_id: str):
             )
             .order_by(Suggestion.id)
         )
+
+
+async def _seed_alias_owned_match_input(sessions):
+    async with sessions.begin() as session:
+        session.add(
+            UserAlias(alias_user_id="usr_b", canonical_user_id="usr_a")
+        )
+        base = Resume(
+            id="review_alias_base",
+            owner_user_id="usr_b",
+            kind="base",
+            title="Alias Base",
+            head_version=1,
+        )
+        version = ResumeVersion(
+            id="review_alias_version",
+            owner_user_id="usr_b",
+            resume_id=base.id,
+            snapshot_json={
+                "schema_version": "1",
+                "title": "Alias Base",
+                "target": None,
+                "sections": [],
+            },
+            snapshot_hash="a" * 64,
+            created_by="usr_b",
+        )
+        job = JobDescription(
+            id="review_alias_job",
+            owner_user_id="usr_b",
+            title="Alias Job",
+            raw_encrypted="Python",
+            status="parsed",
+        )
+        session.add_all([base, version, job])
+        await session.flush()
+        base.head_version_id = version.id
+        session.add(
+            JdRequirement(
+                id="review_alias_requirement",
+                owner_user_id="usr_b",
+                job_id=job.id,
+                type="must_have",
+                priority=1,
+                text_encrypted="Python",
+                confirmed=True,
+            )
+        )
+    return version.id, job.id
 
 
 async def _version_and_resume(sessions, version_id: str):

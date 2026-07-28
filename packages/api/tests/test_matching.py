@@ -361,6 +361,7 @@ async def _seed_other_owner_pipeline(sessions) -> None:
             owner_user_id="usr_b",
             resume_version_id=version.id,
             job_id=job.id,
+            job_owner_user_id="usr_b",
             status="succeeded",
             workflow_version="1",
         )

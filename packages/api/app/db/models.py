@@ -254,12 +254,12 @@ class TargetedResumeKey(Base):
     __tablename__ = "targeted_resume_keys"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["base_resume_id", "owner_user_id"],
+            ["base_resume_id", "base_resume_owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
             name="fk_targeted_key_base_owner",
         ),
         ForeignKeyConstraint(
-            ["job_description_id", "owner_user_id"],
+            ["job_description_id", "job_description_owner_user_id"],
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_targeted_key_job_owner",
         ),
@@ -280,7 +280,15 @@ class TargetedResumeKey(Base):
         primary_key=True,
     )
     base_resume_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    base_resume_owner_user_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
     job_description_id: Mapped[str] = mapped_column(
+        String(64),
+        primary_key=True,
+    )
+    job_description_owner_user_id: Mapped[str] = mapped_column(
         String(64),
         primary_key=True,
     )
@@ -436,7 +444,7 @@ class MatchAnalysis(OwnerMixin, Base):
             name="fk_match_analysis_version_owner",
         ),
         ForeignKeyConstraint(
-            ["job_id", "owner_user_id"],
+            ["job_id", "job_owner_user_id"],
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_match_analysis_job_owner",
         ),
@@ -445,6 +453,7 @@ class MatchAnalysis(OwnerMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     resume_version_id: Mapped[str] = mapped_column(String(64), nullable=False)
     job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
     task_id: Mapped[str | None] = mapped_column(String(64))
@@ -460,7 +469,7 @@ class MatchItem(OwnerMixin, Base):
             name="fk_match_item_analysis_owner",
         ),
         ForeignKeyConstraint(
-            ["requirement_id", "owner_user_id"],
+            ["requirement_id", "requirement_owner_user_id"],
             ["jd_requirements.id", "jd_requirements.owner_user_id"],
             name="fk_match_item_requirement_owner",
         ),
@@ -469,6 +478,7 @@ class MatchItem(OwnerMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     analysis_id: Mapped[str] = mapped_column(String(64), nullable=False)
     requirement_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    requirement_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False)
 

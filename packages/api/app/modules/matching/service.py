@@ -200,6 +200,7 @@ class MatchingService:
                 owner_user_id=owner,
                 resume_version_id=version.id,
                 job_id=job.id,
+                job_owner_user_id=job.owner_user_id,
                 status="queued",
                 workflow_version="match-resume-to-jd@1",
             )
@@ -223,6 +224,7 @@ class MatchingService:
                     owner_user_id=owner,
                     analysis_id=analysis.id,
                     requirement_id=requirement.id,
+                    requirement_owner_user_id=requirement.owner_user_id,
                     category=result.category,
                     evidence_refs=fact_refs,
                 )
@@ -338,9 +340,11 @@ class MatchingService:
                 )
             canonical = await MatchingService._canonical_targeted_resume(
                 session,
-                source_resume.owner_user_id,
+                owner,
                 source_resume.base_resume_id,
+                source_resume.base_resume_owner_user_id,
                 source_resume.job_description_id,
+                source_resume.job_description_owner_user_id,
             )
             if canonical is None or canonical.id == source_resume.id:
                 return source_version
@@ -364,9 +368,11 @@ class MatchingService:
             )
         targeted = await MatchingService._canonical_targeted_resume(
             session,
-            source_resume.owner_user_id,
+            owner,
             source_resume.id,
+            source_resume.owner_user_id,
             job.id,
+            job.owner_user_id,
         )
         if targeted is not None and targeted.head_version_id:
             current = await session.scalar(
@@ -397,7 +403,9 @@ class MatchingService:
                 TargetedResumeKey(
                     owner_user_id=owner,
                     base_resume_id=source_resume.id,
+                    base_resume_owner_user_id=source_resume.owner_user_id,
                     job_description_id=job.id,
+                    job_description_owner_user_id=job.owner_user_id,
                     resume_id=targeted.id,
                 )
             )
@@ -466,9 +474,16 @@ class MatchingService:
         session: AsyncSession,
         owner_user_id: str,
         base_resume_id: str | None,
+        base_resume_owner_user_id: str | None,
         job_description_id: str | None,
+        job_description_owner_user_id: str | None,
     ) -> Resume | None:
-        if base_resume_id is None or job_description_id is None:
+        if (
+            base_resume_id is None
+            or base_resume_owner_user_id is None
+            or job_description_id is None
+            or job_description_owner_user_id is None
+        ):
             return None
         return await session.scalar(
             select(Resume)
@@ -483,7 +498,11 @@ class MatchingService:
             .where(
                 TargetedResumeKey.owner_user_id == owner_user_id,
                 TargetedResumeKey.base_resume_id == base_resume_id,
+                TargetedResumeKey.base_resume_owner_user_id
+                == base_resume_owner_user_id,
                 TargetedResumeKey.job_description_id == job_description_id,
+                TargetedResumeKey.job_description_owner_user_id
+                == job_description_owner_user_id,
             )
         )
 
@@ -682,7 +701,7 @@ class MatchingService:
                         select(JdRequirement).where(
                             JdRequirement.id.in_(requirement_ids),
                             JdRequirement.owner_user_id
-                            == analysis.owner_user_id,
+                            == analysis.job_owner_user_id,
                         )
                     )
                 ).all()
@@ -755,7 +774,7 @@ class MatchingService:
                         select(JdRequirement).where(
                             JdRequirement.job_id == analysis.job_id,
                             JdRequirement.owner_user_id
-                            == analysis.owner_user_id,
+                            == analysis.job_owner_user_id,
                         )
                     )
                 ).all()
