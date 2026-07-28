@@ -12,6 +12,10 @@ from app.core.ids import new_id
 from app.db.models import BulletFactLink, Fact, FactSource, JobDescription, Resume, ResumeVersion, VersionOperation
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
+from app.modules.resumes.evidence_projection import (
+    VersionEvidenceProjection,
+    load_version_evidence,
+)
 from app.modules.resumes.quality import QualityIssue, supports_high_risk_entities
 
 
@@ -44,7 +48,11 @@ class ClaimLink:
     bullet_id: str
     start: int
     end: int
-    fact: Fact
+    fact_id: str
+    fact_owner_user_id: str
+    fact_value_encrypted: str
+    fact_status: str
+    fact_source_hashes: tuple[str, ...]
 
 
 def canonical_snapshot(snapshot: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -164,6 +172,7 @@ class ResumeService:
         idempotency_key: str,
         claim_evidence: list[dict[str, Any]] | None = None,
     ) -> SavedVersion:
+        self._validate_unique_bullet_ids(snapshot)
         evidence = claim_evidence or []
         return await self._append_version(
             owner_id,
@@ -235,22 +244,21 @@ class ResumeService:
                         "Resume version not found",
                         404,
                     )
-                snapshot = source.snapshot_json
+                projection = await load_version_evidence(session, source)
+                snapshot = projection.snapshot
                 links = [
                     ClaimLink(
-                        bullet_id=link.bullet_id,
-                        start=link.claim_range["start"],
-                        end=link.claim_range["end"],
-                        fact=await session.get(Fact, link.fact_id),
+                        bullet_id=claim.bullet_id,
+                        start=claim.start,
+                        end=claim.end,
+                        fact_id=fact.fact_id,
+                        fact_owner_user_id=fact.owner_user_id,
+                        fact_value_encrypted=fact.value_encrypted,
+                        fact_status=fact.status,
+                        fact_source_hashes=fact.source_hashes,
                     )
-                    for link in (
-                        await session.scalars(
-                            select(BulletFactLink).where(
-                                BulletFactLink.resume_version_id == source.id,
-                                BulletFactLink.owner_user_id == source.owner_user_id,
-                            )
-                        )
-                    ).all()
+                    for claim in projection.claims
+                    for fact in claim.facts
                 ]
             else:
                 if snapshot is None:
@@ -281,10 +289,15 @@ class ResumeService:
                     BulletFactLink(
                         resume_version_id=version.id,
                         bullet_id=link.bullet_id,
-                        fact_id=link.fact.id,
-                        fact_owner_user_id=link.fact.owner_user_id,
+                        fact_id=link.fact_id,
+                        fact_owner_user_id=link.fact_owner_user_id,
                         owner_user_id=resume.owner_user_id,
+                        claim_start=link.start,
+                        claim_end=link.end,
                         claim_range={"start": link.start, "end": link.end},
+                        fact_value_encrypted_at_link=link.fact_value_encrypted,
+                        fact_status_at_link=link.fact_status,
+                        fact_source_hashes_at_link=list(link.fact_source_hashes),
                     )
                 )
             resume.head_version += 1
@@ -315,14 +328,9 @@ class ResumeService:
             version = await session.scalar(select(ResumeVersion).where(ResumeVersion.id == resume.head_version_id, ResumeVersion.resume_id == resume.id, ResumeVersion.owner_user_id == resume.owner_user_id)) if resume.head_version_id else None
             if version is None:
                 return []
-            evidence = await self._version_claim_evidence(session, version.id)
+            projection = await load_version_evidence(session, version)
             try:
-                await self._validate_claim_evidence(
-                    session,
-                    owner_id,
-                    version.snapshot_json,
-                    evidence,
-                )
+                self._validate_persisted_evidence(projection)
             except ResumeError as error:
                 return [QualityIssue(error.code, "claim_evidence", error.message)]
             return []
@@ -334,6 +342,87 @@ class ResumeService:
         snapshot: dict[str, Any],
         claim_evidence: list[dict[str, Any]],
     ) -> list[ClaimLink]:
+        bullets = self._validate_claim_structure(snapshot, claim_evidence)
+        owners = await authorized_owner_ids(session, owner_id)
+        links: list[ClaimLink] = []
+        seen_links: set[tuple[str, int, int, str]] = set()
+        for item in claim_evidence:
+            facts: list[tuple[Fact, tuple[str, ...]]] = []
+            for fact_id in item["fact_refs"]:
+                fact = await session.get(Fact, fact_id)
+                if fact is None or fact.owner_user_id not in owners:
+                    raise ResumeError(
+                        "CLAIM_EVIDENCE_FACT_OWNER_INVALID",
+                        "Claim evidence fact belongs to another owner",
+                        422,
+                    )
+                if fact.status != "confirmed":
+                    raise ResumeError(
+                        "CLAIM_EVIDENCE_FACT_NOT_CONFIRMED",
+                        "Claim evidence fact is not confirmed",
+                        422,
+                    )
+                source_hashes = tuple(
+                    sorted(
+                        (
+                            await session.scalars(
+                                select(FactSource.source_hash).where(
+                                    FactSource.fact_id == fact.id,
+                                    FactSource.owner_user_id == fact.owner_user_id,
+                                )
+                            )
+                        ).all()
+                    )
+                )
+                if not source_hashes:
+                    raise ResumeError(
+                        "CLAIM_EVIDENCE_FACT_SOURCE_REQUIRED",
+                        "Claim evidence fact requires a source",
+                        422,
+                    )
+                facts.append((fact, source_hashes))
+            claim = bullets[item["bullet_id"]][item["start"] : item["end"]]
+            evidence = " ".join(fact.value_encrypted for fact, _ in facts)
+            if not facts or not supports_high_risk_entities(claim, evidence):
+                raise ResumeError(
+                    "CLAIM_EVIDENCE_FACT_MISMATCH",
+                    "Claim evidence does not support high-risk claim entities",
+                    422,
+                )
+            for fact, source_hashes in facts:
+                link_key = (
+                    item["bullet_id"],
+                    item["start"],
+                    item["end"],
+                    fact.id,
+                )
+                if link_key in seen_links:
+                    raise ResumeError(
+                        "CLAIM_EVIDENCE_RANGE_OVERLAP",
+                        "A fact cannot map to overlapping bullet claims",
+                        422,
+                    )
+                seen_links.add(link_key)
+                links.append(
+                    ClaimLink(
+                        bullet_id=item["bullet_id"],
+                        start=item["start"],
+                        end=item["end"],
+                        fact_id=fact.id,
+                        fact_owner_user_id=fact.owner_user_id,
+                        fact_value_encrypted=fact.value_encrypted,
+                        fact_status=fact.status,
+                        fact_source_hashes=source_hashes,
+                    )
+                )
+        return links
+
+    def _validate_claim_structure(
+        self,
+        snapshot: dict[str, Any],
+        claim_evidence: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        self._validate_unique_bullet_ids(snapshot)
         bullets = {
             bullet["id"]: bullet.get("text", "")
             for section in snapshot.get("sections", [])
@@ -385,65 +474,66 @@ class ResumeService:
                     "Claim evidence must cover the entire bullet",
                     422,
                 )
+        return bullets
 
-        owners = await authorized_owner_ids(session, owner_id)
-        links: list[ClaimLink] = []
-        seen_links: set[tuple[str, str]] = set()
-        for item in claim_evidence:
-            facts: list[Fact] = []
-            for fact_id in item["fact_refs"]:
-                fact = await session.get(Fact, fact_id)
-                if fact is None or fact.owner_user_id not in owners:
-                    raise ResumeError(
-                        "CLAIM_EVIDENCE_FACT_OWNER_INVALID",
-                        "Claim evidence fact belongs to another owner",
-                        422,
-                    )
+    def _validate_persisted_evidence(
+        self,
+        projection: VersionEvidenceProjection,
+    ) -> None:
+        evidence = [
+            {
+                "bullet_id": claim.bullet_id,
+                "start": claim.start,
+                "end": claim.end,
+                "fact_refs": [fact.fact_id for fact in claim.facts],
+            }
+            for claim in projection.claims
+        ]
+        bullets = self._validate_claim_structure(projection.snapshot, evidence)
+        for claim in projection.claims:
+            if not claim.facts:
+                raise ResumeError(
+                    "CLAIM_EVIDENCE_FACT_MISMATCH",
+                    "Claim evidence does not support high-risk claim entities",
+                    422,
+                )
+            for fact in claim.facts:
                 if fact.status != "confirmed":
                     raise ResumeError(
                         "CLAIM_EVIDENCE_FACT_NOT_CONFIRMED",
                         "Claim evidence fact is not confirmed",
                         422,
                     )
-                source = await session.scalar(
-                    select(FactSource.fact_id).where(
-                        FactSource.fact_id == fact.id,
-                        FactSource.owner_user_id == fact.owner_user_id,
-                    )
-                )
-                if source is None:
+                if not fact.source_hashes:
                     raise ResumeError(
                         "CLAIM_EVIDENCE_FACT_SOURCE_REQUIRED",
                         "Claim evidence fact requires a source",
                         422,
                     )
-                facts.append(fact)
-            claim = bullets[item["bullet_id"]][item["start"] : item["end"]]
-            evidence = " ".join(fact.value_encrypted for fact in facts)
-            if not facts or not supports_high_risk_entities(claim, evidence):
+            claim_text = bullets[claim.bullet_id][claim.start : claim.end]
+            fact_values = " ".join(
+                fact.value_encrypted for fact in claim.facts
+            )
+            if not supports_high_risk_entities(claim_text, fact_values):
                 raise ResumeError(
                     "CLAIM_EVIDENCE_FACT_MISMATCH",
                     "Claim evidence does not support high-risk claim entities",
                     422,
                 )
-            for fact in facts:
-                link_key = (item["bullet_id"], fact.id)
-                if link_key in seen_links:
-                    raise ResumeError(
-                        "CLAIM_EVIDENCE_RANGE_OVERLAP",
-                        "A fact cannot map to overlapping bullet claims",
-                        422,
-                    )
-                seen_links.add(link_key)
-                links.append(
-                    ClaimLink(
-                        bullet_id=item["bullet_id"],
-                        start=item["start"],
-                        end=item["end"],
-                        fact=fact,
-                    )
-                )
-        return links
+
+    @staticmethod
+    def _validate_unique_bullet_ids(snapshot: dict[str, Any]) -> None:
+        bullet_ids = [
+            bullet["id"]
+            for section in snapshot.get("sections", [])
+            for bullet in section.get("items", [])
+        ]
+        if len(bullet_ids) != len(set(bullet_ids)):
+            raise ResumeError(
+                "CLAIM_EVIDENCE_DUPLICATE_BULLET_ID",
+                "Bullet IDs must be unique within a resume snapshot",
+                422,
+            )
 
     async def _links_match(
         self,
@@ -465,48 +555,24 @@ class ResumeService:
                 link.fact_owner_user_id,
                 link.claim_range["start"],
                 link.claim_range["end"],
+                link.fact_value_encrypted_at_link,
+                link.fact_status_at_link,
+                tuple(link.fact_source_hashes_at_link),
             )
             for link in persisted
         } == {
             (
                 link.bullet_id,
-                link.fact.id,
-                link.fact.owner_user_id,
+                link.fact_id,
+                link.fact_owner_user_id,
                 link.start,
                 link.end,
+                link.fact_value_encrypted,
+                link.fact_status,
+                link.fact_source_hashes,
             )
             for link in links
         }
-
-    async def _version_claim_evidence(
-        self,
-        session: AsyncSession,
-        version_id: str,
-    ) -> list[dict[str, Any]]:
-        grouped: dict[tuple[str, int, int], list[str]] = {}
-        links = (
-            await session.scalars(
-                select(BulletFactLink).where(
-                    BulletFactLink.resume_version_id == version_id
-                )
-            )
-        ).all()
-        for link in links:
-            key = (
-                link.bullet_id,
-                link.claim_range["start"],
-                link.claim_range["end"],
-            )
-            grouped.setdefault(key, []).append(link.fact_id)
-        return [
-            {
-                "bullet_id": bullet_id,
-                "start": start,
-                "end": end,
-                "fact_refs": sorted(fact_refs),
-            }
-            for (bullet_id, start, end), fact_refs in sorted(grouped.items())
-        ]
 
     async def _resume(self, session: AsyncSession, owner_id: str, resume_id: str) -> Resume | None:
         owners = await authorized_owner_ids(session, owner_id)

@@ -90,7 +90,10 @@ def check_exportable(snapshot: dict[str, Any], facts: Iterable[Any]) -> list[Qua
                 evidence_numbers = _numbers(evidence)
                 if claim_numbers - evidence_numbers:
                     issues.append(QualityIssue("BULLET_NEW_NUMBER", f"{path}.claims.{index}", "Bullet introduces an unsupported number"))
-                elif not supports_high_risk_entities(claim[0], evidence):
+                elif not supports_high_risk_entities(claim[0], evidence) or (
+                    not _numbers(claim[0])
+                    and not _high_risk_terms(claim[0]) <= _high_risk_terms(evidence)
+                ):
                     issues.append(QualityIssue("BULLET_CLAIM_NOT_COVERED", f"{path}.claims.{index}", "Bullet claim is unrelated to its fact"))
     return issues
 
@@ -126,10 +129,102 @@ def _numbers(text: str) -> set[str]:
 
 
 def supports_high_risk_entities(claim: str, evidence: str) -> bool:
-    if _numbers(claim) - _numbers(evidence):
+    claim_numbers = _numbers(claim)
+    if claim_numbers - _numbers(evidence):
         return False
-    claim_terms = _high_risk_terms(claim)
-    return claim_terms <= _high_risk_terms(evidence)
+    if not claim_numbers:
+        return True
+    claim_signatures = _numeric_signatures(claim)
+    evidence_signatures = _numeric_signatures(evidence)
+    return all(
+        claim_signatures.get(number)
+        and claim_signatures[number] & evidence_signatures.get(number, set())
+        for number in claim_numbers
+    )
+
+
+_NUMBER_TOKEN = r"(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?![\d.,])"
+_ENGLISH_DIRECTION = {
+    "boost": "up",
+    "boosted": "up",
+    "decrease": "down",
+    "decreased": "down",
+    "drop": "down",
+    "dropped": "down",
+    "grew": "up",
+    "grow": "up",
+    "growth": "up",
+    "improve": "up",
+    "improved": "up",
+    "increase": "up",
+    "increased": "up",
+    "lower": "down",
+    "lowered": "down",
+    "reduce": "down",
+    "reduced": "down",
+}
+_ENGLISH_DIRECTION_PATTERN = "|".join(_ENGLISH_DIRECTION)
+_CHINESE_DIRECTION = {
+    "下降": "down",
+    "减少": "down",
+    "增长": "up",
+    "提高": "up",
+    "提升": "up",
+    "降低": "down",
+}
+
+
+def _numeric_signatures(text: str) -> dict[str, set[tuple[str, str]]]:
+    signatures: dict[str, set[tuple[str, str]]] = {}
+    covered: set[tuple[int, int]] = set()
+    english_patterns = (
+        rf"(?P<verb>{_ENGLISH_DIRECTION_PATTERN})\s+"
+        rf"(?P<subject>[A-Za-z][A-Za-z -]*?)\s+(?:by|to|with)\s*"
+        rf"(?P<number>{_NUMBER_TOKEN})",
+        rf"(?P<subject>[A-Za-z][A-Za-z -]*?)\s+"
+        rf"(?P<verb>{_ENGLISH_DIRECTION_PATTERN})\s+(?:by|to|with)\s*"
+        rf"(?P<number>{_NUMBER_TOKEN})",
+    )
+    for pattern in english_patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            number = match["number"].replace(",", "")
+            subject = " ".join(match["subject"].lower().split())
+            direction = _ENGLISH_DIRECTION[match["verb"].lower()]
+            signatures.setdefault(number, set()).add((direction, subject))
+            covered.add(match.span("number"))
+    chinese_patterns = (
+        rf"(?:将)?(?P<subject>[\u4e00-\u9fff]+?)(?:同比)?"
+        rf"(?P<verb>{'|'.join(_CHINESE_DIRECTION)})"
+        rf"(?P<number>{_NUMBER_TOKEN})",
+        rf"(?P<verb>{'|'.join(_CHINESE_DIRECTION)})"
+        rf"(?P<subject>[\u4e00-\u9fff]+?)"
+        rf"(?P<number>{_NUMBER_TOKEN})",
+    )
+    for pattern in chinese_patterns:
+        for match in re.finditer(pattern, text):
+            number = match["number"].replace(",", "")
+            subject = match["subject"].removeprefix("将").removeprefix("同比")
+            direction = _CHINESE_DIRECTION[match["verb"]]
+            signatures.setdefault(number, set()).add((direction, subject))
+            covered.add(match.span("number"))
+    for match in re.finditer(_NUMBER_TOKEN, text):
+        if match.span() in covered:
+            continue
+        number = match.group().replace(",", "")
+        after = re.match(r"\s*([A-Za-z]+(?:\s+[A-Za-z]+){0,2})", text[match.end() :])
+        if after:
+            signatures.setdefault(number, set()).add(
+                ("quantity", after.group(1).lower().split()[-1])
+            )
+            continue
+        before = re.search(r"([A-Za-z]+)\s*(?:by|to|with)?\s*$", text[: match.start()], re.IGNORECASE)
+        if before:
+            signatures.setdefault(number, set()).add(("quantity", before.group(1).lower()))
+            continue
+        chinese = re.search(r"([\u4e00-\u9fff]+)$", text[: match.start()])
+        if chinese:
+            signatures.setdefault(number, set()).add(("quantity", chinese.group(1)))
+    return signatures
 
 
 def _high_risk_terms(text: str) -> set[str]:

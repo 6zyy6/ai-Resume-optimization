@@ -99,8 +99,71 @@ def upgrade() -> None:
 
     with op.batch_alter_table("bullet_fact_links") as batch:
         batch.add_column(sa.Column("fact_owner_user_id", sa.String(64), nullable=True))
-    op.execute(
-        "UPDATE bullet_fact_links SET fact_owner_user_id = owner_user_id"
+        batch.add_column(sa.Column("claim_start", sa.Integer(), nullable=True))
+        batch.add_column(sa.Column("claim_end", sa.Integer(), nullable=True))
+        batch.add_column(
+            sa.Column("fact_value_encrypted_at_link", sa.Text(), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("fact_status_at_link", sa.String(32), nullable=True)
+        )
+        batch.add_column(
+            sa.Column("fact_source_hashes_at_link", sa.JSON(), nullable=True)
+        )
+    dialect = op.get_bind().dialect.name
+    if dialect == "postgresql":
+        op.execute(
+            """
+            UPDATE bullet_fact_links AS link
+            SET fact_owner_user_id = link.owner_user_id,
+                claim_start = CAST(link.claim_range ->> 'start' AS INTEGER),
+                claim_end = CAST(link.claim_range ->> 'end' AS INTEGER),
+                fact_value_encrypted_at_link = fact.value_encrypted,
+                fact_status_at_link = fact.status,
+                fact_source_hashes_at_link = COALESCE(
+                  (
+                    SELECT json_agg(source.source_hash ORDER BY source.source_hash)
+                    FROM fact_sources AS source
+                    WHERE source.fact_id = link.fact_id
+                      AND source.owner_user_id = link.owner_user_id
+                  ),
+                  CAST('[]' AS JSON)
+                )
+            FROM facts AS fact
+            WHERE fact.id = link.fact_id
+              AND fact.owner_user_id = link.owner_user_id
+            """
+        )
+    else:
+        op.execute(
+            """
+            UPDATE bullet_fact_links
+            SET fact_owner_user_id = owner_user_id,
+                claim_start = CAST(json_extract(claim_range, '$.start') AS INTEGER),
+                claim_end = CAST(json_extract(claim_range, '$.end') AS INTEGER),
+                fact_value_encrypted_at_link = (
+                  SELECT fact.value_encrypted FROM facts AS fact
+                  WHERE fact.id = bullet_fact_links.fact_id
+                    AND fact.owner_user_id = bullet_fact_links.owner_user_id
+                ),
+                fact_status_at_link = (
+                  SELECT fact.status FROM facts AS fact
+                  WHERE fact.id = bullet_fact_links.fact_id
+                    AND fact.owner_user_id = bullet_fact_links.owner_user_id
+                ),
+                fact_source_hashes_at_link = COALESCE(
+                  (
+                    SELECT json_group_array(source.source_hash)
+                    FROM fact_sources AS source
+                    WHERE source.fact_id = bullet_fact_links.fact_id
+                      AND source.owner_user_id = bullet_fact_links.owner_user_id
+                  ),
+                  '[]'
+                )
+            """
+        )
+    _replace_bullet_fact_primary_key(
+        ["resume_version_id", "bullet_id", "fact_id", "claim_start", "claim_end"]
     )
     with op.batch_alter_table("bullet_fact_links") as batch:
         batch.drop_constraint("fk_bullet_fact_fact_owner", type_="foreignkey")
@@ -115,8 +178,32 @@ def upgrade() -> None:
             existing_type=sa.String(64),
             nullable=False,
         )
+        batch.alter_column(
+            "claim_start",
+            existing_type=sa.Integer(),
+            nullable=False,
+        )
+        batch.alter_column(
+            "claim_end",
+            existing_type=sa.Integer(),
+            nullable=False,
+        )
+        batch.alter_column(
+            "fact_value_encrypted_at_link",
+            existing_type=sa.Text(),
+            nullable=False,
+        )
+        batch.alter_column(
+            "fact_status_at_link",
+            existing_type=sa.String(32),
+            nullable=False,
+        )
+        batch.alter_column(
+            "fact_source_hashes_at_link",
+            existing_type=sa.JSON(),
+            nullable=False,
+        )
 
-    dialect = op.get_bind().dialect.name
     if dialect == "sqlite":
         _install_sqlite_resume_triggers()
     elif dialect == "postgresql":
@@ -150,6 +237,15 @@ def downgrade() -> None:
             """
         )
     ).scalar()
+    duplicate_link = bind.execute(
+        sa.text(
+            """
+            SELECT 1 FROM bullet_fact_links
+            GROUP BY resume_version_id, bullet_id, fact_id
+            HAVING COUNT(*) > 1 LIMIT 1
+            """
+        )
+    ).scalar()
     incompatible_reference = bind.execute(
         sa.text(
             """
@@ -171,6 +267,10 @@ def downgrade() -> None:
     ).scalar()
     if duplicate:
         raise RuntimeError("cannot downgrade 0002 while restored duplicate snapshots exist")
+    if duplicate_link:
+        raise RuntimeError(
+            "cannot downgrade 0002 while multi-range bullet fact links exist"
+        )
     if incompatible_reference:
         raise RuntimeError("cannot downgrade 0002 while alias-owned references exist")
 
@@ -202,6 +302,9 @@ def downgrade() -> None:
     if dialect == "sqlite":
         _install_sqlite_fact_triggers()
 
+    _replace_bullet_fact_primary_key(
+        ["resume_version_id", "bullet_id", "fact_id"]
+    )
     with op.batch_alter_table("bullet_fact_links") as batch:
         batch.drop_constraint("fk_bullet_fact_fact_owner", type_="foreignkey")
         batch.create_foreign_key(
@@ -210,6 +313,11 @@ def downgrade() -> None:
             ["fact_id", "owner_user_id"],
             ["id", "owner_user_id"],
         )
+        batch.drop_column("fact_source_hashes_at_link")
+        batch.drop_column("fact_status_at_link")
+        batch.drop_column("fact_value_encrypted_at_link")
+        batch.drop_column("claim_end")
+        batch.drop_column("claim_start")
         batch.drop_column("fact_owner_user_id")
 
     with op.batch_alter_table("resume_versions") as batch:
@@ -261,6 +369,18 @@ def downgrade() -> None:
         batch.drop_column("base_resume_owner_user_id")
         batch.drop_column("head_version_id")
         batch.drop_column("head_version")
+
+
+def _replace_bullet_fact_primary_key(columns: list[str]) -> None:
+    constraint = sa.inspect(op.get_bind()).get_pk_constraint("bullet_fact_links")
+    name = constraint.get("name")
+    options = {}
+    if name is None:
+        name = "pk_bullet_fact_links"
+        options["naming_convention"] = {"pk": "pk_%(table_name)s"}
+    with op.batch_alter_table("bullet_fact_links", **options) as batch:
+        batch.drop_constraint(name, type_="primary")
+        batch.create_primary_key("pk_bullet_fact_links", columns)
 
 
 def _install_sqlite_resume_triggers() -> None:

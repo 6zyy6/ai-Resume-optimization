@@ -310,8 +310,33 @@ class BulletFactLink(OwnerMixin, Base):
     resume_version_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     bullet_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     fact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claim_start: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=lambda context: context.get_current_parameters()["claim_range"]["start"],
+    )
+    claim_end: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=lambda context: context.get_current_parameters()["claim_range"]["end"],
+    )
     fact_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_range: Mapped[dict] = mapped_column(JSON, nullable=False)
+    fact_value_encrypted_at_link: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+    )
+    fact_status_at_link: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="unconfirmed",
+    )
+    fact_source_hashes_at_link: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
 
 
 class VersionOperation(OwnerMixin, Base):
