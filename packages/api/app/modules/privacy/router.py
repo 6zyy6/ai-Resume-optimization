@@ -4,9 +4,10 @@ from fastapi import APIRouter, Body, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.contracts import ApiErrorEnvelope
+from app.core.constants import SESSION_COOKIE_NAME
 from app.core.errors import createApiError
 from app.core.middleware import get_request_context
-from app.modules.auth.router import SESSION_COOKIE, raise_auth_error, require_session
+from app.modules.auth.router import raise_auth_error, require_session
 from app.modules.auth.schemas import EmptyRequest
 from app.modules.auth.service import AuthError, AuthenticatedSession
 from app.modules.privacy.service import PrivacyError, PrivacyService, PrivacyTask
@@ -97,7 +98,7 @@ async def request_deletion(
     service: PrivacyService = Depends(get_privacy_service),
 ) -> PrivacyTaskResponse:
     auth_service = request.app.state.auth_service
-    raw_token = request.cookies.get(SESSION_COOKIE)
+    raw_token = request.cookies.get(SESSION_COOKIE_NAME)
     authenticated = await auth_service.authenticate(raw_token)
     if authenticated is None:
         replay_identity = await auth_service.identify_deletion_replay(raw_token)

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Body, Depends, Request, Response, Security
 from fastapi.security import APIKeyCookie
 
 from app.contracts import ApiErrorEnvelope
+from app.core.constants import SESSION_COOKIE_NAME
 from app.core.errors import createApiError
 from app.core.middleware import get_request_context
 from app.modules.auth.schemas import (
@@ -29,8 +30,7 @@ router = APIRouter(
         for status in (401, 403, 404, 409, 422, 429, 503)
     },
 )
-SESSION_COOKIE = "session"
-session_cookie = APIKeyCookie(name=SESSION_COOKIE, auto_error=False)
+session_cookie = APIKeyCookie(name=SESSION_COOKIE_NAME, auto_error=False)
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -52,7 +52,7 @@ def raise_auth_error(request: Request, error: AuthError) -> None:
 
 def set_session_cookie(response: Response, result: LoginResult, service: AuthService) -> None:
     response.set_cookie(
-        SESSION_COOKIE,
+        SESSION_COOKIE_NAME,
         result.raw_token,
         expires=result.expires_at,
         httponly=True,
@@ -149,7 +149,7 @@ async def refresh(
     service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedResponse:
     try:
-        result = await service.refresh(request.cookies.get(SESSION_COOKIE))
+        result = await service.refresh(request.cookies.get(SESSION_COOKIE_NAME))
     except AuthError as error:
         raise_auth_error(request, error)
     set_session_cookie(response, result, service)
@@ -162,10 +162,10 @@ async def logout(
     _payload: EmptyRequest | None = Body(default=None),
     service: AuthService = Depends(get_auth_service),
 ) -> Response:
-    await service.logout(request.cookies.get(SESSION_COOKIE))
+    await service.logout(request.cookies.get(SESSION_COOKIE_NAME))
     response = Response(status_code=204)
     response.delete_cookie(
-        SESSION_COOKIE,
+        SESSION_COOKIE_NAME,
         httponly=True,
         secure=service.cookie_secure,
         samesite="lax",

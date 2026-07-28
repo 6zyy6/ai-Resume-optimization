@@ -5,6 +5,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.constants import SESSION_COOKIE_NAME
 from app.core.errors import createApiError
 from app.core.ids import new_id
 
@@ -31,10 +32,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 class CsrfProtectionMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, trusted_proxy_ips: tuple[str, ...] = ()):
+        super().__init__(app)
+        self._trusted_proxy_ips = frozenset(trusted_proxy_ips)
+
     async def dispatch(self, request: Request, call_next):
         if (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
-            and "session" in request.cookies
+            and SESSION_COOKIE_NAME in request.cookies
             and self._is_cross_site(request)
         ):
             error = createApiError(
@@ -46,8 +51,7 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
             return JSONResponse(status_code=403, content=error.detail)
         return await call_next(request)
 
-    @staticmethod
-    def _is_cross_site(request: Request) -> bool:
+    def _is_cross_site(self, request: Request) -> bool:
         fetch_site = request.headers.get("Sec-Fetch-Site")
         if fetch_site and fetch_site.lower() not in {
             "same-origin",
@@ -69,7 +73,14 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
             or parsed.fragment
         ):
             return True
-        forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip()
+        client_host = request.client.host if request.client else None
+        forwarded_proto = ""
+        if client_host in self._trusted_proxy_ips:
+            forwarded_proto = (
+                request.headers.get("X-Forwarded-Proto", "")
+                .split(",", 1)[0]
+                .strip()
+            )
         target_scheme = (
             forwarded_proto
             if forwarded_proto in {"http", "https"}

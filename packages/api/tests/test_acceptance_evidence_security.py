@@ -100,7 +100,7 @@ def test_release_evidence_rejects_unsafe_raw_log_paths(tmp_path, kind):
                 "Sec-Fetch-Site": "same-origin",
                 "X-Forwarded-Proto": "https",
             },
-            201,
+            403,
         ),
         (
             {
@@ -116,7 +116,7 @@ def test_release_evidence_rejects_unsafe_raw_log_paths(tmp_path, kind):
 def test_csrf_origin_policy_handles_origin_only_malformed_and_proxy_headers(
     resume_client, browser_headers, expected_status
 ):
-    """Origin validation uses the request Host, allowing only proxy protocol adaptation."""
+    """Origin validation ignores forwarded protocol from untrusted clients."""
     client, _ = resume_client
     response = client.post(
         "/v1/facts",

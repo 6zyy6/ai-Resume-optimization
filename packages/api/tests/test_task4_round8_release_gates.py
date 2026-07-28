@@ -1,10 +1,13 @@
+import asyncio
 import hashlib
 import importlib
 import json
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 
+from app.db.models import Fact, Resume
 from test_resume_versions import _headers, _resume, _snapshot, _version_request, resume_client
 
 
@@ -13,11 +16,13 @@ WRITE_CASES = [
         "resume_create",
         "/v1/resumes",
         {"kind": "base", "title": "Cross-site protected"},
+        Resume,
     ),
     (
         "fact_create",
         "/v1/facts",
         {"kind": "responsibility", "value": "Protected write"},
+        Fact,
     ),
 ]
 MALICIOUS_BROWSER_HEADERS = [
@@ -45,14 +50,16 @@ def _cookie_write_headers(key: str, extra: dict[str, str]) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    ("name", "route", "payload"), WRITE_CASES, ids=[case[0] for case in WRITE_CASES]
+    ("name", "route", "payload", "model"),
+    WRITE_CASES,
+    ids=[case[0] for case in WRITE_CASES],
 )
 @pytest.mark.parametrize("browser_headers", MALICIOUS_BROWSER_HEADERS)
 def test_cookie_session_rejects_cross_site_writes_for_public_non_auth_routes(
-    resume_client, name, route, payload, browser_headers
+    resume_client, name, route, payload, model, browser_headers
 ):
     """Cookie-authenticated writes reject hostile Origin and Fetch Metadata before mutation."""
-    client, _ = resume_client
+    client, sessions = resume_client
     response = client.post(
         route,
         json=payload,
@@ -62,13 +69,21 @@ def test_cookie_session_rejects_cross_site_writes_for_public_non_auth_routes(
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CSRF_ORIGIN_FORBIDDEN"
 
+    async def count_rows() -> int:
+        async with sessions() as session:
+            return int(await session.scalar(select(func.count()).select_from(model)))
+
+    assert asyncio.run(count_rows()) == 0
+
 
 @pytest.mark.parametrize(
-    ("name", "route", "payload"), WRITE_CASES, ids=[case[0] for case in WRITE_CASES]
+    ("name", "route", "payload", "_model"),
+    WRITE_CASES,
+    ids=[case[0] for case in WRITE_CASES],
 )
 @pytest.mark.parametrize("browser_headers", COMPATIBLE_CLIENT_HEADERS)
 def test_cookie_session_keeps_same_origin_and_non_browser_write_compatibility(
-    resume_client, name, route, payload, browser_headers
+    resume_client, name, route, payload, _model, browser_headers
 ):
     """The explicit policy permits same-origin browsers and signed non-browser API clients."""
     client, _ = resume_client
@@ -106,27 +121,92 @@ def test_version_list_reports_persisted_restore_operation(resume_client):
     assert operations[restored.json()["id"]] == "restore"
 
 
-def _write_release_manifest(tmp_path: Path) -> tuple[Path, dict]:
+_ACCEPTANCE_GROUP_COUNTS = {
+    "ENG": 10,
+    "FLOW": 14,
+    "WEB": 10,
+    "MP": 10,
+    "AI": 14,
+    "FILE": 12,
+    "DATA": 10,
+    "PERF": 12,
+    "SEC": 14,
+    "OBS": 12,
+    "UX": 8,
+    "USER": 10,
+    "OPS": 10,
+}
+ACCEPTANCE_IDS = [
+    f"{group}-{index:02d}"
+    for group, count in _ACCEPTANCE_GROUP_COUNTS.items()
+    for index in range(1, count + 1)
+]
+
+
+def _write_release_manifest(
+    tmp_path: Path,
+    *,
+    acceptance_status: str = "PASS",
+) -> tuple[Path, dict]:
     release_dir = tmp_path / "artifacts" / "acceptance" / "task4-local"
     logs_dir = release_dir / "logs"
     logs_dir.mkdir(parents=True)
     raw_log = logs_dir / "focused.log"
     raw_log.write_text("42 passed\n")
+    raw_log_sha256 = hashlib.sha256(raw_log.read_bytes()).hexdigest()
+    item_status = {
+        "PASS": "PASS",
+        "FAIL": "FAIL",
+        "BLOCKED": "BLOCKED",
+    }.get(acceptance_status, "PASS")
     manifest = {
         "release_id": "task4-local",
         "commit_sha": "a" * 40,
         "created_at": "2026-07-28T00:00:00+00:00",
-        "scope": ["task4"],
-        "acceptance_status": "PASS",
+        "scope": ["release"] if acceptance_status == "PASS" else ["task4"],
+        "acceptance_status": acceptance_status,
+        "web_image_digest": f"sha256:{'b' * 64}",
+        "api_image_digest": f"sha256:{'c' * 64}",
+        "pi_image_digest": f"sha256:{'d' * 64}",
+        "worker_image_digest": f"sha256:{'e' * 64}",
+        "miniprogram_build_version": "mp-20260728.1",
+        "database_schema_version": "202607280001",
+        "prompt_version": "prompt-v1",
+        "workflow_version": "workflow-v1",
+        "model_route_version": "route-v1",
+        "template_version": "template-v1",
+        "test_environment": "unit-test",
+        "executor": "executor@example.com",
+        "reviewer": "reviewer@example.com",
+        "open_severity_counts": {
+            "sev1": 0,
+            "sev2": 0,
+            "sev3": 0,
+            "sev4": 0,
+        },
         "commands": [
             {
-                "command": ".venv/bin/python -m pytest packages/api/tests -q",
+                "command": command,
                 "started_at": "2026-07-28T00:00:00+00:00",
                 "ended_at": "2026-07-28T00:01:00+00:00",
                 "exit_code": 0,
                 "raw_log": "logs/focused.log",
-                "raw_log_sha256": hashlib.sha256(raw_log.read_bytes()).hexdigest(),
+                "raw_log_sha256": raw_log_sha256,
             }
+            for command in ("pnpm generate", "pnpm lint", "pnpm test", "pnpm build")
+        ],
+        "acceptance_items": [
+            {
+                "id": acceptance_id,
+                "status": item_status,
+                "evidence": [
+                    {
+                        "path": "logs/focused.log",
+                        "sha256": raw_log_sha256,
+                    }
+                ],
+            }
+            for acceptance_id in ACCEPTANCE_IDS
         ],
     }
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
@@ -146,7 +226,22 @@ def _verify_release_evidence(release_dir: Path) -> None:
         ("manifest", "created_at"),
         ("manifest", "scope"),
         ("manifest", "acceptance_status"),
+        ("manifest", "web_image_digest"),
+        ("manifest", "api_image_digest"),
+        ("manifest", "pi_image_digest"),
+        ("manifest", "worker_image_digest"),
+        ("manifest", "miniprogram_build_version"),
+        ("manifest", "database_schema_version"),
+        ("manifest", "prompt_version"),
+        ("manifest", "workflow_version"),
+        ("manifest", "model_route_version"),
+        ("manifest", "template_version"),
+        ("manifest", "test_environment"),
+        ("manifest", "executor"),
+        ("manifest", "reviewer"),
+        ("manifest", "open_severity_counts"),
         ("manifest", "commands"),
+        ("manifest", "acceptance_items"),
         ("command", "command"),
         ("command", "started_at"),
         ("command", "ended_at"),
@@ -171,9 +266,7 @@ def test_release_evidence_verifier_rejects_missing_required_fields(
 def test_release_evidence_verifier_accepts_complete_hashed_manifest(
     tmp_path, status
 ):
-    release_dir, manifest = _write_release_manifest(tmp_path)
-    manifest["acceptance_status"] = status
-    (release_dir / "manifest.json").write_text(json.dumps(manifest))
+    release_dir, _ = _write_release_manifest(tmp_path, acceptance_status=status)
 
     assert _verify_release_evidence(release_dir) is None
 

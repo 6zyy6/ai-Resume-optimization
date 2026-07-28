@@ -88,7 +88,10 @@ def create_app(
 ) -> FastAPI:
     resolved = settings or get_settings()
     application = FastAPI(title="AI Resume API", version="1")
-    application.add_middleware(CsrfProtectionMiddleware)
+    application.add_middleware(
+        CsrfProtectionMiddleware,
+        trusted_proxy_ips=resolved.trusted_proxy_ips,
+    )
     application.add_middleware(RequestContextMiddleware)
     application.state.auth_service = build_default_auth_service(
         resolved.app_env,
