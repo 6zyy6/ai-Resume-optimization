@@ -577,7 +577,7 @@ git commit -m "feat(api): add optimization and export pipeline"
 
 - [ ] **Step 1: Write failing reducer, save and accessibility tests**
 
-Test 20 undo operations and safe underflow; debounce and fallback timers; dirty draft retained on API failure; conflict stops autosave; malicious return URLs resolve to `/home`; every interactive control has a name; status uses text and icon, not color alone.
+Test 20 undo operations and safe underflow; debounce and fallback timers; dirty draft retained on API failure; conflict stops autosave; malicious return URLs resolve to `/home`; every interactive control has a name; status uses text and icon, not color alone. Add Hallmark state fixtures proving every reusable interactive component renders default, hover, focus-visible, active, disabled, loading, error and success without changing its accessible name.
 
 - [ ] **Step 2: Run tests and confirm RED**
 
@@ -587,7 +587,9 @@ Expected: FAIL because Web package and components do not exist.
 
 - [ ] **Step 3: Implement reusable UI and every route**
 
-Use one primary action per page; desktop editor columns are 240 px / min 520 px / 360 px, tablet two columns, mobile one column. Implement the two complete flows against the shared client, but keep fixture API injection for deterministic E2E. Add keyboard suggestion actions A/E/I/Z only when focus is outside inputs.
+Run the Hallmark pre-flight scan before editing UI and record the detected font, palette, spacing, motion and framework signals. State the selected macrostructure, theme, nav, footer and enrichment before writing page code; do not reuse a generic hero → three features → CTA structure. Use `packages/design-tokens` as the monorepo token source, keep page and component styles on named tokens, and do not invent metrics, testimonials or logos.
+
+Use one primary action per page; desktop editor columns are 240 px / min 520 px / 360 px, tablet two columns, mobile one column. Implement the two complete flows against the shared client, but keep fixture API injection for deterministic E2E. Add keyboard suggestion actions A/E/I/Z only when focus is outside inputs. Implement all eight states for every interactive component, visible ≥3:1 `:focus-visible`, reduced-motion behavior, and animations limited to transform/opacity.
 
 - [ ] **Step 4: Run component tests and responsive E2E**
 
@@ -595,7 +597,9 @@ Run: `pnpm --filter @resume/web test`
 
 Run: `pnpm exec playwright test tests/e2e-web --project=chromium`
 
-Expected: tests pass at 1440×900, 1024×768 and 390×844 with no horizontal overflow.
+Run Hallmark responsive checks at 320, 375, 414 and 768 px in addition to the product acceptance viewports 1440×900, 1024×768 and 390×844. Assert no horizontal overflow, no clipped display text and no two-line primary navigation/CTA labels. Run the Hallmark 58-gate slop test and record the six-axis pre-emit critique; every gate must pass and every axis must score at least 3/5.
+
+Expected: component, accessibility and E2E tests pass at all seven widths; Hallmark slop test is 58/58.
 
 - [ ] **Step 5: Commit**
 
@@ -642,7 +646,7 @@ git commit -m "feat(web): deliver resume creation and optimization"
 
 - [ ] **Step 1: Write failing platform and lifecycle tests**
 
-Test static import boundary, active-click login, every write gets an idempotency key, local draft ≤200 KB, 7-day expiry, successful sync removes local draft, `onHide` flushes dirty edits, `onShow` refreshes task/version, and unavailable save-file capability displays an alternative without reporting success.
+Test static import boundary, active-click login, every write gets an idempotency key, local draft ≤200 KB, 7-day expiry, successful sync removes local draft, `onHide` flushes dirty edits, `onShow` refreshes task/version, and unavailable save-file capability displays an alternative without reporting success. Add Hallmark component-state fixtures for default, hover, focus-visible, active, disabled, loading, error and success; touch-only production behavior may map hover to the same visual token as default, but the state contract remains explicit.
 
 - [ ] **Step 2: Run tests and confirm RED**
 
@@ -651,6 +655,8 @@ Run: `pnpm --filter @resume/miniprogram test`
 Expected: FAIL because the package is missing.
 
 - [ ] **Step 3: Implement pages and adapters**
+
+Reuse the Web design language and `packages/design-tokens` semantic roles while adapting structure to small-screen task flow; do not create a second unrelated theme. Apply Hallmark token, honest-copy, typography, focus, reduced-motion and eight-state rules to Taro components.
 
 Use 44×44 px minimum controls, one primary question per screen, fixed bottom actions that move above the keyboard, button-based sorting, full-screen suggestion/source views, and remote preview/export. Keep complete files and long-lived tokens out of local storage.
 
@@ -662,7 +668,9 @@ Run: `rg -n 'wx\\.' app/miniprogram/src --glob '!platform/**'`
 
 Run: `pnpm --filter @resume/miniprogram build`
 
-Expected: tests/build pass and the scan returns no matches outside `platform`.
+Run Hallmark layout checks at 320, 375, 414 and 768 px, then run the 58-gate slop test against all shared shells, editor, suggestion and source views.
+
+Expected: tests/build pass, the scan returns no matches outside `platform`, all four widths have no overflow or keyboard obstruction, and Hallmark slop test is 58/58.
 
 - [ ] **Step 5: Commit**
 

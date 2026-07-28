@@ -17,6 +17,10 @@
 ## 代码约定
 
 - UI 优先复用 `app/components/ui`
+- Web 与小程序 UI 设计、实现和审查使用 Hallmark；开始编码前先扫描现有字体、色板、间距、动效和框架，不覆盖既有设计系统
+- 颜色、字体、间距、字号、圆角和动效统一引用 `packages/design-tokens` 中的命名 Token，不在组件内临时写 hex、rgb、OKLCH 或独立字体栈
+- 不虚构用户数、提升比例、评价、合作品牌或案例；没有真实数据时使用明确占位或改用非数据型布局
+- 交互组件必须覆盖 default、hover、focus-visible、active、disabled、loading、error、success 八种状态
 - 接口错误统一走 `createApiError`
 - 共享类型放在 `packages/shared`，不要在页面内重复声明
 
@@ -24,7 +28,8 @@
 
 - 修改业务逻辑后运行 `pnpm test`
 - 修改类型或接口后运行 `pnpm build`
-- 修改 UI 后检查桌面端和移动端布局
+- 修改 UI 后至少检查 320、375、414、768 px，并执行规格要求的 390、1024、1440 px 布局检查
+- 页面交付前运行 Hallmark 58 项 slop test；任一项失败先修复，不以截图主观判断替代
 
 ## 计划执行
 
