@@ -151,7 +151,7 @@ class ResumeService:
             await self.idempotency.complete(session, claim, 200, response)
             return SavedResume(response)
 
-    async def versions(self, owner_id: str, resume_id: str, cursor: str | None = None, limit: int = 20) -> tuple[list[ResumeVersion], str | None] | None:
+    async def versions(self, owner_id: str, resume_id: str, cursor: str | None = None, limit: int = 20) -> tuple[list[SavedVersion], str | None] | None:
         async with self.sessions() as session:
             resume = await self._resume(session, owner_id, resume_id)
             if resume is None:
@@ -161,7 +161,39 @@ class ResumeService:
                 created_at, identifier = _decode_cursor(cursor)
                 query = query.where((ResumeVersion.created_at > created_at) | ((ResumeVersion.created_at == created_at) & (ResumeVersion.id > identifier)))
             rows = list((await session.scalars(query.limit(limit + 1))).all())
-            return rows[:limit], _cursor(rows[-2]) if len(rows) > limit else None
+            page_rows = rows[:limit]
+            operations_by_version: dict[str, list[str]] = {
+                row.id: [] for row in page_rows
+            }
+            if page_rows:
+                operations = (
+                    await session.scalars(
+                        select(VersionOperation).where(
+                            VersionOperation.version_id.in_(
+                                [row.id for row in page_rows]
+                            ),
+                            VersionOperation.owner_user_id == resume.owner_user_id,
+                        )
+                    )
+                ).all()
+                for operation in operations:
+                    operations_by_version[operation.version_id].append(
+                        operation.operation_type
+                    )
+            saved: list[SavedVersion] = []
+            for row in page_rows:
+                operation_types = operations_by_version[row.id]
+                if (
+                    len(operation_types) != 1
+                    or operation_types[0] not in {"save", "restore"}
+                ):
+                    raise ResumeError(
+                        "RESUME_VERSION_OPERATION_INVALID",
+                        "Resume version operation history is invalid",
+                        500,
+                    )
+                saved.append(SavedVersion(row, 200, operation_types[0]))
+            return saved, _cursor(rows[-2]) if len(rows) > limit else None
 
     async def save_resume_version(
         self,

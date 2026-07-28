@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import Settings, get_settings
 from app.core.errors import createApiError
-from app.core.middleware import RequestContextMiddleware, get_request_context
+from app.core.middleware import (
+    CsrfProtectionMiddleware,
+    RequestContextMiddleware,
+    get_request_context,
+)
 from app.modules.auth.router import router as auth_router
 from app.modules.auth.service import (
     AuthRepository,
@@ -84,6 +88,7 @@ def create_app(
 ) -> FastAPI:
     resolved = settings or get_settings()
     application = FastAPI(title="AI Resume API", version="1")
+    application.add_middleware(CsrfProtectionMiddleware)
     application.add_middleware(RequestContextMiddleware)
     application.state.auth_service = build_default_auth_service(
         resolved.app_env,

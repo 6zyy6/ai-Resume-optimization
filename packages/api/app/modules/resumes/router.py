@@ -81,7 +81,7 @@ async def list_versions(resume_id: str, request: Request, cursor: str | None = Q
     if page is None:
         _raise(request, ResumeError("RESOURCE_NOT_FOUND", "Resume not found", 404))
     rows, next_cursor = page
-    return ResumeVersionsResponse(items=[_version(SavedVersion(row, 200, "save")) for row in rows], next_cursor=next_cursor)
+    return ResumeVersionsResponse(items=[_version(row) for row in rows], next_cursor=next_cursor)
 
 
 @router.post("/{resume_id}/versions", status_code=201, response_model=ResumeVersionResponse)
