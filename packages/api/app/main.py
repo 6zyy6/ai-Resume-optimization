@@ -27,9 +27,12 @@ from app.modules.facts.router import router as facts_router
 from app.modules.facts.service import FactService
 from app.modules.resumes.router import router as resumes_router
 from app.modules.resumes.service import ResumeService
+from app.modules.tasks.router import router as tasks_router
+from app.modules.tasks.service import TaskService
 from app.modules.usage.router import router as usage_router
 from app.modules.usage.service import UsageRepository, build_default_usage_service
 from app.modules.users.service import EmailCrypto, KeyProvider
+from app.workers.dispatcher import OutboxDispatcher, build_default_dispatcher
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,7 @@ class ApplicationDependencies:
     email_crypto: EmailCrypto
     keys: KeyProvider
     task4_sessions: async_sessionmaker[AsyncSession] | None = None
+    task_dispatcher: OutboxDispatcher | None = None
 
 def api_error_response(
     request: Request,
@@ -113,6 +117,12 @@ def create_app(
     task4_sessions = dependencies.task4_sessions if dependencies and dependencies.task4_sessions else async_sessionmaker(create_async_engine(resolved.database_url), expire_on_commit=False)
     application.state.fact_service = FactService(task4_sessions)
     application.state.resume_service = ResumeService(task4_sessions)
+    application.state.task_service = TaskService(task4_sessions)
+    application.state.task_dispatcher = (
+        dependencies.task_dispatcher
+        if dependencies and dependencies.task_dispatcher
+        else build_default_dispatcher(task4_sessions)
+    )
     application.state.ready = (
         dependencies is not None or resolved.app_env != "production"
     )
@@ -121,6 +131,7 @@ def create_app(
     application.include_router(privacy_router)
     application.include_router(facts_router)
     application.include_router(resumes_router)
+    application.include_router(tasks_router)
     application.add_exception_handler(HTTPException, api_error_handler)
     application.add_exception_handler(StarletteHTTPException, framework_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)

@@ -1,0 +1,207 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import event, func, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.core.config import Settings
+from app.db.models import Base, Fact, TaskEvent, User
+from app.main import create_app
+from app.modules.auth.router import require_session
+from app.modules.auth.service import AuthenticatedSession
+from app.modules.facts.service import FactService
+from app.modules.tasks.service import TaskService
+from app.workers.dispatcher import OutboxDispatcher
+from app.workers.execution import HttpServiceError, TaskExecutor, retry_delay, should_retry
+
+
+class RedisDown:
+    def publish(self, task_id: str, queue: str) -> None:
+        raise ConnectionError("redis unavailable")
+
+
+def _run(awaitable):
+    return asyncio.run(awaitable)
+
+
+async def _seed_user(sessions) -> None:
+    async with sessions.begin() as session:
+        session.add(User(id="usr_recovery"))
+
+
+@pytest.mark.anyio
+async def test_worker_crash_then_reclaim_completes_one_result(sql_session_factory):
+    """A crash after claim must be reclaimable without two completion results."""
+    await _seed_user(sql_session_factory)
+    first_process = TaskService(sql_session_factory)
+    task = await first_process.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.batch",
+        trace_id="tr_crash",
+        idempotency_key="recovery-1",
+    )
+    abandoned = await first_process.claim_task(task.id)
+    assert abandoned is not None
+    assert abandoned.attempts == 1
+
+    restarted_process = TaskService(sql_session_factory)
+    reclaimed = await restarted_process.claim_task(task.id)
+    completed = await restarted_process.complete_task(
+        task.id, "resume_version:rv_recovered"
+    )
+    duplicate = await first_process.complete_task(
+        task.id, "resume_version:rv_duplicate"
+    )
+
+    assert reclaimed is not None
+    assert reclaimed.attempts == 2
+    assert completed.result_ref == "resume_version:rv_recovered"
+    assert duplicate.result_ref == "resume_version:rv_recovered"
+    async with sql_session_factory() as session:
+        completion_count = await session.scalar(
+            select(func.count())
+            .select_from(TaskEvent)
+            .where(TaskEvent.task_id == task.id, TaskEvent.stage == "succeeded")
+        )
+    assert completion_count == 1
+
+
+@pytest.mark.anyio
+async def test_executor_retries_only_transient_failures(sql_session_factory):
+    """Retrying validation failures, or not retrying 5xx, violates the worker policy."""
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    transient = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_transient",
+        idempotency_key="recovery-2",
+    )
+    permanent = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_permanent",
+        idempotency_key="recovery-3",
+    )
+    executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
+    transient_attempts = 0
+    permanent_attempts = 0
+
+    async def transient_operation() -> str:
+        nonlocal transient_attempts
+        transient_attempts += 1
+        if transient_attempts < 3:
+            raise HttpServiceError(503)
+        return "resume_version:rv_retry"
+
+    async def permanent_operation() -> str:
+        nonlocal permanent_attempts
+        permanent_attempts += 1
+        raise ValueError("invalid workflow input")
+
+    transient_result = await executor.execute(transient.id, transient_operation)
+    permanent_result = await executor.execute(permanent.id, permanent_operation)
+
+    assert transient_attempts == 3
+    assert transient_result.status == "succeeded"
+    assert transient_result.result_ref == "resume_version:rv_retry"
+    assert permanent_attempts == 1
+    assert permanent_result.status == "failed"
+    assert permanent_result.error_code == "ValueError"
+    assert should_retry(TimeoutError()) is True
+    assert should_retry(HttpServiceError(429)) is True
+    assert should_retry(HttpServiceError(400)) is False
+    assert retry_delay(1, jitter=lambda: 0) == 1
+    assert retry_delay(2, jitter=lambda: 0) == 2
+
+
+@pytest.mark.anyio
+async def test_worker_shutdown_leaves_claimed_task_recoverable(sql_session_factory):
+    """Turning worker cancellation into business failure would prevent crash recovery."""
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.batch",
+        trace_id="tr_shutdown",
+        idempotency_key="recovery-shutdown",
+    )
+    executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
+
+    async def interrupted_operation() -> str:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await executor.execute(task.id, interrupted_operation)
+
+    stored = await service.get_task("usr_recovery", task.id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.attempts == 1
+
+
+def test_redis_failure_returns_queue_busy_without_breaking_fact_reads(tmp_path):
+    """A broker outage must not make already-persisted synchronous facts unreadable."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'queue.db'}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _):
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    async def setup():
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions.begin() as session:
+            session.add(User(id="usr_recovery"))
+            await session.flush()
+            session.add(
+                Fact(
+                    id="fact_existing",
+                    owner_user_id="usr_recovery",
+                    kind="achievement",
+                    value_encrypted="existing synchronous fact",
+                    status="unconfirmed",
+                )
+            )
+        return sessions
+
+    sessions = _run(setup())
+    application = create_app(
+        Settings(app_env="test", database_url="sqlite+aiosqlite://")
+    )
+    application.state.fact_service = FactService(sessions)
+    application.state.task_service = TaskService(sessions)
+    application.state.task_dispatcher = OutboxDispatcher(
+        sessions,
+        RedisDown(),
+        retry_base_seconds=0,
+        jitter=lambda: 0,
+    )
+
+    def authenticated() -> AuthenticatedSession:
+        now = datetime.now(timezone.utc)
+        return AuthenticatedSession(
+            "usr_recovery", "ses_recovery", now, now + timedelta(days=1)
+        )
+
+    application.dependency_overrides[require_session] = authenticated
+    with TestClient(application) as client:
+        queued = client.post(
+            "/v1/tasks",
+            headers={"Idempotency-Key": "queue-down-1"},
+            json={"type": "resume_optimize", "queue": "ai.interactive"},
+        )
+        fact = client.get("/v1/facts/fact_existing")
+
+    assert queued.status_code == 503
+    assert queued.json()["error"]["code"] == "TASK_QUEUE_BUSY"
+    assert fact.status_code == 200
+    assert fact.json()["value"] == "existing synchronous fact"
+    _run(engine.dispose())

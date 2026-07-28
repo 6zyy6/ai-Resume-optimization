@@ -70,6 +70,10 @@ class TaskRepository(OwnerScopedRepository[RecordT], Protocol[RecordT]):
     pass
 
 
+class OutboxRepository(OwnerScopedRepository[RecordT], Protocol[RecordT]):
+    pass
+
+
 class IdempotencyRepository(OwnerScopedRepository[RecordT], Protocol[RecordT]):
     pass
 

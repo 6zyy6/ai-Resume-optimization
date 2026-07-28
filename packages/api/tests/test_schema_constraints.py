@@ -109,6 +109,7 @@ def test_metadata_contains_complete_owner_scoped_foundation():
         "files",
         "tasks",
         "task_events",
+        "outbox",
         "ai_runs",
         "ai_trace_events",
         "exports",

@@ -10,6 +10,7 @@ from app.db.models import (
     FactSource,
     IdempotencyRecord,
     Job,
+    Outbox,
     Resume,
     ResumeVersion,
     SourceRecord,
@@ -23,6 +24,7 @@ from app.db.ports import (
     FactRepository,
     IdempotencyRepository,
     JobRepository,
+    OutboxRepository,
     ResumeRepository,
     ResumeVersionEntry,
     ResumeVersionRepository,
@@ -37,11 +39,13 @@ __all__ = [
     "FactRepository",
     "IdempotencyRepository",
     "JobRepository",
+    "OutboxRepository",
     "ResumeRepository",
     "ResumeVersionRepository",
     "SqlAlchemyFactRepository",
     "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyJobRepository",
+    "SqlAlchemyOutboxRepository",
     "SqlAlchemyResumeRepository",
     "SqlAlchemyResumeVersionRepository",
     "SqlAlchemySuggestionRepository",
@@ -224,6 +228,10 @@ class SqlAlchemySuggestionRepository(SqlAlchemyRepository):
 
 class SqlAlchemyTaskRepository(SqlAlchemyRepository):
     model = Task
+
+
+class SqlAlchemyOutboxRepository(SqlAlchemyRepository):
+    model = Outbox
 
 
 class SqlAlchemyIdempotencyRepository(SqlAlchemyRepository):

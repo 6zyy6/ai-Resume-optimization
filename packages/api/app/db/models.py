@@ -558,6 +558,28 @@ class TaskEvent(OwnerMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class Outbox(OwnerMixin, Base):
+    __tablename__ = "outbox"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["task_id", "owner_user_id"],
+            ["tasks.id", "tasks.owner_user_id"],
+            name="fk_outbox_task_owner",
+        ),
+        UniqueConstraint("task_id", name="uq_outbox_task"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    queue: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class AiRun(OwnerMixin, Base):
     __tablename__ = "ai_runs"
     __table_args__ = (
