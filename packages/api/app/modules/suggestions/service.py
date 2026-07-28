@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
@@ -128,10 +128,23 @@ class SuggestionService:
                 ) from error
             if claim.is_replay:
                 response = claim.replay_response or {}
-                suggestion = await session.get(Suggestion, suggestion_id)
-                version = await session.get(ResumeVersion, response["version_id"])
-                saved_decision = await session.get(
-                    SuggestionDecision, response["decision_id"]
+                suggestion = await session.scalar(
+                    select(Suggestion).where(
+                        Suggestion.id == suggestion_id,
+                        Suggestion.owner_user_id == owner,
+                    )
+                )
+                version = await session.scalar(
+                    select(ResumeVersion).where(
+                        ResumeVersion.id == response["version_id"],
+                        ResumeVersion.owner_user_id == owner,
+                    )
+                )
+                saved_decision = await session.scalar(
+                    select(SuggestionDecision).where(
+                        SuggestionDecision.id == response["decision_id"],
+                        SuggestionDecision.owner_user_id == owner,
+                    )
                 )
                 if suggestion is None or version is None or saved_decision is None:
                     raise RuntimeError("Idempotent suggestion decision is missing")
@@ -381,17 +394,14 @@ class SuggestionService:
         bullet_id = _pointer_bullet_id(version.snapshot_json, suggestion.target_path)
         if not bullet_id:
             return
-        for fact in facts:
-            exists = await session.scalar(
-                select(BulletFactLink.fact_id).where(
-                    BulletFactLink.resume_version_id == version.id,
-                    BulletFactLink.bullet_id == bullet_id,
-                    BulletFactLink.fact_id == fact.id,
-                    BulletFactLink.owner_user_id == version.owner_user_id,
-                )
+        await session.execute(
+            delete(BulletFactLink).where(
+                BulletFactLink.resume_version_id == version.id,
+                BulletFactLink.bullet_id == bullet_id,
+                BulletFactLink.owner_user_id == version.owner_user_id,
             )
-            if exists:
-                continue
+        )
+        for fact in facts:
             source_hashes = list(
                 (
                     await session.scalars(

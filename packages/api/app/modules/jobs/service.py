@@ -12,6 +12,7 @@ from app.db.models import JdRequirement, JobDescription
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.integrations.ai_client import AiClient
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
+from app.modules.tasks.service import TaskAdmission, TaskService
 
 
 @dataclass
@@ -50,8 +51,12 @@ class JobService:
                     409,
                 ) from error
             if claim.is_replay:
-                row = await session.get(
-                    JobDescription, (claim.replay_response or {})["id"]
+                row = await session.scalar(
+                    select(JobDescription).where(
+                        JobDescription.id
+                        == (claim.replay_response or {})["id"],
+                        JobDescription.owner_user_id == owner,
+                    )
                 )
                 if row is None:
                     raise RuntimeError("Idempotent job response is missing")
@@ -78,6 +83,7 @@ class JobService:
         idempotency_key: str,
         *,
         trace_id: str,
+        task_service: TaskService,
     ) -> tuple[JobDescription, list[JdRequirement]]:
         route = f"/v1/jobs/{job_id}/parse"
         async with self.idempotency.transaction(self.sessions) as session:
@@ -101,12 +107,29 @@ class JobService:
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
             current.status = "queued"
+            task = await task_service.create_task_in_session(
+                session,
+                owner,
+                task_type="parse_job",
+                queue="ai.interactive",
+                trace_id=trace_id,
+                idempotency_key=f"job-parse:{idempotency_key}",
+                admission=TaskAdmission.ai(),
+                resource_type="job_description",
+                resource_id=current.id,
+                payload={"job_id": current.id},
+            )
+            current.task_id = task.id
             await session.flush()
             await self.idempotency.complete(
                 session,
                 claim,
                 202,
-                {"id": current.id, "status": current.status},
+                {
+                    "id": current.id,
+                    "status": current.status,
+                    "task_id": current.task_id,
+                },
             )
             return current, []
 
@@ -187,7 +210,12 @@ class JobService:
                     409,
                 ) from error
             if claim.is_replay:
-                row = await session.get(JdRequirement, requirement_id)
+                row = await session.scalar(
+                    select(JdRequirement).where(
+                        JdRequirement.id == requirement_id,
+                        JdRequirement.owner_user_id == owner,
+                    )
+                )
                 if row is None:
                     raise RuntimeError("Idempotent requirement response is missing")
                 return row
@@ -221,6 +249,17 @@ class JobService:
     async def get(self, owner_id: str, job_id: str) -> JobDescription | None:
         async with self.sessions() as session:
             return await self._job(session, owner_id, job_id)
+
+    async def get_with_requirements(
+        self,
+        owner_id: str,
+        job_id: str,
+    ) -> tuple[JobDescription, list[JdRequirement]] | None:
+        async with self.sessions() as session:
+            row = await self._job(session, owner_id, job_id)
+            if row is None:
+                return None
+            return row, await self._requirements(session, row)
 
     async def _job(
         self,

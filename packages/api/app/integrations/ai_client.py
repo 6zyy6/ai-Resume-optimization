@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.workers.execution import HttpServiceError
+
 
 class AiClient(Protocol):
     async def run(
@@ -84,37 +86,42 @@ class InternalAiClient:
             ],
             "current_object": current_object,
         }
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=self.timeout_seconds,
-            transport=self.transport,
-        ) as client:
-            response = await client.post(
-                "/internal/v1/runs", json=payload, headers=headers
-            )
-            response.raise_for_status()
-            ai_run_id = response.json()["ai_run_id"]
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + self.timeout_seconds
-            while loop.time() < deadline:
-                status_response = await client.get(
-                    f"/internal/v1/runs/{ai_run_id}",
-                    headers=headers,
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout_seconds,
+                transport=self.transport,
+            ) as client:
+                response = await client.post(
+                    "/internal/v1/runs", json=payload, headers=headers
                 )
-                status_response.raise_for_status()
-                run = status_response.json()["run"]
-                if run["status"] == "succeeded":
-                    return {"result": run.get("output"), "run": run}
-                if run["status"] in {"failed", "cancelled"}:
-                    raise RuntimeError(
-                        f"AI_RUN_{run['status'].upper()}: "
-                        f"{run.get('error_code', 'unknown')}"
+                response.raise_for_status()
+                ai_run_id = response.json()["ai_run_id"]
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + self.timeout_seconds
+                while loop.time() < deadline:
+                    status_response = await client.get(
+                        f"/internal/v1/runs/{ai_run_id}",
+                        headers=headers,
                     )
-                await asyncio.sleep(self.poll_interval_seconds)
-            try:
-                await client.post(
-                    f"/internal/v1/runs/{ai_run_id}/cancel",
-                    headers=headers,
-                )
-            finally:
-                raise TimeoutError("AI internal run timed out")
+                    status_response.raise_for_status()
+                    run = status_response.json()["run"]
+                    if run["status"] == "succeeded":
+                        return {"result": run.get("output"), "run": run}
+                    if run["status"] in {"failed", "cancelled"}:
+                        raise RuntimeError(
+                            f"AI_RUN_{run['status'].upper()}: "
+                            f"{run.get('error_code', 'unknown')}"
+                        )
+                    await asyncio.sleep(self.poll_interval_seconds)
+                try:
+                    await client.post(
+                        f"/internal/v1/runs/{ai_run_id}/cancel",
+                        headers=headers,
+                    )
+                finally:
+                    raise TimeoutError("AI internal run timed out")
+        except httpx.HTTPStatusError as error:
+            raise HttpServiceError(error.response.status_code) from error
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            raise TimeoutError("AI internal transport failed") from error

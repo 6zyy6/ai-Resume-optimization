@@ -204,6 +204,13 @@ class Resume(OwnerMixin, Base):
     __tablename__ = "resumes"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_resume_owner"),
+        UniqueConstraint(
+            "owner_user_id",
+            "kind",
+            "base_resume_id",
+            "job_description_id",
+            name="uq_targeted_resume_per_job",
+        ),
         ForeignKeyConstraint(
             ["base_resume_id", "base_resume_owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
@@ -366,6 +373,7 @@ class JobDescription(OwnerMixin, Base):
     company: Mapped[str | None] = mapped_column(String(255))
     raw_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

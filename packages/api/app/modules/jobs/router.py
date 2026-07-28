@@ -9,7 +9,7 @@ from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.jobs.service import JobService, JobServiceError
-from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
+from app.modules.tasks.service import TaskService, TaskServiceError
 
 
 router = APIRouter(
@@ -105,7 +105,7 @@ def _job(row, requirements=(), task_id: str | None = None) -> JobResponse:
         company=row.company,
         status=row.status,
         requirements=[_requirement(item) for item in requirements],
-        task_id=task_id,
+        task_id=task_id if task_id is not None else row.task_id,
     )
 
 
@@ -129,6 +129,19 @@ async def create_job(
         _raise(request, error)
 
 
+@router.get("/{job_id}", response_model=JobResponse)
+async def get_job(
+    job_id: str,
+    request: Request,
+    authenticated: AuthenticatedSession = Depends(require_session),
+    service: JobService = Depends(get_job_service),
+) -> JobResponse:
+    result = await service.get_with_requirements(authenticated.user_id, job_id)
+    if result is None:
+        _raise(request, JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404))
+    return _job(*result)
+
+
 @router.post("/{job_id}/parse", status_code=202, response_model=JobResponse)
 async def parse_job(
     job_id: str,
@@ -145,21 +158,11 @@ async def parse_job(
             job_id,
             key,
             trace_id=get_request_context(request).trace_id,
-        )
-        task = await task_service.create_task(
-            authenticated.user_id,
-            task_type="parse_job",
-            queue="ai.interactive",
-            trace_id=get_request_context(request).trace_id,
-            idempotency_key=f"job-parse:{key}",
-            admission=TaskAdmission.ai(),
-            resource_type="job_description",
-            resource_id=row.id,
-            payload={"job_id": row.id},
+            task_service=task_service,
         )
     except (JobServiceError, TaskServiceError) as error:
         _raise(request, error)
-    return _job(row, requirements, task.id)
+    return _job(row, requirements)
 
 
 @router.patch(

@@ -9,7 +9,7 @@ from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.exports.service import ExportResult, ExportService, ExportServiceError
-from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
+from app.modules.tasks.service import TaskService, TaskServiceError
 
 
 router = APIRouter(
@@ -104,22 +104,9 @@ async def create_export(
             template_version=payload.template_version,
             download_name=payload.download_name,
             idempotency_key=key,
-        )
-        task = await task_service.create_task(
-            authenticated.user_id,
-            task_type="render_resume_export",
-            queue="file.export",
             trace_id=get_request_context(request).trace_id,
-            idempotency_key=f"export:{key}",
-            admission=TaskAdmission.unmetered(),
-            resource_type="export",
-            resource_id=result.export.id,
-            payload={"export_id": result.export.id},
+            task_service=task_service,
         )
-        await service.attach_task(
-            authenticated.user_id, result.export.id, task.id
-        )
-        result.export.task_id = task.id
         return _response(result)
     except (ExportServiceError, TaskServiceError) as error:
         _raise(request, error)

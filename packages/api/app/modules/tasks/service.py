@@ -93,6 +93,36 @@ class TaskService:
         priority: int = 0,
         payload: dict[str, Any] | None = None,
     ) -> Task:
+        async with self.idempotency.transaction(self.sessions) as session:
+            return await self.create_task_in_session(
+                session,
+                owner_user_id,
+                task_type=task_type,
+                queue=queue,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+                admission=admission,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                priority=priority,
+                payload=payload,
+            )
+
+    async def create_task_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        *,
+        task_type: str,
+        queue: str,
+        trace_id: str,
+        idempotency_key: str,
+        admission: TaskAdmission,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        priority: int = 0,
+        payload: dict[str, Any] | None = None,
+    ) -> Task:
         if not isinstance(admission, TaskAdmission):
             raise TypeError("admission must be a TaskAdmission")
         if queue not in QUEUE_NAMES:
@@ -119,76 +149,82 @@ class TaskService:
             "usage_type": admission.usage_type,
             "cost_cny": format(admission.cost_cny.normalize(), "f"),
         }
-        async with self.idempotency.transaction(self.sessions) as session:
-            try:
-                claim = await self.idempotency.claim(
-                    session,
-                    owner_user_id,
-                    "/internal/tasks",
-                    idempotency_key,
-                    body,
-                )
-            except IdempotencyConflict as error:
-                raise TaskServiceError(
-                    "IDEMPOTENCY_KEY_REUSED",
-                    "Idempotency-Key was reused with a different request",
-                    409,
-                ) from error
-            if claim.is_replay:
-                task_id = (claim.replay_response or {})["id"]
-                task = await session.get(Task, task_id)
-                if task is None:
-                    raise RuntimeError("idempotent task response references a missing task")
-                return task
-
-            now = self.clock.now()
-            await self._admit_usage(
+        try:
+            claim = await self.idempotency.claim(
                 session,
-                claim.row.owner_user_id,
-                admission,
-                trace_id,
-                now,
+                owner_user_id,
+                "/internal/tasks",
+                idempotency_key,
+                body,
             )
-            task = Task(
-                id=new_id("tsk"),
-                owner_user_id=claim.row.owner_user_id,
-                type=task_type,
-                status="queued",
-                priority=priority,
-                resource_type=resource_type,
-                resource_id=resource_id,
-                trace_id=trace_id,
-                attempts=0,
-                max_attempts=3,
-                queued_at=now,
-                stage="queued",
-                progress=0,
-                cancellation_requested=False,
-                usage_type=admission.usage_type,
-            )
-            session.add(task)
-            await session.flush()
-            await self._append_event(session, task, "queued", 0, now)
-            session.add(
-                Outbox(
-                    id=new_id("out"),
-                    owner_user_id=task.owner_user_id,
-                    task_id=task.id,
-                    queue=queue,
-                    payload={**(payload or {}), "task_id": task.id},
-                    attempts=0,
-                    available_at=now,
-                    created_at=now,
+        except IdempotencyConflict as error:
+            raise TaskServiceError(
+                "IDEMPOTENCY_KEY_REUSED",
+                "Idempotency-Key was reused with a different request",
+                409,
+            ) from error
+        if claim.is_replay:
+            task_id = (claim.replay_response or {})["id"]
+            task = await session.scalar(
+                select(Task).where(
+                    Task.id == task_id,
+                    Task.owner_user_id == claim.row.owner_user_id,
                 )
             )
-            await session.flush()
-            await self.idempotency.complete(
-                session,
-                claim,
-                202,
-                self._task_payload(task),
-            )
+            if task is None:
+                raise RuntimeError(
+                    "idempotent task response references a missing task"
+                )
             return task
+
+        now = self.clock.now()
+        await self._admit_usage(
+            session,
+            claim.row.owner_user_id,
+            admission,
+            trace_id,
+            now,
+        )
+        task = Task(
+            id=new_id("tsk"),
+            owner_user_id=claim.row.owner_user_id,
+            type=task_type,
+            status="queued",
+            priority=priority,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            trace_id=trace_id,
+            attempts=0,
+            max_attempts=3,
+            queued_at=now,
+            stage="queued",
+            progress=0,
+            cancellation_requested=False,
+            usage_type=admission.usage_type,
+        )
+        session.add(task)
+        await session.flush()
+        await self._append_event(session, task, "queued", 0, now)
+        session.add(
+            Outbox(
+                id=new_id("out"),
+                owner_user_id=task.owner_user_id,
+                task_id=task.id,
+                queue=queue,
+                payload={**(payload or {}), "task_id": task.id},
+                attempts=0,
+                available_at=now,
+                created_at=now,
+            )
+        )
+        await session.flush()
+        await self.idempotency.complete(
+            session,
+            claim,
+            202,
+            self._task_payload(task),
+        )
+        return task
 
     async def list_tasks(
         self,
@@ -389,7 +425,11 @@ class TaskService:
                 raise TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404)
             rows = await session.scalars(
                 select(TaskEvent)
-                .where(TaskEvent.task_id == task_id, TaskEvent.seq > after_seq)
+                .where(
+                    TaskEvent.task_id == task_id,
+                    TaskEvent.owner_user_id.in_(owners),
+                    TaskEvent.seq > after_seq,
+                )
                 .order_by(TaskEvent.seq)
             )
             return tuple(rows.all())
@@ -524,7 +564,8 @@ class TaskService:
         sequence = (
             await session.scalar(
                 select(func.coalesce(func.max(TaskEvent.seq), 0)).where(
-                    TaskEvent.task_id == task.id
+                    TaskEvent.task_id == task.id,
+                    TaskEvent.owner_user_id == task.owner_user_id,
                 )
             )
             or 0

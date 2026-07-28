@@ -11,7 +11,7 @@ from app.modules.matching.service import (
     MatchingService,
     MatchServiceError,
 )
-from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
+from app.modules.tasks.service import TaskService, TaskServiceError
 
 
 router = APIRouter(
@@ -59,6 +59,7 @@ class SuggestionResponse(BaseModel):
     status: str
     target_path: str
     requirement_id: str | None
+    requirement_text: str | None
     original_text: str
     suggested_text: str
     reason: str
@@ -120,12 +121,17 @@ def _analysis(result: MatchAnalysisResult) -> MatchResponse:
     )
 
 
-def _suggestion(row, fact_refs: list[str]) -> SuggestionResponse:
+def _suggestion(
+    row,
+    fact_refs: list[str],
+    requirement_text: str | None,
+) -> SuggestionResponse:
     return SuggestionResponse(
         id=row.id,
         status=row.status,
         target_path=row.target_path,
         requirement_id=row.requirement_id,
+        requirement_text=requirement_text,
         original_text=row.original_text_encrypted,
         suggested_text=row.suggested_encrypted,
         reason=row.reason,
@@ -150,22 +156,9 @@ async def create_match(
             resume_version_id=payload.resume_version_id,
             job_id=payload.job_id,
             idempotency_key=key,
-        )
-        task = await task_service.create_task(
-            authenticated.user_id,
-            task_type="match_resume_to_job",
-            queue="ai.batch",
             trace_id=get_request_context(request).trace_id,
-            idempotency_key=f"match:{key}",
-            admission=TaskAdmission.ai(),
-            resource_type="match_analysis",
-            resource_id=result.analysis.id,
-            payload={"analysis_id": result.analysis.id},
+            task_service=task_service,
         )
-        await service.attach_task(
-            authenticated.user_id, result.analysis.id, task.id
-        )
-        result.analysis.task_id = task.id
         return _analysis(result)
     except (MatchServiceError, TaskServiceError) as error:
         _raise(request, error)
@@ -200,12 +193,13 @@ async def get_match_suggestions(
             request,
             MatchServiceError("RESOURCE_NOT_FOUND", "Match analysis not found", 404),
         )
-    fact_refs = {
-        item.requirement_id: list(item.evidence_refs) for item in result.items
-    }
     return SuggestionListResponse(
         items=[
-            _suggestion(row, fact_refs.get(row.requirement_id or "", []))
+            _suggestion(
+                row,
+                result.suggestion_fact_refs.get(row.id, []),
+                result.requirement_texts.get(row.requirement_id or ""),
+            )
             for row in result.suggestions
         ]
     )

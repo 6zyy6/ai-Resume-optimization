@@ -8,6 +8,7 @@ from zipfile import BadZipFile, ZipFile
 from docx import Document
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
+from pypdf.generic import DictionaryObject, IndirectObject
 
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -81,11 +82,43 @@ def _reject_pdf_actions(reader: PdfReader) -> None:
     root = reader.trailer.get("/Root")
     if root is None:
         return
-    if root.get("/OpenAction") is not None or root.get("/AA") is not None:
-        raise FileParseError("FILE_TYPE_UNSUPPORTED", "PDF embedded actions are not allowed")
-    names = root.get("/Names")
-    if names is not None and names.get("/JavaScript") is not None:
-        raise FileParseError("FILE_TYPE_UNSUPPORTED", "PDF JavaScript is not allowed")
+    candidates = [
+        root.get("/OpenAction"),
+        root.get("/AA"),
+        root.get("/AcroForm"),
+        root.get("/Names"),
+    ]
+    for page in reader.pages:
+        candidates.extend(
+            [
+                page.get("/AA"),
+                page.get("/Annots"),
+            ]
+        )
+    if any(_contains_pdf_javascript(candidate, set()) for candidate in candidates):
+        raise FileParseError(
+            "FILE_TYPE_UNSUPPORTED",
+            "PDF embedded actions are not allowed",
+        )
+
+
+def _contains_pdf_javascript(value, seen: set[tuple[int, int]]) -> bool:
+    if isinstance(value, IndirectObject):
+        identity = (value.idnum, value.generation)
+        if identity in seen:
+            return False
+        seen.add(identity)
+        value = value.get_object()
+    if isinstance(value, DictionaryObject):
+        if value.get("/S") == "/JavaScript" or value.get("/JS") is not None:
+            return True
+        return any(
+            _contains_pdf_javascript(child, seen)
+            for child in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_pdf_javascript(child, seen) for child in value)
+    return False
 
 
 def _parse_docx(content: bytes) -> ParsedResume:

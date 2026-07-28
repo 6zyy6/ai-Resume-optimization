@@ -27,6 +27,7 @@ from app.modules.imports.parsers import (
     FileParseError,
     parse_resume_file,
 )
+from app.modules.tasks.service import TaskAdmission, TaskService
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,12 @@ class ImportService:
                     409,
                 ) from error
             if claim.is_replay:
-                replay = await session.get(File, (claim.replay_response or {})["id"])
+                replay = await session.scalar(
+                    select(File).where(
+                        File.id == (claim.replay_response or {})["id"],
+                        File.owner_user_id == owner,
+                    )
+                )
                 if replay is None:
                     raise RuntimeError("Idempotent file response is missing")
                 return replay
@@ -185,6 +191,9 @@ class ImportService:
         owner_id: str,
         file_id: str,
         idempotency_key: str,
+        *,
+        trace_id: str,
+        task_service: TaskService,
     ) -> ResumeImport:
         file_row = await self.get_file(owner_id, file_id)
         if file_row is None or file_row.status != "confirmed":
@@ -204,8 +213,12 @@ class ImportService:
                     409,
                 ) from error
             if claim.is_replay:
-                replay = await session.get(
-                    ResumeImport, (claim.replay_response or {})["id"]
+                replay = await session.scalar(
+                    select(ResumeImport).where(
+                        ResumeImport.id
+                        == (claim.replay_response or {})["id"],
+                        ResumeImport.owner_user_id == owner,
+                    )
                 )
                 if replay is None:
                     raise RuntimeError("Idempotent import response is missing")
@@ -224,11 +237,28 @@ class ImportService:
             )
             session.add(row)
             await session.flush()
+            task = await task_service.create_task_in_session(
+                session,
+                owner,
+                task_type="parse_resume_import",
+                queue="file.parse",
+                trace_id=trace_id,
+                idempotency_key=f"import:{idempotency_key}",
+                admission=TaskAdmission.unmetered(),
+                resource_type="resume_import",
+                resource_id=row.id,
+                payload={"import_id": row.id},
+            )
+            row.task_id = task.id
             await self.idempotency.complete(
                 session,
                 claim,
                 202,
-                {"id": row.id, "status": row.status},
+                {
+                    "id": row.id,
+                    "status": row.status,
+                    "task_id": row.task_id,
+                },
             )
             return row
 
@@ -346,7 +376,12 @@ class ImportService:
                 ) from error
             if claim.is_replay:
                 response = claim.replay_response or {}
-                row = await session.get(ResumeImport, response["id"])
+                row = await session.scalar(
+                    select(ResumeImport).where(
+                        ResumeImport.id == response["id"],
+                        ResumeImport.owner_user_id == owner,
+                    )
+                )
                 if row is None:
                     raise RuntimeError("Idempotent import response is missing")
                 return row, response["fact_ids"]

@@ -174,13 +174,16 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
 
 
 def _create_exportable_version(client):
+    text = "使用 Python 完成数据分析"
     fact = client.post(
         "/v1/facts",
         json={
             "kind": "skill",
-            "value": "Python",
+            "value": text,
             "status": "confirmed",
-            "sources": [{"source_type": "user_confirmation", "content": "Python"}],
+            "sources": [
+                {"source_type": "user_confirmation", "content": text}
+            ],
         },
         headers={"Idempotency-Key": "export-fact"},
     )
@@ -189,7 +192,6 @@ def _create_exportable_version(client):
         json={"kind": "base", "title": "张三"},
         headers={"Idempotency-Key": "export-resume"},
     )
-    text = "使用 Python 完成数据分析"
     version = client.post(
         f"/v1/resumes/{resume.json()['id']}/versions",
         json={

@@ -10,7 +10,7 @@ from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.imports.service import ImportService, ImportServiceError
-from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
+from app.modules.tasks.service import TaskService, TaskServiceError
 from app.integrations.storage import LocalStorage, MemoryStorage
 
 
@@ -196,19 +196,9 @@ async def create_import(
             authenticated.user_id,
             payload.file_id,
             key,
-        )
-        task = await task_service.create_task(
-            authenticated.user_id,
-            task_type="parse_resume_import",
-            queue="file.parse",
             trace_id=get_request_context(request).trace_id,
-            idempotency_key=f"import:{key}",
-            admission=TaskAdmission.unmetered(),
-            resource_type="resume_import",
-            resource_id=row.id,
-            payload={"import_id": row.id},
+            task_service=task_service,
         )
-        row = await service.attach_task(authenticated.user_id, row.id, task.id)
         return _import(row)
     except (ImportServiceError, TaskServiceError) as error:
         _raise(request, error)

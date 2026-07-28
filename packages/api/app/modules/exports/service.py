@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
-from app.db.models import Export, Fact, FactSource, File, ResumeVersion
+from app.db.models import Export, File, ResumeVersion
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.integrations.storage import StoragePort
 from app.modules.exports.templates import (
@@ -16,6 +16,9 @@ from app.modules.exports.templates import (
     sanitize_download_name,
 )
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
+from app.modules.resumes.evidence_projection import load_version_evidence
+from app.modules.resumes.quality import high_risk_terms, supports_high_risk_entities
+from app.modules.tasks.service import TaskAdmission, TaskService
 
 
 @dataclass
@@ -50,6 +53,8 @@ class ExportService:
         template_version: str,
         download_name: str | None,
         idempotency_key: str,
+        trace_id: str,
+        task_service: TaskService,
     ) -> ExportResult:
         version = await self._version(owner_id, resume_version_id)
         if version is None:
@@ -81,12 +86,20 @@ class ExportService:
                     409,
                 ) from error
             if claim.is_replay:
-                saved = await session.get(
-                    Export, (claim.replay_response or {})["id"]
+                saved = await session.scalar(
+                    select(Export).where(
+                        Export.id == (claim.replay_response or {})["id"],
+                        Export.owner_user_id == owner,
+                    )
                 )
                 if saved is None:
                     raise RuntimeError("Idempotent export response is missing")
-                file_row = await session.get(File, saved.file_id)
+                file_row = await session.scalar(
+                    select(File).where(
+                        File.id == saved.file_id,
+                        File.owner_user_id == saved.owner_user_id,
+                    )
+                )
                 if file_row is None:
                     raise RuntimeError("Idempotent export file is missing")
                 return self._result(saved, file_row)
@@ -107,7 +120,7 @@ class ExportService:
                 size=0,
                 mime="application/pdf",
                 status="pending_generation",
-                expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
             )
             session.add(file_row)
             await session.flush()
@@ -123,11 +136,28 @@ class ExportService:
             )
             session.add(row)
             await session.flush()
+            task = await task_service.create_task_in_session(
+                session,
+                owner,
+                task_type="render_resume_export",
+                queue="file.export",
+                trace_id=trace_id,
+                idempotency_key=f"export:{idempotency_key}",
+                admission=TaskAdmission.unmetered(),
+                resource_type="export",
+                resource_id=row.id,
+                payload={"export_id": row.id},
+            )
+            row.task_id = task.id
             await self.idempotency.complete(
                 session,
                 claim,
                 202,
-                {"id": row.id, "status": row.status},
+                {
+                    "id": row.id,
+                    "status": row.status,
+                    "task_id": row.task_id,
+                },
             )
             return self._result(row, file_row)
 
@@ -291,40 +321,65 @@ class ExportService:
     async def _assert_facts(
         self, owner_id: str, version: ResumeVersion
     ) -> None:
-        requested: set[str] = set()
+        bullets: dict[str, str] = {}
         for section in version.snapshot_json.get("sections", []):
             for item in section.get("items", []):
-                if item.get("text") and not item.get("fact_refs"):
-                    raise ExportServiceError(
-                        "EXPORT_BLOCKED_BY_FACTS",
-                        "Every exported bullet requires confirmed evidence",
-                        422,
-                    )
-                requested.update(item.get("fact_refs", []))
-        if not requested:
-            return
+                if item.get("text"):
+                    bullets[item.get("id", "")] = item["text"]
         async with self.sessions() as session:
             owners = await authorized_owner_ids(session, owner_id)
-            confirmed = set(
-                (
-                    await session.scalars(
-                        select(Fact.id)
-                        .join(
-                            FactSource,
-                            (FactSource.fact_id == Fact.id)
-                            & (FactSource.owner_user_id == Fact.owner_user_id),
-                        )
-                        .where(
-                            Fact.id.in_(requested),
-                            Fact.owner_user_id.in_(owners),
-                            Fact.status == "confirmed",
-                        )
+            current = await session.scalar(
+                select(ResumeVersion).where(
+                    ResumeVersion.id == version.id,
+                    ResumeVersion.owner_user_id.in_(owners),
+                )
+            )
+            if current is None:
+                raise ExportServiceError(
+                    "RESOURCE_NOT_FOUND", "Resume version not found", 404
+                )
+            projection = await load_version_evidence(session, current)
+        claims_by_bullet = {
+            bullet_id: sorted(
+                (claim for claim in projection.claims if claim.bullet_id == bullet_id),
+                key=lambda claim: (claim.start, claim.end),
+            )
+            for bullet_id in bullets
+        }
+        for bullet_id, text in bullets.items():
+            claims = claims_by_bullet[bullet_id]
+            cursor = 0
+            for claim in claims:
+                if claim.start != cursor or claim.end <= claim.start or claim.end > len(text):
+                    self._blocked()
+                if (
+                    not claim.facts
+                    or any(
+                        fact.owner_user_id != projection.owner_user_id
+                        or fact.status != "confirmed"
+                        or not fact.source_hashes
+                        for fact in claim.facts
                     )
-                ).all()
-            )
-        if confirmed != requested:
-            raise ExportServiceError(
-                "EXPORT_BLOCKED_BY_FACTS",
-                "Export contains pending, missing, or unsupported facts",
-                422,
-            )
+                ):
+                    self._blocked()
+                claim_text = text[claim.start : claim.end]
+                evidence = " ".join(
+                    fact.value_encrypted for fact in claim.facts
+                )
+                if (
+                    not supports_high_risk_entities(claim_text, evidence)
+                    or not high_risk_terms(claim_text)
+                    <= high_risk_terms(evidence)
+                ):
+                    self._blocked()
+                cursor = claim.end
+            if cursor != len(text):
+                self._blocked()
+
+    @staticmethod
+    def _blocked() -> None:
+        raise ExportServiceError(
+            "EXPORT_BLOCKED_BY_FACTS",
+            "Export contains pending, missing, or unsupported facts",
+            422,
+        )

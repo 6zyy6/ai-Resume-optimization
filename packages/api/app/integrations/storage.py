@@ -198,13 +198,17 @@ class CosStorage:
         self.client.delete_object(Bucket=self.bucket, Key=object_key)
 
     def download_url(self, object_key: str, filename: str, expires_in: int) -> str:
+        encoded = quote(filename)
         return self.client.get_presigned_url(
             Method="GET",
             Bucket=self.bucket,
             Key=object_key,
             Expired=expires_in,
             Params={
-                "response-content-disposition": f'attachment; filename="{quote(filename)}"'
+                "response-content-disposition": (
+                    'attachment; filename="resume.pdf"; '
+                    f"filename*=UTF-8''{encoded}"
+                )
             },
         )
 
