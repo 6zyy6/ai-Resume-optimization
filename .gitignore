@@ -1,6 +1,9 @@
 .superpowers/
 .DS_Store
 .worktrees/
+.env
+.env.*
+!.env.example
 .venv/
 node_modules/
 __pycache__/
