@@ -83,16 +83,24 @@ export function createRunBudget(): ResourceBudget {
         throw new WorkflowError("token_limit_exceeded");
       }
       this.setCostLimit(maxCostUsd);
-      const inputTokens = Math.ceil(Buffer.byteLength(inputText, "utf8") / 4);
+      // Without the selected provider's tokenizer, one token per UTF-8 byte is
+      // the safe fallback: every input token must consume at least one encoded
+      // byte. Average chars-per-token ratios can underestimate CJK and
+      // byte-fallback tokenizers.
+      const inputTokens = Buffer.byteLength(inputText, "utf8");
       if (totalTokens + inputTokens + maxOutputTokens > MAX_TOKENS) {
         throw new WorkflowError("token_limit_exceeded");
       }
+      // A provider may bill a prompt-sized set as uncached input, cache read,
+      // or cache write. Applying the full upper bound to every category is
+      // deliberately conservative, including when cache-write is the highest
+      // rate.
       const usage = {
         input: inputTokens,
         output: maxOutputTokens,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: inputTokens + maxOutputTokens,
+        cacheRead: inputTokens,
+        cacheWrite: inputTokens,
+        totalTokens: inputTokens * 3 + maxOutputTokens,
         cost: {
           input: 0,
           output: 0,

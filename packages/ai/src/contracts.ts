@@ -92,7 +92,7 @@ export const FactCheckOutputSchema = Type.Object(
 
 export type FactCheckOutput = Static<typeof FactCheckOutputSchema>;
 
-const SuggestionOutputSchema = Type.Object(
+export const SuggestionOutputSchema = Type.Object(
   {
     suggestion_text: Type.String({ minLength: 1, maxLength: 20_000 }),
     atomic_claims: Type.Array(AtomicClaimSchema, { maxItems: 1_000 }),
@@ -105,9 +105,12 @@ const SuggestionOutputSchema = Type.Object(
       maxItems: 100,
     }),
     requires_user_confirmation: Type.Boolean(),
+    exportable: Type.Boolean(),
   },
   { additionalProperties: false },
 );
+
+export type SuggestionOutput = Static<typeof SuggestionOutputSchema>;
 
 const ExtractFactsOutputSchema = Type.Object(
   {

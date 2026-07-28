@@ -8,7 +8,10 @@ import type {
   Models,
   Model,
 } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  createModels,
+} from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
@@ -86,6 +89,51 @@ function safeFailure(
     max_cost_usd: maxCostUsd,
     budget_accounted: true,
   };
+}
+
+function safeBudgetFailure(
+  error: WorkflowError,
+  events: Record<string, unknown>[],
+  maxCostUsd?: number,
+): RuntimeFailure {
+  return {
+    status: "failure",
+    failure_kind: "budget",
+    error_code: error.code,
+    events,
+    max_cost_usd: maxCostUsd,
+    budget_accounted: true,
+  };
+}
+
+function budgetErrorStream(model: Model<string>) {
+  const stream = createAssistantMessageEventStream();
+  const message: AssistantMessage = {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0,
+      },
+    },
+    stopReason: "error",
+    errorMessage: "budget_rejected",
+    timestamp: Date.now(),
+  };
+  stream.push({ type: "error", reason: "error", error: message });
+  return stream;
 }
 
 export function createPiRuntime({
@@ -227,6 +275,8 @@ export function createPiRuntime({
       const events: Record<string, unknown>[] = [];
       let routeMaxCost: number | undefined;
       let timeoutSignal: AbortSignal | undefined;
+      let budgetFailure: WorkflowError | undefined;
+      let resourceError: WorkflowError | undefined;
       try {
         const { model, route } = requireModel(
           models,
@@ -240,7 +290,6 @@ export function createPiRuntime({
           jdRequirements: input.jd_requirements,
         });
         let output: unknown;
-        let resourceError: WorkflowError | undefined;
         let agent: Agent;
         timeoutSignal = AbortSignal.timeout(route.timeout_ms);
 
@@ -291,14 +340,23 @@ export function createPiRuntime({
           },
           streamFn: (selectedModel, context, options) => {
             if (resourceError) {
-              throw resourceError;
+              budgetFailure = resourceError;
+              return budgetErrorStream(selectedModel);
             }
-            budget.preflightProvider(
-              asBudgetModel(selectedModel),
-              JSON.stringify(context),
-              route.max_tokens,
-              route.max_cost_usd,
-            );
+            try {
+              budget.preflightProvider(
+                asBudgetModel(selectedModel),
+                JSON.stringify(context),
+                route.max_tokens,
+                route.max_cost_usd,
+              );
+            } catch (error) {
+              if (error instanceof WorkflowError) {
+                budgetFailure = error;
+                return budgetErrorStream(selectedModel);
+              }
+              throw error;
+            }
             return models.streamSimple(selectedModel, context, {
               ...options,
               signal: options?.signal
@@ -363,8 +421,13 @@ export function createPiRuntime({
           signal.removeEventListener("abort", abort);
           unsubscribe();
         }
-        if (resourceError) {
-          throw resourceError;
+        const settledBudgetFailure = budgetFailure ?? resourceError;
+        if (settledBudgetFailure) {
+          return safeBudgetFailure(
+            settledBudgetFailure,
+            events,
+            routeMaxCost,
+          );
         }
         if (signal.aborted) {
           throw new DOMException("aborted", "AbortError");
@@ -407,6 +470,14 @@ export function createPiRuntime({
           budget_accounted: true,
         };
       } catch (error) {
+        const settledBudgetFailure = budgetFailure ?? resourceError;
+        if (settledBudgetFailure) {
+          return safeBudgetFailure(
+            settledBudgetFailure,
+            events,
+            routeMaxCost,
+          );
+        }
         if (timeoutSignal?.aborted && !signal.aborted) {
           return safeFailure("timeout", events, routeMaxCost);
         }

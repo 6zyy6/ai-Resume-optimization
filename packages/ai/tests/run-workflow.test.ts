@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Value } from "typebox/value";
 
 import type {
   PiRuntime,
@@ -7,6 +8,7 @@ import type {
   WorkflowInput,
   WorkflowType,
 } from "../src/contracts.js";
+import { WORKFLOW_OUTPUT_SCHEMAS } from "../src/contracts.js";
 import {
   WorkflowError,
   createFixtureRuntime,
@@ -44,6 +46,7 @@ const workflowOutputs: Record<WorkflowType, unknown> = {
     reason: "突出可验证结果",
     risk_flags: [],
     requires_user_confirmation: false,
+    exportable: true,
   },
   parse_jd: {
     requirements: [
@@ -76,6 +79,7 @@ const workflowOutputs: Record<WorkflowType, unknown> = {
     reason: "突出可验证结果",
     risk_flags: [],
     requires_user_confirmation: false,
+    exportable: true,
   },
   fact_check: {
     claims: [
@@ -706,6 +710,54 @@ describe("runWorkflow", () => {
     expect(
       run.events.some(
         ({ event_type }) => event_type === "fact_validation_failed",
+      ),
+    ).toBe(true);
+    expect(
+      Value.Check(
+        WORKFLOW_OUTPUT_SCHEMAS.generate_suggestion,
+        run.output,
+      ),
+    ).toBe(true);
+  });
+
+  it("fully replaces contrary model suggestion evidence for a supported claim", async () => {
+    const runtime = makeRuntime(async () => ({
+      output: {
+        ...workflowOutputs.generate_suggestion as object,
+        atomic_claims: [
+          {
+            text: "模型伪造的冲突 claim",
+            fact_refs: [],
+            status: "unsupported",
+          },
+        ],
+        risk_flags: ["unsupported_numeric"],
+        requires_user_confirmation: true,
+        exportable: false,
+      },
+      events: [],
+    }));
+
+    const run = await runWorkflow(makeInput("generate_suggestion"), runtime);
+
+    expect(run.output).toEqual({
+      ...workflowOutputs.generate_suggestion as object,
+      atomic_claims: [
+        {
+          text: "优化转化漏斗，将转化率提升 30%",
+          fact_refs: ["fact_1"],
+          status: "supported",
+        },
+      ],
+      risk_flags: [],
+      requires_user_confirmation: false,
+      exportable: true,
+    });
+    expect(run.exportable).toBe(true);
+    expect(
+      Value.Check(
+        WORKFLOW_OUTPUT_SCHEMAS.generate_suggestion,
+        run.output,
       ),
     ).toBe(true);
   });

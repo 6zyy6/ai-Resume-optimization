@@ -3,9 +3,11 @@ import { Value } from "typebox/value";
 import {
   WORKFLOW_OUTPUT_SCHEMAS,
   type SchemaFeedback,
+  type SuggestionOutput,
   type WorkflowInput,
 } from "../contracts.js";
 import { factCheck } from "./fact-check.js";
+import { WorkflowError } from "./workflow-error.js";
 
 function normalizePath(path: string): string {
   if (!path || path === "/") {
@@ -142,23 +144,23 @@ export function enforceEvidence(
     input.workflow_type === "write_experience_bullet" ||
     input.workflow_type === "generate_suggestion"
   ) {
-    const suggestion = modelOutput as Record<string, unknown> & {
-      suggestion_text: string;
-    };
+    const suggestion = modelOutput as SuggestionOutput;
     const checked = factCheck(
       suggestion.suggestion_text,
       input.confirmed_facts,
     );
+    const output: SuggestionOutput = {
+      ...suggestion,
+      atomic_claims: checked.claims,
+      risk_flags: checked.risk_flags,
+      requires_user_confirmation: !checked.exportable,
+      exportable: checked.exportable,
+    };
+    if (!Value.Check(WORKFLOW_OUTPUT_SCHEMAS[input.workflow_type], output)) {
+      throw new WorkflowError("output_schema_invalid");
+    }
     return {
-      output: {
-        ...suggestion,
-        atomic_claims: checked.claims,
-        risk_flags: checked.risk_flags,
-        requires_user_confirmation:
-          suggestion.requires_user_confirmation === true ||
-          !checked.exportable,
-        exportable: checked.exportable,
-      },
+      output,
       exportable: checked.exportable,
       risk_flags: checked.risk_flags,
       failure_path: checked.exportable ? undefined : "$.atomic_claims",
