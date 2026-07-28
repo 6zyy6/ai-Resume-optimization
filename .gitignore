@@ -9,6 +9,8 @@ node_modules/
 __pycache__/
 .pytest_cache/
 dist/
+.next/
+test-results/
 .env
 .env.*
 !.env.example

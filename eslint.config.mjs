@@ -5,7 +5,7 @@ export default [
     ignores: ["**/dist/**", "packages/shared/generated/**"],
   },
   {
-    files: ["**/*.ts"],
+    files: ["**/*.{ts,tsx}"],
     languageOptions: { parser: tsParser },
   },
 ];

@@ -1,0 +1,29 @@
+{
+  "name": "@resume/web",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "lint": "eslint app components features tests next.config.ts vitest.config.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@resume/design-tokens": "workspace:*",
+    "@resume/shared": "workspace:*",
+    "next": "16.0.10",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@playwright/test": "1.58.2",
+    "@types/node": "24.10.4",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "27.3.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}
