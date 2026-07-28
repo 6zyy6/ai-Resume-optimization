@@ -12,6 +12,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "turn_start",
   "message_start",
   "first_token",
+  "message_update",
   "message_end",
   "tool_execution_start",
   "tool_execution_end",
@@ -74,7 +75,7 @@ function safeString(value: unknown, maxLength = 256): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  return value.replace(/[^a-zA-Z0-9_.:/[\]-]/g, "_").slice(0, maxLength);
+  return value.replace(/[^a-zA-Z0-9_$.:/[\]-]/g, "_").slice(0, maxLength);
 }
 
 function safeDetails(
@@ -138,7 +139,12 @@ function readUsage(raw: Record<string, unknown>): {
     typeof raw.message === "object" && raw.message
       ? raw.message as Record<string, unknown>
       : undefined;
+  const usageEvent =
+    raw.type === "message_end" ||
+    raw.type === "done" ||
+    raw.type === "error";
   const usage =
+    usageEvent &&
     message?.role === "assistant" &&
     typeof message.usage === "object" &&
     message.usage
@@ -184,14 +190,26 @@ export function createEventLedger({
 
   function appendPiEvent(raw: Record<string, unknown>): TraceEvent {
     const rawType = typeof raw.type === "string" ? raw.type : "invalid";
+    const assistantMessageEvent =
+      rawType === "message_update" &&
+      typeof raw.assistantMessageEvent === "object" &&
+      raw.assistantMessageEvent
+        ? raw.assistantMessageEvent as Record<string, unknown>
+        : undefined;
+    const effectiveType =
+      typeof assistantMessageEvent?.type === "string"
+        ? assistantMessageEvent.type
+        : rawType;
     let eventType = KNOWN_EVENT_TYPES.has(rawType) ? rawType : "unknown";
     if (rawType === "start") {
       eventType = "message_start";
     } else if (rawType === "done" || rawType === "error") {
       eventType = "message_end";
-    } else if (rawType === "text_delta" && !firstTokenSeen) {
+    } else if (effectiveType.endsWith("_delta") && !firstTokenSeen) {
       eventType = "first_token";
       firstTokenSeen = true;
+    } else if (rawType === "message_update") {
+      eventType = "message_update";
     }
 
     const { usage: rawUsage, message } = readUsage(raw);

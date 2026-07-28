@@ -247,14 +247,72 @@ export interface WorkflowRoute {
 
 export interface RuntimeCallInput {
   input: WorkflowInput;
-  attempt: 0 | 1;
+  attempt: number;
+  route_attempt: 0 | 1;
+  phase: "initial" | "retry" | "correction" | "fallback";
+  schema_feedback?: SchemaFeedback[];
   signal: AbortSignal;
+  budget: ResourceBudget;
 }
 
-export interface RuntimeResult {
+export interface SchemaFeedback {
+  path: string;
+  type: string;
+}
+
+export interface RuntimeSuccess {
+  status: "success";
   output: unknown;
   events: Iterable<Record<string, unknown>>;
   max_cost_usd?: number;
+  budget_accounted?: boolean;
+}
+
+export interface RuntimeFailure {
+  status: "failure";
+  failure_kind: "provider" | "json" | "timeout" | "budget" | "route";
+  error_code: string;
+  events: Iterable<Record<string, unknown>>;
+  max_cost_usd?: number;
+  budget_accounted?: boolean;
+}
+
+export type RuntimeResult = RuntimeSuccess | RuntimeFailure;
+
+export interface ResourceBudget {
+  preflightAttempt(): void;
+  setCostLimit(maxCostUsd: number): void;
+  reserveTurn(): void;
+  reserveTool(): void;
+  preflightProvider(
+    model: ModelBudgetRates,
+    inputText: string,
+    maxOutputTokens: number,
+    maxCostUsd: number,
+  ): void;
+  recordPiEvent(event: Record<string, unknown>): void;
+  snapshot(): {
+    turns: number;
+    tools: number;
+    total_tokens: number;
+    cost_usd: number;
+  };
+}
+
+export interface ModelBudgetRates {
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    tiers?: Array<{
+      inputTokensAbove: number;
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    }>;
+  };
 }
 
 export type RuntimeCall = (
@@ -265,6 +323,8 @@ export interface PiRuntime {
   mode: "fixture" | "production";
   runStructured: RuntimeCall;
   runAgent: RuntimeCall;
+  getRetryCount?(input: WorkflowInput): number;
+  isReady?(): Promise<boolean>;
 }
 
 export interface TraceUsage {

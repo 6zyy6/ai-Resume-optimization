@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   PiRuntime,
@@ -26,6 +26,7 @@ function input(): WorkflowInput {
 
 function runtime(call?: RuntimeCall): PiRuntime {
   const execute: RuntimeCall = call ?? (async () => ({
+    status: "success",
     output: { issues: [], passed: true },
     events: [],
   }));
@@ -58,6 +59,7 @@ async function waitForTerminal(
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  vi.unstubAllEnvs();
 });
 
 describe("Pi internal API", () => {
@@ -153,7 +155,11 @@ describe("Pi internal API", () => {
             resolve();
           }, { once: true });
         });
-        return { output: { issues: [], passed: true }, events: [] };
+        return {
+          status: "success",
+          output: { issues: [], passed: true },
+          events: [],
+        };
       }),
     });
     apps.push(app);
@@ -175,6 +181,33 @@ describe("Pi internal API", () => {
     expect(cancelled.statusCode).toBe(202);
     expect(observedAbort).toBe(true);
     expect(run.status).toBe("cancelled");
+  });
+
+  it("rejects cancellation after a run is already terminal", async () => {
+    const app = buildApp({
+      mode: "fixture",
+      runtime: runtime(),
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+    });
+    apps.push(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/internal/v1/runs",
+      headers: { authorization: "Bearer service-token" },
+      payload: input(),
+    });
+    const runId = created.json().ai_run_id;
+    await waitForTerminal(app, runId);
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/internal/v1/runs/${runId}/cancel`,
+      headers: { authorization: "Bearer service-token" },
+    });
+
+    expect(cancelled.statusCode).toBe(409);
+    expect(cancelled.json().error.code).toBe("run_already_terminal");
   });
 
   it("rejects request bodies larger than 512 KB", async () => {
@@ -239,5 +272,59 @@ describe("Pi internal API", () => {
         url: "/internal/v1/health/ready",
       })).statusCode,
     ).toBe(200);
+  });
+
+  it("uses the production runtime model and credential readiness check", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "configured-for-check-only");
+    const modelRoute = {
+      primary: {
+        provider: "openai",
+        model: "missing-model",
+        approved_data_policy: true,
+      },
+      fallback: {
+        provider: "openai",
+        model: "missing-model",
+        approved_data_policy: true,
+      },
+      max_tokens: 100,
+      thinking: "off" as const,
+      timeout_ms: 1_000,
+      retry_count: 0,
+      max_cost_usd: 1,
+    };
+    const checkedRuntime = {
+      ...runtime(),
+      mode: "production" as const,
+      isReady: vi.fn(async () => false),
+    };
+    const app = buildApp({
+      mode: "production",
+      runtime: checkedRuntime,
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({
+        routes: Object.fromEntries(
+          [
+            "extract_facts",
+            "next_question",
+            "write_experience_bullet",
+            "parse_jd",
+            "match_resume_to_jd",
+            "generate_suggestion",
+            "fact_check",
+            "style_check",
+          ].map((workflowType) => [workflowType, modelRoute]),
+        ),
+      }),
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/internal/v1/health/ready",
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(checkedRuntime.isReady).toHaveBeenCalledOnce();
   });
 });

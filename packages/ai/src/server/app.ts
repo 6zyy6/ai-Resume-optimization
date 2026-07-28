@@ -120,7 +120,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.get("/internal/v1/health/ready", async (_request, reply) => {
     const ready =
       options.mode === "fixture" ||
-      (Boolean(options.serviceToken) && options.modelRouter.isReady());
+      (Boolean(options.serviceToken) &&
+        options.modelRouter.isReady() &&
+        await options.runtime.isReady?.() === true);
     return reply.status(ready ? 200 : 503).send({
       request_id: requestId(),
       status: ready ? "ready" : "not_ready",
@@ -208,6 +210,16 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         return reply.status(404).send({
           request_id: requestId(),
           error: { code: "run_not_found" },
+        });
+      }
+      if (
+        stored.status === "succeeded" ||
+        stored.status === "failed" ||
+        stored.status === "cancelled"
+      ) {
+        return reply.status(409).send({
+          request_id: requestId(),
+          error: { code: "run_already_terminal" },
         });
       }
       stored.controller.abort();

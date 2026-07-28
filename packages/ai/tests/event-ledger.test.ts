@@ -166,4 +166,44 @@ describe("event ledger", () => {
     expect(serialized).not.toContain("result");
     expect(serialized).toContain("unsupported_numeric");
   });
+
+  it("maps nested Agent assistant deltas to first_token then message_update", () => {
+    const ledger = createEventLedger({
+      ai_run_id: "run_1",
+      trace_id: "trace_1",
+      task_id: "task_1",
+    });
+    const partial = {
+      role: "assistant",
+      content: [{ type: "text", text: "" }],
+      provider: "faux",
+      model: "faux-1",
+    };
+
+    ledger.appendPiEvent({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "第一段",
+        partial,
+      },
+      message: partial,
+    });
+    ledger.appendPiEvent({
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        contentIndex: 0,
+        delta: "第二段",
+        partial,
+      },
+      message: partial,
+    });
+
+    expect(ledger.events.map(({ event_type }) => event_type)).toEqual([
+      "first_token",
+      "message_update",
+    ]);
+  });
 });
