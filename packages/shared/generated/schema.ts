@@ -424,10 +424,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Tasks */
+        get: operations["list_tasks_v1_tasks_get"];
         put?: never;
-        /** Create Task */
-        post: operations["create_task_v1_tasks_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -812,25 +812,12 @@ export interface components {
          * @enum {string}
          */
         SuggestionStatus: "pending" | "accepted" | "edited" | "ignored" | "reverted" | "blocked";
-        /** TaskCreate */
-        TaskCreate: {
-            /** Payload */
-            payload?: {
-                [key: string]: unknown;
-            };
-            /**
-             * Priority
-             * @default 0
-             */
-            priority: number;
-            /** Queue */
-            queue: string;
-            /** Resource Id */
-            resource_id?: string | null;
-            /** Resource Type */
-            resource_type?: string | null;
-            /** Type */
-            type: string;
+        /** TaskListResponse */
+        TaskListResponse: {
+            /** Items */
+            items: components["schemas"]["TaskResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
         };
         /** TaskRecord */
         TaskRecord: {
@@ -2609,28 +2596,25 @@ export interface operations {
             };
         };
     };
-    create_task_v1_tasks_post: {
+    list_tasks_v1_tasks_get: {
         parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
+            query?: {
+                cursor?: string | null;
+                limit?: number;
             };
+            header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TaskCreate"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            202: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskResponse"];
+                    "application/json": components["schemas"]["TaskListResponse"];
                 };
             };
             /** @description Unauthorized */
@@ -2662,15 +2646,6 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorEnvelope"];
-                };
-            };
-            /** @description Too Many Requests */
-            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2745,15 +2720,6 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"];
                 };
             };
-            /** @description Too Many Requests */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorEnvelope"];
-                };
-            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -2821,15 +2787,6 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"];
                 };
             };
-            /** @description Too Many Requests */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorEnvelope"];
-                };
-            };
             /** @description Service Unavailable */
             503: {
                 headers: {
@@ -2846,7 +2803,9 @@ export interface operations {
             query?: {
                 after?: number;
             };
-            header?: never;
+            header?: {
+                "Last-Event-ID"?: number | null;
+            };
             path: {
                 task_id: string;
             };
@@ -2854,13 +2813,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description SSE task progress stream */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "text/event-stream": string;
                 };
             };
             /** @description Unauthorized */
@@ -2892,15 +2851,6 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorEnvelope"];
-                };
-            };
-            /** @description Too Many Requests */
-            429: {
                 headers: {
                     [name: string]: unknown;
                 };

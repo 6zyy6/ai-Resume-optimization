@@ -2,8 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import TaskEvent, User
-from app.modules.tasks.service import TaskService
-from app.modules.tasks.state import TaskStateError
+from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
 
 
 pytestmark = pytest.mark.anyio
@@ -25,15 +24,20 @@ async def test_task_progress_events_start_at_one_and_follow_state(sql_session_fa
         queue="ai.interactive",
         trace_id="tr_state",
         idempotency_key="state-1",
+        admission=TaskAdmission.unmetered(),
     )
-    claimed = await service.claim_task(created.id)
-    progressed = await service.report_progress(created.id, "drafting", 40)
-    completed = await service.complete_task(created.id, "resume_version:rv_1")
+    claimed = await service.claim_task("usr_tasks", created.id)
+    progressed = await service.report_progress(
+        "usr_tasks", created.id, claimed.token, "drafting", 40
+    )
+    completed = await service.complete_task(
+        "usr_tasks", created.id, claimed.token, "resume_version:rv_1"
+    )
     events = await service.list_events("usr_tasks", created.id)
 
     assert created.status == "queued"
     assert claimed is not None
-    assert claimed.status == "running"
+    assert claimed.task_id == created.id
     assert progressed.stage == "drafting"
     assert progressed.progress == 40
     assert completed.status == "succeeded"
@@ -57,15 +61,19 @@ async def test_terminal_task_cannot_regress(sql_session_factory):
         queue="file.export",
         trace_id="tr_terminal",
         idempotency_key="terminal-1",
+        admission=TaskAdmission.unmetered(),
     )
-    await service.claim_task(task.id)
-    await service.complete_task(task.id, "file:file_1")
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+    await service.complete_task("usr_tasks", task.id, claim.token, "file:file_1")
 
-    assert await service.claim_task(task.id) is None
+    assert await service.claim_task("usr_tasks", task.id) is None
     try:
-        await service.fail_task(task.id, "LATE_FAILURE")
-    except TaskStateError as error:
-        assert error.code == "TASK_TERMINAL"
+        await service.fail_task(
+            "usr_tasks", task.id, claim.token, "LATE_FAILURE"
+        )
+    except TaskClaimError as error:
+        assert error.code == "TASK_CLAIM_STALE"
     else:
         raise AssertionError("a succeeded task accepted a later failure")
 
@@ -85,14 +93,21 @@ async def test_cancelled_task_discards_late_business_result(sql_session_factory)
         queue="ai.batch",
         trace_id="tr_cancel",
         idempotency_key="cancel-1",
+        admission=TaskAdmission.unmetered(),
     )
-    await service.claim_task(task.id)
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
 
     cancelled = await service.request_cancel("usr_tasks", task.id)
-    late_completion = await service.complete_task(task.id, "resume_version:late")
+    with pytest.raises(TaskClaimError):
+        await service.complete_task(
+            "usr_tasks", task.id, claim.token, "resume_version:late"
+        )
+    late_completion = await service.get_task("usr_tasks", task.id)
 
     assert cancelled.status == "cancelled"
     assert cancelled.cancellation_requested is True
+    assert late_completion is not None
     assert late_completion.status == "cancelled"
     assert late_completion.result_ref is None
     async with sql_session_factory() as session:

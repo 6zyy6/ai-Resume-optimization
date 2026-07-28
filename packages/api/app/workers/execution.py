@@ -1,6 +1,8 @@
 import asyncio
 import inspect
+import random
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from app.modules.tasks.state import TaskStateError
@@ -13,7 +15,6 @@ QUEUE_NAMES = (
     "file.export",
     "privacy",
 )
-_task_handler: Callable[[str], Any] | None = None
 
 
 class HttpServiceError(Exception):
@@ -41,16 +42,46 @@ def retry_delay(attempt: int, jitter: Callable[[], float]) -> float:
     return float(2 ** (attempt - 1)) + max(0.0, jitter())
 
 
-def configure_task_handler(handler: Callable[[str], Any]) -> None:
-    global _task_handler
-    _task_handler = handler
+Operation = Callable[[Any], Awaitable[str] | str]
+OperationResolver = Callable[[str], Operation]
 
 
-def execute_task(task_id: str) -> Any:
-    if _task_handler is None:
-        raise RuntimeError("task execution handler is not configured")
-    result = _task_handler(task_id)
-    return asyncio.run(result) if inspect.isawaitable(result) else result
+@dataclass(frozen=True)
+class WorkerRuntime:
+    service: Any
+    resolver: OperationResolver
+
+
+_runtime: WorkerRuntime | None = None
+_operations: dict[str, Operation] = {}
+
+
+def configure_worker(service: Any, resolver: OperationResolver) -> None:
+    global _runtime
+    _runtime = WorkerRuntime(service, resolver)
+
+
+def register_operation(task_type: str, operation: Operation) -> None:
+    _operations[task_type] = operation
+
+
+def resolve_operation(task_type: str) -> Operation:
+    try:
+        return _operations[task_type]
+    except KeyError as error:
+        raise RuntimeError(f"no operation registered for task type {task_type}") from error
+
+
+def execute_task(task_id: str, owner_user_id: str) -> dict[str, Any]:
+    if _runtime is None:
+        raise RuntimeError("task worker runtime is not configured")
+    return asyncio.run(
+        TaskExecutor(_runtime.service).execute(
+            owner_user_id,
+            task_id,
+            _runtime.resolver,
+        )
+    )
 
 
 class TaskExecutor:
@@ -58,8 +89,8 @@ class TaskExecutor:
         self,
         service: Any,
         *,
-        sleep: Callable[[float], Awaitable[None] | None],
-        jitter: Callable[[], float],
+        sleep: Callable[[float], Awaitable[None] | None] = asyncio.sleep,
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         self.service = service
         self.sleep = sleep
@@ -67,28 +98,60 @@ class TaskExecutor:
 
     async def execute(
         self,
+        owner_user_id: str,
         task_id: str,
-        operation: Callable[[], Awaitable[str] | str],
-    ) -> Any:
+        resolver: OperationResolver,
+    ) -> dict[str, Any]:
         while True:
-            task = await self.service.claim_task(task_id)
-            if task is None:
+            claim = await self.service.claim_task(owner_user_id, task_id)
+            if claim is None:
+                task = await self.service.get_task(owner_user_id, task_id)
+                if task is not None and task.status in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    return _task_result(task)
                 raise TaskStateError(
                     "TASK_NOT_CLAIMABLE",
-                    "Task is terminal or has exhausted its attempts",
+                    "Task has a live claim or exhausted its attempts",
                 )
             try:
-                result = operation()
+                operation = resolver(claim.task_type)
+                result = operation(claim)
                 if inspect.isawaitable(result):
                     result = await result
-                return await self.service.complete_task(task_id, result)
+                task = await self.service.complete_task(
+                    owner_user_id,
+                    task_id,
+                    claim.token,
+                    result,
+                )
+                return _task_result(task)
             except Exception as error:
-                if should_retry(error) and task.attempts < task.max_attempts:
-                    delay = self.sleep(retry_delay(task.attempts, self.jitter))
+                if should_retry(error) and claim.attempts < claim.max_attempts:
+                    await self.service.release_claim_for_retry(
+                        owner_user_id,
+                        task_id,
+                        claim.token,
+                    )
+                    delay = self.sleep(retry_delay(claim.attempts, self.jitter))
                     if inspect.isawaitable(delay):
                         await delay
                     continue
-                return await self.service.fail_task(
+                task = await self.service.fail_task(
+                    owner_user_id,
                     task_id,
+                    claim.token,
                     type(error).__name__,
                 )
+                return _task_result(task)
+
+
+def _task_result(task: Any) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "status": task.status,
+        "result_ref": task.result_ref,
+        "error_code": task.error_code,
+    }

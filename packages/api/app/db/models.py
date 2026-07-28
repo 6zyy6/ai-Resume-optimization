@@ -536,6 +536,9 @@ class Task(OwnerMixin, Base):
     error_code: Mapped[str | None] = mapped_column(String(64))
     result_ref: Mapped[str | None] = mapped_column(String(255))
     cancellation_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    usage_type: Mapped[str | None] = mapped_column(String(64))
+    claim_token: Mapped[str | None] = mapped_column(String(128))
+    claim_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TaskEvent(OwnerMixin, Base):
@@ -576,6 +579,7 @@ class Outbox(OwnerMixin, Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exhausted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 

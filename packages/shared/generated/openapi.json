@@ -934,59 +934,33 @@
         "title": "SuggestionStatus",
         "type": "string"
       },
-      "TaskCreate": {
+      "TaskListResponse": {
         "additionalProperties": false,
         "properties": {
-          "payload": {
-            "additionalProperties": true,
-            "title": "Payload",
-            "type": "object"
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskResponse"
+            },
+            "title": "Items",
+            "type": "array"
           },
-          "priority": {
-            "default": 0,
-            "title": "Priority",
-            "type": "integer"
-          },
-          "queue": {
-            "title": "Queue",
-            "type": "string"
-          },
-          "resource_id": {
+          "next_cursor": {
             "anyOf": [
               {
-                "maxLength": 64,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Resource Id"
-          },
-          "resource_type": {
-            "anyOf": [
-              {
-                "maxLength": 64,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Resource Type"
-          },
-          "type": {
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Type",
-            "type": "string"
+            "title": "Next Cursor"
           }
         },
         "required": [
-          "type",
-          "queue"
+          "items",
+          "next_cursor"
         ],
-        "title": "TaskCreate",
+        "title": "TaskListResponse",
         "type": "object"
       },
       "TaskRecord": {
@@ -3578,37 +3552,44 @@
       }
     },
     "/v1/tasks": {
-      "post": {
-        "operationId": "create_task_v1_tasks_post",
+      "get": {
+        "operationId": "list_tasks_v1_tasks_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
             "schema": {
-              "maxLength": 255,
-              "minLength": 1,
-              "title": "Idempotency-Key",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TaskCreate"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
-          "202": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskResponse"
+                  "$ref": "#/components/schemas/TaskListResponse"
                 }
               }
             },
@@ -3654,16 +3635,6 @@
             },
             "description": "Unprocessable Entity"
           },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorEnvelope"
-                }
-              }
-            },
-            "description": "Too Many Requests"
-          },
           "503": {
             "content": {
               "application/json": {
@@ -3680,7 +3651,7 @@
             "APIKeyCookie": []
           }
         ],
-        "summary": "Create Task",
+        "summary": "List Tasks",
         "tags": [
           "tasks"
         ]
@@ -3750,16 +3721,6 @@
               }
             },
             "description": "Unprocessable Entity"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorEnvelope"
-                }
-              }
-            },
-            "description": "Too Many Requests"
           },
           "503": {
             "content": {
@@ -3848,16 +3809,6 @@
             },
             "description": "Unprocessable Entity"
           },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorEnvelope"
-                }
-              }
-            },
-            "description": "Too Many Requests"
-          },
           "503": {
             "content": {
               "application/json": {
@@ -3903,16 +3854,34 @@
               "title": "After",
               "type": "integer"
             }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
           }
         ],
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "SSE task progress stream"
           },
           "401": {
             "content": {
@@ -3953,16 +3922,6 @@
               }
             },
             "description": "Unprocessable Entity"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorEnvelope"
-                }
-              }
-            },
-            "description": "Too Many Requests"
           },
           "503": {
             "content": {

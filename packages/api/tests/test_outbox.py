@@ -2,8 +2,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.db.models import Outbox, Task, User
-from app.modules.tasks.service import TaskService
-from app.modules.usage.service import UsageDecision
+from app.modules.tasks.service import TaskAdmission, TaskService
 from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
 from app.workers.celery_app import celery_app
 from app.workers.execution import QUEUE_NAMES
@@ -17,7 +16,7 @@ class FlakyPublisher:
         self.available = False
         self.deliveries: list[tuple[str, str]] = []
 
-    def publish(self, task_id: str, queue: str) -> None:
+    def publish(self, task_id: str, owner_user_id: str, queue: str) -> None:
         if not self.available:
             raise ConnectionError("redis unavailable")
         self.deliveries.append((task_id, queue))
@@ -39,6 +38,7 @@ async def test_task_and_outbox_are_persisted_in_one_transaction(sql_session_fact
         queue="file.parse",
         trace_id="tr_outbox",
         idempotency_key="outbox-1",
+        admission=TaskAdmission.unmetered(),
         payload={"task_id": "spoofed"},
     )
 
@@ -61,6 +61,7 @@ async def test_dispatch_retry_reuses_one_task_and_one_outbox_row(sql_session_fac
         queue="ai.interactive",
         trace_id="tr_retry",
         idempotency_key="outbox-2",
+        admission=TaskAdmission.unmetered(),
     )
     publisher = FlakyPublisher()
     dispatcher = OutboxDispatcher(
@@ -91,8 +92,8 @@ async def test_dispatch_retry_reuses_one_task_and_one_outbox_row(sql_session_fac
     assert publisher.deliveries == [(task.id, "ai.interactive")]
 
 
-async def test_idempotent_replay_survives_a_later_usage_denial(sql_session_factory):
-    """Rechecking quota before idempotency would hide an already accepted task."""
+async def test_idempotent_replay_does_not_duplicate_task_or_usage(sql_session_factory):
+    """Replaying an admitted task must not consume usage or durable rows twice."""
     await _seed_user(sql_session_factory)
     service = TaskService(sql_session_factory)
     first = await service.create_task(
@@ -101,7 +102,7 @@ async def test_idempotent_replay_survives_a_later_usage_denial(sql_session_facto
         queue="ai.batch",
         trace_id="tr_first",
         idempotency_key="outbox-replay",
-        usage_decision=UsageDecision(True, None, None),
+        admission=TaskAdmission.ai(),
     )
 
     replay = await service.create_task(
@@ -110,7 +111,7 @@ async def test_idempotent_replay_survives_a_later_usage_denial(sql_session_facto
         queue="ai.batch",
         trace_id="tr_retry",
         idempotency_key="outbox-replay",
-        usage_decision=UsageDecision(False, "AI_LIMIT_REACHED", 3600),
+        admission=TaskAdmission.ai(),
     )
 
     async with sql_session_factory() as session:

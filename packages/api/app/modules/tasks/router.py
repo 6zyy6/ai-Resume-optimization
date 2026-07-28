@@ -1,9 +1,13 @@
+import asyncio
 import json
-from typing import Annotated, Any
+import time
+from collections.abc import AsyncIterator
+from typing import Annotated, Protocol
 
 from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
@@ -12,8 +16,7 @@ from app.db.models import Task, TaskEvent
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.tasks.service import TaskService, TaskServiceError
-from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
-from app.workers.execution import QUEUE_NAMES
+from app.modules.tasks.state import TERMINAL_STATUSES
 
 
 router = APIRouter(
@@ -21,20 +24,13 @@ router = APIRouter(
     tags=["tasks"],
     responses={
         status: {"model": ApiErrorEnvelope}
-        for status in (401, 404, 409, 422, 429, 503)
+        for status in (401, 404, 409, 422, 503)
     },
 )
 
 
-class TaskCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    type: str = Field(min_length=1, max_length=64)
-    queue: str
-    resource_type: str | None = Field(default=None, max_length=64)
-    resource_id: str | None = Field(default=None, max_length=64)
-    priority: int = 0
-    payload: dict[str, Any] = Field(default_factory=dict)
+class DisconnectProbe(Protocol):
+    async def is_disconnected(self) -> bool: ...
 
 
 class TaskResponse(BaseModel):
@@ -51,12 +47,15 @@ class TaskResponse(BaseModel):
     cancellation_requested: bool
 
 
+class TaskListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    items: list[TaskResponse]
+    next_cursor: str | None
+
+
 def get_task_service(request: Request) -> TaskService:
     return request.app.state.task_service
-
-
-def get_task_dispatcher(request: Request) -> OutboxDispatcher:
-    return request.app.state.task_dispatcher
 
 
 def _response(task: Task) -> TaskResponse:
@@ -73,7 +72,7 @@ def _response(task: Task) -> TaskResponse:
     )
 
 
-def _raise(request: Request, error: TaskServiceError | TaskQueueBusy) -> None:
+def _raise(request: Request, error: TaskServiceError) -> None:
     raise createApiError(
         error.code,
         error.message,
@@ -82,43 +81,37 @@ def _raise(request: Request, error: TaskServiceError | TaskQueueBusy) -> None:
     )
 
 
-@router.post("", status_code=202, response_model=TaskResponse)
-async def create_task(
-    payload: TaskCreate,
+def _raise_unavailable(request: Request) -> None:
+    raise createApiError(
+        "TASK_SERVICE_UNAVAILABLE",
+        "Task service is temporarily unavailable",
+        get_request_context(request).request_id,
+        503,
+    )
+
+
+@router.get("", response_model=TaskListResponse)
+async def list_tasks(
     request: Request,
-    idempotency_key: Annotated[
-        str,
-        Header(min_length=1, max_length=255, alias="Idempotency-Key"),
-    ],
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
     authenticated: AuthenticatedSession = Depends(require_session),
     service: TaskService = Depends(get_task_service),
-    dispatcher: OutboxDispatcher = Depends(get_task_dispatcher),
-) -> TaskResponse:
-    if payload.queue not in QUEUE_NAMES:
-        _raise(
-            request,
-            TaskServiceError("TASK_QUEUE_INVALID", "Unsupported task queue", 422),
-        )
-    usage_decision = await request.app.state.usage_service.decide_ai_task(
-        authenticated.user_id
-    )
+) -> TaskListResponse:
     try:
-        task = await service.create_task(
+        tasks, next_cursor = await service.list_tasks(
             authenticated.user_id,
-            task_type=payload.type,
-            queue=payload.queue,
-            trace_id=get_request_context(request).trace_id,
-            idempotency_key=idempotency_key,
-            resource_type=payload.resource_type,
-            resource_id=payload.resource_id,
-            priority=payload.priority,
-            payload=payload.payload,
-            usage_decision=usage_decision,
+            cursor,
+            limit,
         )
-        await dispatcher.dispatch_task(task.id)
-    except (TaskServiceError, TaskQueueBusy) as error:
+    except TaskServiceError as error:
         _raise(request, error)
-    return _response(task)
+    except SQLAlchemyError:
+        _raise_unavailable(request)
+    return TaskListResponse(
+        items=[_response(task) for task in tasks],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
@@ -128,7 +121,10 @@ async def get_task(
     authenticated: AuthenticatedSession = Depends(require_session),
     service: TaskService = Depends(get_task_service),
 ) -> TaskResponse:
-    task = await service.get_task(authenticated.user_id, task_id)
+    try:
+        task = await service.get_task(authenticated.user_id, task_id)
+    except SQLAlchemyError:
+        _raise_unavailable(request)
     if task is None:
         _raise(request, TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404))
     return _response(task)
@@ -145,25 +141,86 @@ async def cancel_task(
         return _response(await service.request_cancel(authenticated.user_id, task_id))
     except TaskServiceError as error:
         _raise(request, error)
+    except SQLAlchemyError:
+        _raise_unavailable(request)
 
 
-@router.get("/{task_id}/events")
+@router.get(
+    "/{task_id}/events",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "SSE task progress stream",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
 async def task_events(
     task_id: str,
     request: Request,
     after: int = Query(default=0, ge=0),
+    last_event_id: Annotated[
+        int | None,
+        Header(alias="Last-Event-ID"),
+    ] = None,
     authenticated: AuthenticatedSession = Depends(require_session),
     service: TaskService = Depends(get_task_service),
 ) -> StreamingResponse:
     try:
-        events = await service.list_events(authenticated.user_id, task_id, after)
-    except TaskServiceError as error:
-        _raise(request, error)
+        task = await service.get_task(authenticated.user_id, task_id)
+    except SQLAlchemyError:
+        _raise_unavailable(request)
+    if task is None:
+        _raise(request, TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404))
+    cursor = max(after, last_event_id or 0)
     return StreamingResponse(
-        (_sse(event) for event in events),
+        task_event_stream(
+            request,
+            service,
+            authenticated.user_id,
+            task_id,
+            after_seq=cursor,
+        ),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def task_event_stream(
+    request: DisconnectProbe,
+    service: TaskService,
+    owner_user_id: str,
+    task_id: str,
+    *,
+    after_seq: int,
+    poll_interval: float = 0.25,
+    heartbeat_interval: float = 15,
+) -> AsyncIterator[str]:
+    cursor = after_seq
+    last_heartbeat = time.monotonic()
+    while not await request.is_disconnected():
+        events = await service.list_events(owner_user_id, task_id, cursor)
+        for event in events:
+            cursor = event.seq
+            yield _sse(event)
+        task = await service.get_task(owner_user_id, task_id)
+        if task is None:
+            return
+        if task.status in TERMINAL_STATUSES:
+            terminal_events = await service.list_events(
+                owner_user_id,
+                task_id,
+                cursor,
+            )
+            for event in terminal_events:
+                cursor = event.seq
+                yield _sse(event)
+            return
+        now = time.monotonic()
+        if now - last_heartbeat >= heartbeat_interval:
+            yield f": heartbeat {int(now)}\n\n"
+            last_heartbeat = now
+        await asyncio.sleep(poll_interval)
 
 
 def _sse(event: TaskEvent) -> str:
