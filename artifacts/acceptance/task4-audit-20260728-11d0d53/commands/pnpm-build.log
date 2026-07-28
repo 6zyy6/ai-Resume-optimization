@@ -1,0 +1,8 @@
+$ pnpm -r build && node scripts/run-python.mjs build
+Scope: 3 of 4 workspace projects
+packages/design-tokens build$ tsc --project tsconfig.json
+packages/shared build$ tsc --project tsconfig.json
+packages/test-fixtures build$ tsc --project tsconfig.json
+packages/test-fixtures build: Done
+packages/design-tokens build: Done
+packages/shared build: Done

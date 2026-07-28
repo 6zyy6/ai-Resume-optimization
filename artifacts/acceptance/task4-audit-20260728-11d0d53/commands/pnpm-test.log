@@ -1,0 +1,64 @@
+$ pnpm -r test && node --test scripts/tests/dev-supervisor.test.mjs && node scripts/run-python.mjs test
+Scope: 3 of 4 workspace projects
+packages/shared test$ vitest run
+packages/design-tokens test$ vitest run
+packages/test-fixtures test$ vitest run --passWithNoTests
+packages/test-fixtures test:  RUN  v4.1.10 /Users/[workspace-user]/ai-Resume-optimization/.worktrees/ai-resume-assistant/packages/test-fixtures
+packages/design-tokens test:  RUN  v4.1.10 /Users/[workspace-user]/ai-Resume-optimization/.worktrees/ai-resume-assistant/packages/design-tokens
+packages/test-fixtures test: No test files found, exiting with code 0
+packages/test-fixtures test: include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+packages/test-fixtures test: exclude:  **/node_modules/**, **/.git/**
+packages/shared test:  RUN  v4.1.10 /Users/[workspace-user]/ai-Resume-optimization/.worktrees/ai-resume-assistant/packages/shared
+packages/test-fixtures test: Done
+packages/shared test:  Test Files  1 passed (1)
+packages/shared test:       Tests  2 passed (2)
+packages/shared test:    Start at  10:56:38
+packages/shared test:    Duration  100ms (transform 16ms, setup 0ms, import 23ms, tests 10ms, environment 0ms)
+packages/design-tokens test:  Test Files  1 passed (1)
+packages/design-tokens test:       Tests  2 passed (2)
+packages/design-tokens test:    Start at  10:56:38
+packages/design-tokens test:    Duration  109ms (transform 11ms, setup 0ms, import 16ms, tests 29ms, environment 0ms)
+packages/design-tokens test: Done
+packages/shared test: Done
+✔ returns a child failure and terminates its sibling (130.504208ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 168.509041
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/[workspace-user]/ai-Resume-optimization/.worktrees/ai-resume-assistant/packages/api
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.14.2
+collected 355 items
+
+tests/test_acceptance_evidence_security.py .....................         [  5%]
+tests/test_acceptance_release_review.py ................................ [ 14%]
+.......................                                                  [ 21%]
+tests/test_auth.py ..................                                    [ 26%]
+tests/test_auth_preflight.py ...                                         [ 27%]
+tests/test_contracts.py .....                                            [ 28%]
+tests/test_errors.py ....                                                [ 29%]
+tests/test_facts.py .....                                                [ 31%]
+tests/test_idempotency.py ........                                       [ 33%]
+tests/test_privacy.py ........                                           [ 35%]
+tests/test_resume_versions.py ..............                             [ 39%]
+tests/test_schema_constraints.py ....................                    [ 45%]
+tests/test_task3_sql_integration.py ................                     [ 49%]
+tests/test_task4_acceptance.py ......................................... [ 61%]
+......................                                                   [ 67%]
+tests/test_task4_claim_evidence_contract.py ....................         [ 73%]
+tests/test_task4_migrations.py .....                                     [ 74%]
+tests/test_task4_round5_adversarial.py ......                            [ 76%]
+tests/test_task4_round8_release_gates.py ............................... [ 85%]
+............                                                             [ 88%]
+tests/test_task4_sql_integration.py ...........................          [ 96%]
+tests/test_trace.py ..                                                   [ 96%]
+tests/test_usage.py ............                                         [100%]
+
+============================= 355 passed in 21.82s =============================

@@ -1,0 +1,1525 @@
+{
+  "release_id": "task4-audit-20260728-11d0d53",
+  "commit_sha": "11d0d5308e0b7d48d62348dff2efa759ad71ed45",
+  "created_at": "2026-07-28T02:58:15.729Z",
+  "scope": [
+    "release-audit",
+    "task4"
+  ],
+  "acceptance_status": "FAIL",
+  "web_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "api_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "pi_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "worker_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "miniprogram_build_version": "NOT_BUILT",
+  "database_schema_version": "0002; PostgreSQL runtime NOT_EVIDENCED",
+  "prompt_version": "NOT_IMPLEMENTED",
+  "workflow_version": "NOT_IMPLEMENTED",
+  "model_route_version": "NOT_IMPLEMENTED",
+  "template_version": "NOT_IMPLEMENTED",
+  "test_environment": "local macOS; details in audit/environment.txt",
+  "executor": "Codex root coordinator",
+  "reviewer": "independent subagent spec_auditor",
+  "open_severity_counts": {
+    "sev1": 4,
+    "sev2": 3,
+    "sev3": 2,
+    "sev4": 1
+  },
+  "commands": [
+    {
+      "command": "pnpm generate",
+      "started_at": "2026-07-28T02:56:14Z",
+      "ended_at": "2026-07-28T02:56:15Z",
+      "exit_code": 0,
+      "raw_log": "commands/pnpm-generate.log",
+      "raw_log_sha256": "e59e52ee3ca89d7ecec8ad94d8a3d328a4a074e614e419282c5d262a0a011122"
+    },
+    {
+      "command": "pnpm lint",
+      "started_at": "2026-07-28T02:56:23Z",
+      "ended_at": "2026-07-28T02:56:24Z",
+      "exit_code": 0,
+      "raw_log": "commands/pnpm-lint.log",
+      "raw_log_sha256": "92a95cbae36bf6b2103747c08f498f93e280360ad09e174f8fa572a2478dd595"
+    },
+    {
+      "command": "pnpm test",
+      "started_at": "2026-07-28T02:56:37Z",
+      "ended_at": "2026-07-28T02:57:01Z",
+      "exit_code": 0,
+      "raw_log": "commands/pnpm-test.log",
+      "raw_log_sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+    },
+    {
+      "command": "pnpm build",
+      "started_at": "2026-07-28T02:57:11Z",
+      "ended_at": "2026-07-28T02:57:12Z",
+      "exit_code": 0,
+      "raw_log": "commands/pnpm-build.log",
+      "raw_log_sha256": "468f8607dcb79ca24de657c51b65d05e83cce1b85133271577b7c3b23e5d5fdc"
+    }
+  ],
+  "acceptance_items": [
+    {
+      "id": "ENG-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-05",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-generate.log",
+          "sha256": "e59e52ee3ca89d7ecec8ad94d8a3d328a4a074e614e419282c5d262a0a011122"
+        }
+      ]
+    },
+    {
+      "id": "ENG-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "ENG-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-13",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FLOW-14",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "WEB-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "MP-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-13",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "AI-14",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "FILE-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "DATA-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "DATA-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "DATA-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "DATA-04",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-test.log",
+          "sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+        }
+      ]
+    },
+    {
+      "id": "DATA-05",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-test.log",
+          "sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+        }
+      ]
+    },
+    {
+      "id": "DATA-06",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-test.log",
+          "sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+        }
+      ]
+    },
+    {
+      "id": "DATA-07",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-test.log",
+          "sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+        }
+      ]
+    },
+    {
+      "id": "DATA-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "DATA-09",
+      "status": "PASS",
+      "evidence": [
+        {
+          "path": "commands/pnpm-test.log",
+          "sha256": "41bf31f321356a59666b3c78a47d993aba9dc060eb3e84d6722ce03e2c3fc442"
+        }
+      ]
+    },
+    {
+      "id": "DATA-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "PERF-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-13",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "SEC-14",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-11",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OBS-12",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "UX-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "USER-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-01",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-02",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-03",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-04",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-05",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-06",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-07",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-08",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-09",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    },
+    {
+      "id": "OPS-10",
+      "status": "FAIL",
+      "evidence": [
+        {
+          "path": "audit/146-status-matrix.md",
+          "sha256": "bc4e56c317273f8ac760735d7070b68ece351142c3f553487ade24543165bfb3"
+        }
+      ]
+    }
+  ]
+}

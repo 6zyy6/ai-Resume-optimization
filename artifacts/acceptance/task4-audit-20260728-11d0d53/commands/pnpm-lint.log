@@ -1,0 +1,8 @@
+$ pnpm -r lint && node scripts/run-python.mjs lint
+Scope: 3 of 4 workspace projects
+packages/design-tokens lint$ eslint src tests
+packages/shared lint$ eslint src tests
+packages/test-fixtures lint$ eslint src
+packages/test-fixtures lint: Done
+packages/design-tokens lint: Done
+packages/shared lint: Done
