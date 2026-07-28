@@ -64,18 +64,20 @@ _ACCEPTANCE_GROUP_COUNTS = {
     "USER": 10,
     "OPS": 10,
 }
-_ACCEPTANCE_IDS = {
+ACCEPTANCE_IDS = frozenset(
     f"{group}-{index:02d}"
     for group, count in _ACCEPTANCE_GROUP_COUNTS.items()
     for index in range(1, count + 1)
-}
+)
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
-_STAT_IDENTITY_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+_STAT_IDENTITY_FIELDS = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
 
 
-def verify_release_evidence(release_dir: Path) -> None:
+def verify_release_evidence(release_dir: Path, expected_commit_sha: str) -> None:
+    if not _valid_commit_sha(expected_commit_sha):
+        raise ValueError("expected candidate commit must be a lowercase 40-character SHA")
     _require_secure_open_support()
     release_path = Path(release_dir)
     try:
@@ -89,20 +91,24 @@ def verify_release_evidence(release_dir: Path) -> None:
         if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
             raise ValueError("release directory is not a directory")
         manifest = _load_manifest(root_fd)
-        _verify_manifest(root_fd, release_path.name, manifest)
+        _verify_manifest(root_fd, release_path.name, expected_commit_sha, manifest)
     finally:
         os.close(root_fd)
 
 
-def _verify_manifest(root_fd: int, release_name: str, manifest: dict[str, Any]) -> None:
+def _verify_manifest(
+    root_fd: int,
+    release_name: str,
+    expected_commit_sha: str,
+    manifest: dict[str, Any],
+) -> None:
     _require_fields(manifest, _MANIFEST_FIELDS, "manifest")
     if _nonempty_string(manifest["release_id"], "release_id") != release_name:
         raise ValueError("release_id does not match release directory")
-    if not (
-        isinstance(manifest["commit_sha"], str)
-        and _COMMIT_SHA.fullmatch(manifest["commit_sha"])
-    ):
+    if not _valid_commit_sha(manifest["commit_sha"]):
         raise ValueError("commit_sha must be a 40-character lowercase hex SHA")
+    if not hmac.compare_digest(manifest["commit_sha"], expected_commit_sha):
+        raise ValueError("commit_sha does not match the candidate commit")
     _timestamp(manifest["created_at"], "created_at")
     scope = manifest["scope"]
     if (
@@ -218,7 +224,7 @@ def _verify_acceptance_items(
     items: Any,
     file_hashes: dict[str, str],
 ) -> list[str]:
-    if not isinstance(items, list) or len(items) != len(_ACCEPTANCE_IDS):
+    if not isinstance(items, list) or len(items) != len(ACCEPTANCE_IDS):
         raise ValueError("acceptance_items must contain all 146 known IDs exactly once")
     ids: list[str] = []
     statuses: list[str] = []
@@ -251,7 +257,7 @@ def _verify_acceptance_items(
             )
         ids.append(item_id)
         statuses.append(status_value)
-    if len(set(ids)) != len(ids) or set(ids) != _ACCEPTANCE_IDS:
+    if len(set(ids)) != len(ids) or set(ids) != ACCEPTANCE_IDS:
         raise ValueError("acceptance_items must contain all 146 known IDs exactly once")
     return statuses
 
@@ -354,6 +360,10 @@ def _nonempty_string(value: Any, path: str) -> str:
     return value
 
 
+def _valid_commit_sha(value: Any) -> bool:
+    return isinstance(value, str) and _COMMIT_SHA.fullmatch(value) is not None
+
+
 def _timestamp(value: Any, path: str) -> datetime:
     if not isinstance(value, str):
         raise ValueError(f"{path} must be an ISO-8601 timestamp")
@@ -369,7 +379,9 @@ def _timestamp(value: Any, path: str) -> datetime:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("release_dir", type=Path)
-    verify_release_evidence(parser.parse_args().release_dir)
+    parser.add_argument("--expected-commit-sha", required=True)
+    arguments = parser.parse_args()
+    verify_release_evidence(arguments.release_dir, arguments.expected_commit_sha)
 
 
 if __name__ == "__main__":

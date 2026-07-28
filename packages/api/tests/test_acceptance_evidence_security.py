@@ -15,6 +15,7 @@ from test_resume_versions import (
     resume_client,
 )
 from test_task4_round8_release_gates import (
+    EXPECTED_COMMIT_SHA,
     _cookie_write_headers,
     _verify_release_evidence,
     _write_release_manifest,
@@ -45,7 +46,7 @@ def test_release_evidence_rejects_malformed_field_values(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 def test_release_evidence_rejects_reversed_command_times(tmp_path):
@@ -56,13 +57,16 @@ def test_release_evidence_rejects_reversed_command_times(tmp_path):
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 def test_release_evidence_rejects_missing_release_directory(tmp_path):
     """Every invalid verifier input uses the same public ValueError contract."""
     with pytest.raises(ValueError):
-        _verify_release_evidence(tmp_path / "missing-release")
+        _verify_release_evidence(
+            tmp_path / "missing-release",
+            EXPECTED_COMMIT_SHA,
+        )
 
 
 @pytest.mark.parametrize("kind", ["parent_escape", "absolute", "directory", "symlink"])
@@ -86,7 +90,7 @@ def test_release_evidence_rejects_unsafe_raw_log_paths(tmp_path, kind):
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize(

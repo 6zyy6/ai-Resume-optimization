@@ -141,6 +141,7 @@ ACCEPTANCE_IDS = [
     for group, count in _ACCEPTANCE_GROUP_COUNTS.items()
     for index in range(1, count + 1)
 ]
+EXPECTED_COMMIT_SHA = "a" * 40
 
 
 def _write_release_manifest(
@@ -161,7 +162,7 @@ def _write_release_manifest(
     }.get(acceptance_status, "PASS")
     manifest = {
         "release_id": "task4-local",
-        "commit_sha": "a" * 40,
+        "commit_sha": EXPECTED_COMMIT_SHA,
         "created_at": "2026-07-28T00:00:00+00:00",
         "scope": ["release"] if acceptance_status == "PASS" else ["task4"],
         "acceptance_status": acceptance_status,
@@ -213,9 +214,12 @@ def _write_release_manifest(
     return release_dir, manifest
 
 
-def _verify_release_evidence(release_dir: Path) -> None:
+def _verify_release_evidence(
+    release_dir: Path,
+    expected_commit_sha: str,
+) -> None:
     module = importlib.import_module("scripts.verify_acceptance_evidence")
-    module.verify_release_evidence(release_dir)
+    module.verify_release_evidence(release_dir, expected_commit_sha)
 
 
 @pytest.mark.parametrize(
@@ -259,7 +263,7 @@ def test_release_evidence_verifier_rejects_missing_required_fields(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize("status", ["PASS", "FAIL", "BLOCKED"])
@@ -268,7 +272,7 @@ def test_release_evidence_verifier_accepts_complete_hashed_manifest(
 ):
     release_dir, _ = _write_release_manifest(tmp_path, acceptance_status=status)
 
-    assert _verify_release_evidence(release_dir) is None
+    assert _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA) is None
 
 
 @pytest.mark.parametrize(
@@ -292,4 +296,4 @@ def test_release_evidence_verifier_rejects_missing_or_tampered_evidence(
         (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)

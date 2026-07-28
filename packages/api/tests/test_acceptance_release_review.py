@@ -1,5 +1,8 @@
 import hashlib
+import importlib
 import json
+import os
+import re
 from pathlib import Path
 
 import pytest
@@ -10,9 +13,41 @@ from fastapi.testclient import TestClient
 from app.core.middleware import CsrfProtectionMiddleware, RequestContextMiddleware
 from test_task4_round8_release_gates import (
     ACCEPTANCE_IDS,
+    EXPECTED_COMMIT_SHA,
     _verify_release_evidence,
     _write_release_manifest,
 )
+
+
+def test_release_manifest_commit_must_match_candidate_commit(tmp_path):
+    release_dir, _ = _write_release_manifest(tmp_path)
+    verifier = importlib.import_module("scripts.verify_acceptance_evidence")
+
+    try:
+        verifier.verify_release_evidence(release_dir, "b" * 40)
+    except TypeError:
+        pytest.fail("verifier does not accept the candidate commit SHA")
+    except ValueError as error:
+        assert "candidate commit" in str(error)
+    else:
+        pytest.fail("format-valid evidence from a different commit was accepted")
+
+
+def test_production_acceptance_ids_match_the_acceptance_spec():
+    verifier = importlib.import_module("scripts.verify_acceptance_evidence")
+    spec_path = (
+        Path(__file__).resolve().parents[3]
+        / "docs/superpowers/specs/ai-resume-assistant/11-acceptance-and-evidence.md"
+    )
+    spec_ids = re.findall(
+        r"^\| ([A-Z]+-\d{2}) \|",
+        spec_path.read_text(),
+        flags=re.MULTILINE,
+    )
+
+    assert len(spec_ids) == 146
+    assert len(set(spec_ids)) == 146
+    assert getattr(verifier, "ACCEPTANCE_IDS", None) == frozenset(spec_ids)
 
 
 @pytest.mark.parametrize("corruption", ["missing", "duplicate", "unknown"])
@@ -29,7 +64,7 @@ def test_release_manifest_requires_each_known_acceptance_id_exactly_once(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize(
@@ -58,7 +93,7 @@ def test_release_manifest_rejects_empty_artifact_and_audit_fields(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize(
@@ -81,7 +116,7 @@ def test_release_manifest_validates_each_acceptance_item_evidence(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize(
@@ -105,7 +140,7 @@ def test_release_pass_requires_successful_root_gate_commands(tmp_path, corruptio
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 @pytest.mark.parametrize("corruption", ["blocked_item", "open_sev1", "open_sev2"])
@@ -120,7 +155,7 @@ def test_release_pass_requires_every_item_pass_and_no_open_high_severity(
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
 
 def test_blocked_local_scope_cannot_claim_global_release_pass(tmp_path):
@@ -129,7 +164,7 @@ def test_blocked_local_scope_cannot_claim_global_release_pass(tmp_path):
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+        _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA)
 
     manifest["acceptance_status"] = "BLOCKED"
     for item in manifest["acceptance_items"]:
@@ -137,57 +172,119 @@ def test_blocked_local_scope_cannot_claim_global_release_pass(tmp_path):
     manifest["commands"][0]["exit_code"] = 1
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
 
-    assert _verify_release_evidence(release_dir) is None
+    assert _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA) is None
 
 
-def test_raw_evidence_swap_between_check_and_read_is_rejected(tmp_path, monkeypatch):
+def _swap_path_after_fd_open(
+    monkeypatch,
+    verifier,
+    *,
+    opened_name: str,
+    original_path: Path,
+    moved_path: Path,
+    outside_path: Path,
+) -> dict[str, object]:
+    original_open = verifier.os.open
+    original_read = verifier.os.read
+    state: dict[str, object] = {"target_fd": None, "swapped": False}
+
+    def open_with_target_tracking(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is None:
+            fd = original_open(path, flags, mode)
+        else:
+            fd = original_open(path, flags, mode, dir_fd=dir_fd)
+        if path == opened_name and dir_fd is not None:
+            state["target_fd"] = fd
+        return fd
+
+    def read_after_path_swap(fd, length):
+        if fd == state["target_fd"] and not state["swapped"]:
+            os.replace(original_path, moved_path)
+            original_path.symlink_to(outside_path)
+            state["swapped"] = True
+        return original_read(fd, length)
+
+    monkeypatch.setattr(verifier.os, "open", open_with_target_tracking)
+    monkeypatch.setattr(verifier.os, "read", read_after_path_swap)
+    monkeypatch.setattr(
+        verifier.os,
+        "supports_dir_fd",
+        {*verifier.os.supports_dir_fd, open_with_target_tracking},
+    )
+    return state
+
+
+@pytest.mark.parametrize("target_kind", ["raw_log", "item_evidence"])
+def test_evidence_path_swap_after_open_reads_and_hashes_the_open_fd(
+    tmp_path,
+    monkeypatch,
+    target_kind,
+):
     release_dir, manifest = _write_release_manifest(
         tmp_path,
         acceptance_status="BLOCKED",
     )
     manifest["commands"] = manifest["commands"][:1]
-    raw_log = release_dir / manifest["commands"][0]["raw_log"]
-    outside = tmp_path / "outside.log"
-    outside.write_text("outside evidence\n")
-    manifest["commands"][0]["raw_log_sha256"] = hashlib.sha256(
-        outside.read_bytes()
-    ).hexdigest()
+    if target_kind == "raw_log":
+        original_path = release_dir / manifest["commands"][0]["raw_log"]
+        expected_hash = manifest["commands"][0]["raw_log_sha256"]
+    else:
+        original_path = release_dir / "evidence" / "item.log"
+        original_path.parent.mkdir()
+        original_path.write_text("acceptance evidence\n")
+        expected_hash = hashlib.sha256(original_path.read_bytes()).hexdigest()
+        manifest["acceptance_items"][0]["evidence"] = [
+            {
+                "path": "evidence/item.log",
+                "sha256": expected_hash,
+            }
+        ]
     (release_dir / "manifest.json").write_text(json.dumps(manifest))
-    original_read_bytes = Path.read_bytes
+    outside_path = tmp_path / f"outside-{target_kind}.log"
+    outside_path.write_text("outside replacement\n")
+    moved_path = tmp_path / f"opened-{target_kind}.log"
+    verifier = importlib.import_module("scripts.verify_acceptance_evidence")
+    state = _swap_path_after_fd_open(
+        monkeypatch,
+        verifier,
+        opened_name=original_path.name,
+        original_path=original_path,
+        moved_path=moved_path,
+        outside_path=outside_path,
+    )
 
-    def swap_then_read(path):
-        if path == raw_log:
-            path.unlink()
-            path.symlink_to(outside)
-        return original_read_bytes(path)
-
-    monkeypatch.setattr(Path, "read_bytes", swap_then_read)
-
-    with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+    assert _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA) is None
+    assert state["swapped"] is True
+    assert original_path.is_symlink()
+    assert hashlib.sha256(moved_path.read_bytes()).hexdigest() == expected_hash
+    assert hashlib.sha256(outside_path.read_bytes()).hexdigest() != expected_hash
 
 
-def test_manifest_swap_between_check_and_read_is_rejected(tmp_path, monkeypatch):
+def test_manifest_path_swap_after_open_reads_the_open_fd(tmp_path, monkeypatch):
     release_dir, manifest = _write_release_manifest(
         tmp_path,
         acceptance_status="BLOCKED",
     )
     outside = tmp_path / "outside-manifest.json"
-    outside.write_text(json.dumps(manifest))
+    outside_manifest = {**manifest, "commit_sha": "b" * 40}
+    outside.write_text(json.dumps(outside_manifest))
     manifest_path = release_dir / "manifest.json"
-    manifest_path.write_text("{invalid")
-    original_read_text = Path.read_text
+    moved_manifest = tmp_path / "opened-manifest.json"
+    verifier = importlib.import_module("scripts.verify_acceptance_evidence")
+    state = _swap_path_after_fd_open(
+        monkeypatch,
+        verifier,
+        opened_name="manifest.json",
+        original_path=manifest_path,
+        moved_path=moved_manifest,
+        outside_path=outside,
+    )
 
-    def swap_then_read(path, *args, **kwargs):
-        if path == manifest_path:
-            path.unlink()
-            path.symlink_to(outside)
-        return original_read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", swap_then_read)
-
-    with pytest.raises(ValueError):
-        _verify_release_evidence(release_dir)
+    assert _verify_release_evidence(release_dir, EXPECTED_COMMIT_SHA) is None
+    assert state["swapped"] is True
+    assert manifest_path.is_symlink()
+    assert json.loads(moved_manifest.read_text())["commit_sha"] == EXPECTED_COMMIT_SHA
+    assert json.loads(manifest_path.read_text())["commit_sha"] == "b" * 40
 
 
 HOSTILE_HEADERS = [
