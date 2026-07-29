@@ -7,7 +7,9 @@
   "spacing": "4px semantic scale in app/web/app/globals.css",
   "preserved": [
     "Cobalt theme",
-    "Workbench macrostructure",
+    "Action-first product hierarchy",
     "Existing split authentication layout"
-  ]
+  ],
+  "macrostructure": "Guided Ledger",
+  "variation": "action-first path + evidence ledger + forked public entry"
 }

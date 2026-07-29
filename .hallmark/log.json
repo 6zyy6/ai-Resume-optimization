@@ -1,6 +1,13 @@
 [
   {
     "date": "2026-07-30",
+    "macrostructure": "Guided Ledger",
+    "theme": "Cobalt",
+    "enrichment": "product-interface",
+    "brief": "V2 action-first path with a factual evidence ledger and forked public entry"
+  },
+  {
+    "date": "2026-07-30",
     "macrostructure": "Workbench",
     "theme": "Cobalt",
     "enrichment": "product-interface",
