@@ -1,0 +1,1 @@
+$ eslint app components features tests next.config.ts vitest.config.ts

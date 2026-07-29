@@ -54,6 +54,7 @@ class WorkerRuntime:
 
 _runtime: WorkerRuntime | None = None
 _operations: dict[str, Operation] = {}
+_worker_loop: asyncio.AbstractEventLoop | None = None
 
 
 def configure_worker(service: Any, resolver: OperationResolver) -> None:
@@ -73,9 +74,12 @@ def resolve_operation(task_type: str) -> Operation:
 
 
 def execute_task(task_id: str, owner_user_id: str) -> dict[str, Any]:
+    global _worker_loop
     if _runtime is None:
         raise RuntimeError("task worker runtime is not configured")
-    return asyncio.run(
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+    return _worker_loop.run_until_complete(
         TaskExecutor(_runtime.service).execute(
             owner_user_id,
             task_id,
@@ -121,6 +125,13 @@ class TaskExecutor:
                 result = operation(claim)
                 if inspect.isawaitable(result):
                     result = await result
+                current = await self.service.get_task(owner_user_id, task_id)
+                if current is not None and current.status in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    return _task_result(current)
                 task = await self.service.complete_task(
                     owner_user_id,
                     task_id,
@@ -129,6 +140,13 @@ class TaskExecutor:
                 )
                 return _task_result(task)
             except Exception as error:
+                current = await self.service.get_task(owner_user_id, task_id)
+                if current is not None and current.status in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    return _task_result(current)
                 if should_retry(error) and claim.attempts < claim.max_attempts:
                     await self.service.release_claim_for_retry(
                         owner_user_id,

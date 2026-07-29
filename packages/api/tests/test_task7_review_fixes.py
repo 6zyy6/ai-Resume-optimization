@@ -149,7 +149,7 @@ def test_matching_base_resume_creates_targeted_resume_and_decision_keeps_base_he
     client, sessions, _ = pipeline_client
     base_resume_id, base_version_id, base_head, _ = _create_base_version(client)
     job_id, _ = _create_parsed_job(
-        client, sessions, "Python SQL", "review-target-job"
+        client, sessions, "Python SQL", "review-target-job", confirm=True
     )
 
     match = client.post(
@@ -294,7 +294,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     client, sessions, _ = pipeline_client
     _, base_version_id, _, fact_id = _create_base_version(client)
     job_id, requirement_id = _create_parsed_job(
-        client, sessions, "Python SQL", "review-pi-job"
+        client, sessions, "Python SQL", "review-pi-job", confirm=True
     )
     client.app.state.matching_service = MatchingService(
         sessions,
@@ -331,15 +331,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     queued_id = asyncio.run(
         _first_suggestion_id(sessions, match.json()["id"])
     )
-    queued_decision = client.post(
-        f"/v1/suggestions/{queued_id}/accept",
-        headers={"Idempotency-Key": "review-queued-decision"},
-    )
-    assert queued_decision.status_code == 409
-    assert (
-        queued_decision.json()["error"]["code"]
-        == "MATCH_ANALYSIS_NOT_READY"
-    )
+    assert queued_id is None
     asyncio.run(
         client.app.state.matching_service.process_match(
             "usr_a",
@@ -733,7 +725,7 @@ def test_match_task_admission_failure_leaves_no_orphan_analysis(
     client, sessions, _ = pipeline_client
     _, version_id, _, _ = _create_base_version(client)
     job_id, _ = _create_parsed_job(
-        client, sessions, "Python SQL", "review-atomic-match-job"
+        client, sessions, "Python SQL", "review-atomic-match-job", confirm=True
     )
     client.app.state.task_service = RejectingTaskService()
 
@@ -926,7 +918,14 @@ def _create_base_version(client):
     )
 
 
-def _create_parsed_job(client, sessions, raw: str, key: str):
+def _create_parsed_job(
+    client,
+    sessions,
+    raw: str,
+    key: str,
+    *,
+    confirm: bool = False,
+):
     job = client.post(
         "/v1/jobs",
         json={"title": "目标岗位", "raw": raw},
@@ -949,6 +948,15 @@ def _create_parsed_job(client, sessions, raw: str, key: str):
     requirement_id = asyncio.run(
         _first_requirement_id(sessions, job.json()["id"])
     )
+    if confirm:
+        parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()
+        for index, requirement in enumerate(parsed_job["requirements"]):
+            response = client.patch(
+                f"/v1/jobs/{job.json()['id']}/requirements/{requirement['id']}",
+                json={"confirmed": True},
+                headers={"Idempotency-Key": f"{key}-confirm-{index}"},
+            )
+            assert response.status_code == 200, response.text
     return job.json()["id"], requirement_id
 
 
@@ -1149,6 +1157,7 @@ def _confirmed_upload(client, content: bytes) -> str:
             "sha256": hashlib.sha256(content).hexdigest(),
             "purpose": "resume_import",
         },
+        headers={"Idempotency-Key": "review-upload-token"},
     )
     assert created.status_code == 201
     uploaded = client.put(

@@ -1,0 +1,8 @@
+{
+  "command": "pnpm exec playwright test tests/e2e-web/zero-to-resume.spec.ts tests/e2e-web/optimize-existing.spec.ts --grep completes --timeout=10000 --max-failures=2 --workers=2",
+  "started_at": "2026-07-29T17:33:21.824Z",
+  "ended_at": "2026-07-29T17:33:33.510Z",
+  "exit_code": 1,
+  "raw_log": "docs/superpowers/specs/ai-resume-assistant-v2/evidence/current-baseline/commands/playwright-fixture-focused.log",
+  "raw_log_sha256": "c23e9cefa592b43fb9d1b9e48ff3a90bc3ecb0d248d2561894349ad4a97f250f"
+}

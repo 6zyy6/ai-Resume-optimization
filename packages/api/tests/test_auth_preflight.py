@@ -169,3 +169,37 @@ async def test_email_rate_limit_is_shared_across_store_instances(sql_session_fac
 
     assert caught.value.code == "AUTH_RATE_LIMITED"
     assert caught.value.retry_after == 55 * 60
+
+
+@pytest.mark.anyio
+async def test_password_failure_limit_is_shared_across_workers(sql_session_factory):
+    backend = InMemoryAuthPreflightBackend()
+    sender = RecordingSender()
+    clock = FakeClock()
+    workers = [
+        auth_worker(
+            sql_session_factory,
+            InMemoryAuthPreflightStore(backend),
+            sender,
+            clock,
+        )
+        for _ in range(2)
+    ]
+    for index in range(5):
+        with pytest.raises(AuthError) as rejected:
+            await workers[index % 2].login_password(
+                "person@example.com",
+                "wrong-password",
+                f"10.0.0.{index + 1}",
+            )
+        assert rejected.value.code == "AUTH_CREDENTIALS_INVALID"
+
+    with pytest.raises(AuthError) as limited:
+        await workers[1].login_password(
+            "person@example.com",
+            "wrong-password",
+            "10.0.0.9",
+        )
+
+    assert limited.value.code == "AUTH_RATE_LIMITED"
+    assert limited.value.retry_after == 15 * 60

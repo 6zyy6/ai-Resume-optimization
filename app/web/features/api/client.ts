@@ -5,6 +5,10 @@ export interface WebApiClientOptions {
   transport?: ApiTransport;
 }
 
+export function apiBrowserUrl(url: string): string {
+  return url.startsWith("/v1/") ? `/api${url}` : url;
+}
+
 export function createWebApiClient({
   baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api",
   transport = globalThis.fetch.bind(globalThis),

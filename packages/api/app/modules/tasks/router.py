@@ -134,11 +134,24 @@ async def get_task(
 async def cancel_task(
     task_id: str,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     authenticated: AuthenticatedSession = Depends(require_session),
     service: TaskService = Depends(get_task_service),
 ) -> TaskResponse:
     try:
-        return _response(await service.request_cancel(authenticated.user_id, task_id))
+        if not idempotency_key:
+            raise TaskServiceError(
+                "IDEMPOTENCY_KEY_REQUIRED",
+                "Idempotency-Key is required",
+                422,
+            )
+        return _response(
+            await service.request_cancel_idempotent(
+                authenticated.user_id,
+                task_id,
+                idempotency_key,
+            )
+        )
     except TaskServiceError as error:
         _raise(request, error)
     except SQLAlchemyError:

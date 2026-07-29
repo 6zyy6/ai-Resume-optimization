@@ -7,6 +7,7 @@ import type {
 } from "../src/contracts.js";
 import { createModelRouter } from "../src/model-router.js";
 import { buildApp } from "../src/server/app.js";
+import { MemoryRunStore } from "../src/server/memory-run-store.js";
 
 const apps: Array<ReturnType<typeof buildApp>> = [];
 
@@ -198,6 +199,133 @@ describe("Pi internal API", () => {
     expect(cancelled.statusCode).toBe(202);
     expect(observedAbort).toBe(true);
     expect(run.status).toBe("cancelled");
+  });
+
+  it("retrieves and cancels a run through a different Pi replica", async () => {
+    const runStore = new MemoryRunStore();
+    let observedAbort = false;
+    const first = buildApp({
+      mode: "fixture",
+      instanceId: "pi-a",
+      runStore,
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(async ({ signal }) => {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => {
+            observedAbort = true;
+            resolve();
+          }, { once: true });
+        });
+        return {
+          status: "success",
+          output: { issues: [], passed: true },
+          events: [],
+        };
+      }),
+    });
+    const second = buildApp({
+      mode: "fixture",
+      instanceId: "pi-b",
+      runStore,
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(),
+    });
+    apps.push(first, second);
+
+    const created = await first.inject({
+      method: "POST",
+      url: "/internal/v1/runs",
+      headers: { authorization: "Bearer service-token" },
+      payload: input(),
+    });
+    const runId = created.json().ai_run_id;
+    const visibleFromSecond = await second.inject({
+      method: "GET",
+      url: `/internal/v1/runs/${runId}`,
+      headers: { authorization: "Bearer service-token" },
+    });
+    const cancelledFromSecond = await second.inject({
+      method: "POST",
+      url: `/internal/v1/runs/${runId}/cancel`,
+      headers: { authorization: "Bearer service-token" },
+    });
+    const terminal = await waitForTerminal(second, runId);
+
+    expect(visibleFromSecond.statusCode).toBe(200);
+    expect(cancelledFromSecond.statusCode).toBe(202);
+    expect(observedAbort).toBe(true);
+    expect(terminal.status).toBe("cancelled");
+  });
+
+  it("cancels twenty cross-replica runs within five seconds", async () => {
+    const runStore = new MemoryRunStore();
+    let abortCount = 0;
+    const first = buildApp({
+      mode: "fixture",
+      instanceId: "pi-batch-owner",
+      runStore,
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(async ({ signal }) => {
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => {
+            abortCount += 1;
+            resolve();
+          }, { once: true });
+        });
+        return {
+          status: "success",
+          output: { issues: [], passed: true },
+          events: [],
+        };
+      }),
+    });
+    const second = buildApp({
+      mode: "fixture",
+      instanceId: "pi-batch-canceller",
+      runStore,
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(),
+    });
+    apps.push(first, second);
+    const headers = { authorization: "Bearer service-token" };
+    const created = await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        first.inject({
+          method: "POST",
+          url: "/internal/v1/runs",
+          headers,
+          payload: {
+            ...input(),
+            task_id: `task_${index}`,
+            trace_id: `trace_${index}`,
+          },
+        })
+      ),
+    );
+    const runIds = created.map((response) => response.json().ai_run_id);
+
+    const startedAt = Date.now();
+    const cancelled = await Promise.all(
+      runIds.map((runId) =>
+        second.inject({
+          method: "POST",
+          url: `/internal/v1/runs/${runId}/cancel`,
+          headers,
+        })
+      ),
+    );
+    const terminal = await Promise.all(
+      runIds.map((runId) => waitForTerminal(second, runId)),
+    );
+
+    expect(cancelled.every(({ statusCode }) => statusCode === 202)).toBe(true);
+    expect(terminal.every(({ status }) => status === "cancelled")).toBe(true);
+    expect(abortCount).toBe(20);
+    expect(Date.now() - startedAt).toBeLessThanOrEqual(5_000);
   });
 
   it("rejects cancellation after a run is already terminal", async () => {

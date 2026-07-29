@@ -11,25 +11,27 @@ import {
   WorkflowInputSchema,
   type PiRuntime,
   type WorkflowInput,
-  type WorkflowRun,
 } from "../contracts.js";
 import type { ModelRouter } from "../model-router.js";
 import { runWorkflow } from "../workflows/run-workflow.js";
+import { MemoryRunStore } from "./memory-run-store.js";
+import {
+  isTerminalStatus,
+  RUN_LEASE_MS,
+  type RunStore,
+} from "./run-store.js";
 
 const BODY_LIMIT = 512 * 1024;
-
-interface StoredRun {
-  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
-  controller: AbortController;
-  result?: WorkflowRun;
-  error_code?: string;
-}
+const CANCEL_POLL_INTERVAL_MS = 250;
+const RUN_HEARTBEAT_INTERVAL_MS = 5_000;
 
 interface BuildAppOptions {
   mode: "fixture" | "production";
   runtime: PiRuntime;
   modelRouter: ModelRouter;
   serviceToken?: string;
+  runStore?: RunStore;
+  instanceId?: string;
 }
 
 function requestId(): string {
@@ -70,7 +72,65 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     bodyLimit: BODY_LIMIT,
     logger: false,
   });
-  const runs = new Map<string, StoredRun>();
+  const runStore = options.runStore ?? new MemoryRunStore();
+  const instanceId = options.instanceId ?? `pi_${randomUUID()}`;
+  const controllers = new Map<string, AbortController>();
+  let unsubscribe: (() => Promise<void>) | undefined;
+  let checkingCancellations = false;
+
+  const abortLocalRun = (aiRunId: string) => {
+    controllers.get(aiRunId)?.abort();
+  };
+
+  const checkCancellationRequests = async () => {
+    if (checkingCancellations || controllers.size === 0) {
+      return;
+    }
+    checkingCancellations = true;
+    try {
+      await Promise.all(
+        [...controllers.entries()].map(async ([aiRunId, controller]) => {
+          const stored = await runStore.get(aiRunId);
+          if (stored?.cancel_requested) {
+            controller.abort();
+          } else if (stored && isTerminalStatus(stored.status)) {
+            controller.abort();
+          }
+        }),
+      );
+    } catch {
+      // A transient store failure is surfaced by readiness. Local timeouts still apply.
+    } finally {
+      checkingCancellations = false;
+    }
+  };
+  const cancellationTimer = setInterval(() => {
+    void checkCancellationRequests();
+  }, CANCEL_POLL_INTERVAL_MS);
+  cancellationTimer.unref();
+  const heartbeatTimer = setInterval(() => {
+    void Promise.all(
+      [...controllers.keys()].map((aiRunId) =>
+        runStore.heartbeat(aiRunId, instanceId)
+      ),
+    ).catch(() => {
+      // Readiness reports store failures; the owner lease then fails closed.
+    });
+  }, RUN_HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+
+  app.addHook("onReady", async () => {
+    unsubscribe = await runStore.subscribe(instanceId, abortLocalRun);
+  });
+
+  app.addHook("onClose", async () => {
+    clearInterval(cancellationTimer);
+    clearInterval(heartbeatTimer);
+    for (const controller of controllers.values()) {
+      controller.abort();
+    }
+    await unsubscribe?.();
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     const candidateStatus =
@@ -127,7 +187,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       options.mode === "fixture" ||
       (Boolean(options.serviceToken) &&
         options.modelRouter.isReady() &&
-        await options.runtime.isReady?.() === true);
+        await options.runtime.isReady?.() === true &&
+        await runStore.isReady());
     return reply.status(ready ? 200 : 503).send({
       request_id: requestId(),
       status: ready ? "ready" : "not_ready",
@@ -142,25 +203,55 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     },
     async (request, reply) => {
       const aiRunId = `run_${randomUUID()}`;
-      const stored: StoredRun = {
-        status: "queued",
-        controller: new AbortController(),
-      };
-      runs.set(aiRunId, stored);
+      const controller = new AbortController();
+      try {
+        await runStore.create({
+          ai_run_id: aiRunId,
+          status: "queued",
+          owner_instance_id: instanceId,
+          cancel_requested: false,
+          lease_expires_at: Date.now() + RUN_LEASE_MS,
+        });
+      } catch {
+        return reply.status(503).send({
+          request_id: requestId(),
+          error: { code: "run_store_unavailable" },
+        });
+      }
+      controllers.set(aiRunId, controller);
       void Promise.resolve().then(async () => {
-        stored.status = "running";
         try {
+          const stored = await runStore.markRunning(aiRunId);
+          if (!stored) {
+            controller.abort();
+            return;
+          }
+          if (stored.cancel_requested) {
+            controller.abort();
+          }
           const result = await runWorkflow(request.body, options.runtime, {
-            signal: stored.controller.signal,
+            signal: controller.signal,
             aiRunId,
           });
-          stored.result = result;
-          stored.status = result.status;
+          await runStore.complete(
+            aiRunId,
+            result.status,
+            result,
+            result.status === "failed" ? "workflow_failed" : undefined,
+          );
         } catch (error) {
-          stored.status = stored.controller.signal.aborted
-            ? "cancelled"
-            : "failed";
-          stored.error_code = safeErrorCode(error);
+          try {
+            await runStore.complete(
+              aiRunId,
+              controller.signal.aborted ? "cancelled" : "failed",
+              undefined,
+              safeErrorCode(error),
+            );
+          } catch {
+            controller.abort();
+          }
+        } finally {
+          controllers.delete(aiRunId);
         }
       });
       return reply.status(202).send({
@@ -185,7 +276,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       schema: { params: RunParamsSchema },
     },
     async (request, reply) => {
-      const stored = runs.get(request.params.ai_run_id);
+      let stored;
+      try {
+        stored = await runStore.get(request.params.ai_run_id);
+      } catch {
+        return reply.status(503).send({
+          request_id: requestId(),
+          error: { code: "run_store_unavailable" },
+        });
+      }
       if (!stored) {
         return reply.status(404).send({
           request_id: requestId(),
@@ -210,26 +309,29 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       schema: { params: RunParamsSchema },
     },
     async (request, reply) => {
-      const stored = runs.get(request.params.ai_run_id);
-      if (!stored) {
+      let outcome;
+      try {
+        outcome = await runStore.requestCancel(request.params.ai_run_id);
+      } catch {
+        return reply.status(503).send({
+          request_id: requestId(),
+          error: { code: "run_store_unavailable" },
+        });
+      }
+      if (outcome.outcome === "not_found") {
         return reply.status(404).send({
           request_id: requestId(),
           error: { code: "run_not_found" },
         });
       }
       if (
-        stored.status === "succeeded" ||
-        stored.status === "failed" ||
-        stored.status === "cancelled"
+        outcome.outcome === "terminal" &&
+        isTerminalStatus(outcome.status)
       ) {
         return reply.status(409).send({
           request_id: requestId(),
           error: { code: "run_already_terminal" },
         });
-      }
-      stored.controller.abort();
-      if (stored.status === "queued") {
-        stored.status = "cancelled";
       }
       return reply.status(202).send({
         request_id: requestId(),

@@ -53,6 +53,34 @@ const PROVIDER_KEY_ENV: Record<string, string[]> = {
   openai: ["OPENAI_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
   google: ["GEMINI_API_KEY"],
+  deepseek: ["DEEPSEEK_API_KEY"],
+  "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
+};
+
+const DEFAULT_ROUTE_SETTINGS: Record<
+  WorkflowType,
+  Pick<WorkflowRoute, "max_tokens" | "thinking" | "max_cost_usd">
+> = {
+  extract_facts: { max_tokens: 1_200, thinking: "off", max_cost_usd: 0.1 },
+  next_question: { max_tokens: 1_200, thinking: "low", max_cost_usd: 0.1 },
+  write_experience_bullet: {
+    max_tokens: 1_800,
+    thinking: "low",
+    max_cost_usd: 0.2,
+  },
+  parse_jd: { max_tokens: 1_800, thinking: "off", max_cost_usd: 0.15 },
+  match_resume_to_jd: {
+    max_tokens: 1_800,
+    thinking: "low",
+    max_cost_usd: 0.2,
+  },
+  generate_suggestion: {
+    max_tokens: 1_800,
+    thinking: "low",
+    max_cost_usd: 0.2,
+  },
+  fact_check: { max_tokens: 1_800, thinking: "low", max_cost_usd: 0.2 },
+  style_check: { max_tokens: 1_200, thinking: "off", max_cost_usd: 0.1 },
 };
 
 export interface ModelRouter {
@@ -106,7 +134,34 @@ export function createModelRouterFromEnv(
 ): ModelRouter {
   const rawRoutes = env.AI_MODEL_ROUTES_JSON;
   if (!rawRoutes) {
-    return createModelRouter({ routes: {} });
+    const primaryModel = env.AI_TEXT_MODEL;
+    if (!primaryModel) {
+      return createModelRouter({ routes: {} });
+    }
+    const provider = env.AI_TEXT_PROVIDER ?? "deepseek";
+    const fallbackModel = env.AI_TEXT_FALLBACK_MODEL ?? primaryModel;
+    return createModelRouter({
+      routes: Object.fromEntries(
+        WORKFLOW_TYPES.map((workflowType) => [
+          workflowType,
+          {
+            primary: {
+              provider,
+              model: primaryModel,
+              approved_data_policy: true,
+            },
+            fallback: {
+              provider,
+              model: fallbackModel,
+              approved_data_policy: true,
+            },
+            ...DEFAULT_ROUTE_SETTINGS[workflowType],
+            timeout_ms: 30_000,
+            retry_count: 0,
+          },
+        ]),
+      ),
+    });
   }
   let routes: unknown;
   try {

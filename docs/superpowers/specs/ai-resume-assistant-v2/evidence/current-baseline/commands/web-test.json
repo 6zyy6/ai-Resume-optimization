@@ -1,0 +1,8 @@
+{
+  "command": "pnpm --filter @resume/web test",
+  "started_at": "2026-07-29T17:30:01.612Z",
+  "ended_at": "2026-07-29T17:30:02.884Z",
+  "exit_code": 0,
+  "raw_log": "docs/superpowers/specs/ai-resume-assistant-v2/evidence/current-baseline/commands/web-test.log",
+  "raw_log_sha256": "cf8693d866b0d02cc0a40e674c65bf36d91dc536af3345315872325788a276ba"
+}

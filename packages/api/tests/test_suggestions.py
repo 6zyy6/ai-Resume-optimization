@@ -189,6 +189,14 @@ def _setup_suggestion(client):
             task_id=parsed.json()["task_id"],
         )
     )
+    parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()
+    for index, requirement in enumerate(parsed_job["requirements"]):
+        confirmed = client.patch(
+            f"/v1/jobs/{job.json()['id']}/requirements/{requirement['id']}",
+            json={"confirmed": True},
+            headers={"Idempotency-Key": f"pipeline-confirm-{index}"},
+        )
+        assert confirmed.status_code == 200
     match = client.post(
         "/v1/match-analyses",
         json={

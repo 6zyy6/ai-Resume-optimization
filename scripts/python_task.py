@@ -25,6 +25,22 @@ def build() -> None:
         raise SystemExit(1)
 
 
+def migrate() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "packages/api/alembic.ini",
+            "upgrade",
+            "head",
+        ],
+        check=True,
+        cwd=ROOT,
+    )
+
+
 def dev() -> None:
     if not (API_ROOT / "app" / "main.py").exists():
         raise SystemExit("app.main is not available until Task 2")
@@ -35,7 +51,10 @@ def dev() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["lint", "test", "build", "dev"])
+    parser.add_argument(
+        "command",
+        choices=["lint", "test", "build", "dev", "migrate"],
+    )
     command = parser.parse_args().command
     globals()[command]()
 

@@ -75,9 +75,15 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
             return True
         client_host = request.client.host if request.client else None
         forwarded_proto = ""
+        forwarded_host = ""
         if client_host in self._trusted_proxy_ips:
             forwarded_proto = (
                 request.headers.get("X-Forwarded-Proto", "")
+                .split(",", 1)[0]
+                .strip()
+            )
+            forwarded_host = (
+                request.headers.get("X-Forwarded-Host", "")
                 .split(",", 1)[0]
                 .strip()
             )
@@ -86,16 +92,32 @@ class CsrfProtectionMiddleware(BaseHTTPMiddleware):
             if forwarded_proto in {"http", "https"}
             else request.url.scheme
         )
+        target_hostname = request.url.hostname
         try:
             target_port = request.url.port or (
                 443 if target_scheme == "https" else 80
             )
+            if forwarded_host:
+                forwarded = urlsplit(f"//{forwarded_host}")
+                if (
+                    forwarded.hostname is None
+                    or forwarded.username is not None
+                    or forwarded.password is not None
+                    or forwarded.path
+                    or forwarded.query
+                    or forwarded.fragment
+                ):
+                    return True
+                target_hostname = forwarded.hostname
+                target_port = forwarded.port or (
+                    443 if target_scheme == "https" else 80
+                )
             origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
         except ValueError:
             return True
         return (
             parsed.scheme != target_scheme
-            or parsed.hostname.lower() != (request.url.hostname or "").lower()
+            or parsed.hostname.lower() != (target_hostname or "").lower()
             or origin_port != target_port
         )
 

@@ -3,12 +3,16 @@ from decimal import Decimal
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import undefer
 
 from app.core.ids import new_id
 from app.db.models import (
     IdempotencyRecord,
+    File,
+    Outbox,
     Session,
     Task,
+    TaskEvent,
     UsageLedger,
     User,
     UserAlias,
@@ -17,7 +21,7 @@ from app.db.models import (
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.auth.service import SessionRecord
-from app.modules.privacy.service import PrivacyTask
+from app.modules.privacy.service import PrivacyExportArtifact, PrivacyTask
 from app.modules.usage.service import (
     UsageAdmissionError,
     UsageDecision,
@@ -49,17 +53,26 @@ class SqlAuthRepository:
             email_encrypted=row.email_encrypted,
             email_lookup_hash=row.email_lookup_hash,
             created_at=_as_utc(row.created_at),
+            password_hash=row.password_hash,
         )
 
     async def find_user(self, user_id: str) -> UserAccount | None:
         async with self.sessions() as session:
             canonical = await canonical_user_id(session, user_id)
-            return self._user(await session.get(User, canonical))
+            return self._user(
+                await session.get(
+                    User,
+                    canonical,
+                    options=(undefer(User.password_hash),),
+                )
+            )
 
     async def find_user_by_email_hash(self, email_hash: str) -> UserAccount | None:
         async with self.sessions() as session:
             row = await session.scalar(
-                select(User).where(User.email_lookup_hash == email_hash)
+                select(User)
+                .options(undefer(User.password_hash))
+                .where(User.email_lookup_hash == email_hash)
             )
             return self._user(row)
 
@@ -71,6 +84,7 @@ class SqlAuthRepository:
         async with self.sessions() as session:
             row = await session.scalar(
                 select(User)
+                .options(undefer(User.password_hash))
                 .join(UserIdentity, UserIdentity.owner_user_id == User.id)
                 .where(
                     UserIdentity.type == identity_type,
@@ -89,6 +103,7 @@ class SqlAuthRepository:
                         status=user.status,
                         email_encrypted=user.email_encrypted,
                         email_lookup_hash=user.email_lookup_hash,
+                        password_hash=user.password_hash,
                         created_at=user.created_at,
                     )
                 )
@@ -96,6 +111,7 @@ class SqlAuthRepository:
                 row.status = user.status
                 row.email_encrypted = user.email_encrypted
                 row.email_lookup_hash = user.email_lookup_hash
+                row.password_hash = user.password_hash
 
     async def save_identity(self, identity: IdentityRecord) -> None:
         async with self.sessions.begin() as session:
@@ -135,6 +151,7 @@ class SqlAuthRepository:
                     status=user.status,
                     email_encrypted=user.email_encrypted,
                     email_lookup_hash=user.email_lookup_hash,
+                    password_hash=user.password_hash,
                     created_at=user.created_at,
                 )
             )
@@ -242,6 +259,22 @@ class SqlAuthRepository:
                 )
                 for row in rows
             )
+
+    async def set_password_if_missing(
+        self,
+        user_id: str,
+        password_hash: str,
+    ) -> bool:
+        async with self.sessions.begin() as session:
+            result = await session.execute(
+                update(User)
+                .where(
+                    User.id == user_id,
+                    User.password_hash.is_(None),
+                )
+                .values(password_hash=password_hash)
+            )
+            return result.rowcount == 1
 
     async def merge_users(
         self,
@@ -525,7 +558,12 @@ class SqlPrivacyRepository:
             if record is None or record.response_json is None:
                 return None
             return self._task(
-                await session.get(Task, record.response_json["task_id"])
+                await session.scalar(
+                    select(Task).where(
+                        Task.id == record.response_json["task_id"],
+                        Task.owner_user_id.in_(owner_ids),
+                    )
+                )
             )
 
     async def save_task(self, task: PrivacyTask, route: str, key: str) -> None:
@@ -534,21 +572,22 @@ class SqlPrivacyRepository:
                 session,
                 task.owner_user_id,
             )
-            session.add(
-                Task(
-                    id=task.id,
-                    owner_user_id=owner_user_id,
-                    type=task.type,
-                    status=task.status,
-                    priority=0,
-                    trace_id=task.trace_id,
-                    attempts=0,
-                    max_attempts=3,
-                    queued_at=task.queued_at,
-                    stage=task.stage,
-                    progress=task.progress,
-                )
+            row = Task(
+                id=task.id,
+                owner_user_id=owner_user_id,
+                type=task.type,
+                status=task.status,
+                priority=0,
+                trace_id=task.trace_id,
+                attempts=0,
+                max_attempts=3,
+                queued_at=task.queued_at,
+                stage=task.stage,
+                progress=task.progress,
             )
+            session.add(row)
+            await session.flush()
+            self._add_delivery_records(session, row, task.queued_at)
             session.add(
                 IdempotencyRecord(
                     id=new_id("idem"),
@@ -562,6 +601,36 @@ class SqlPrivacyRepository:
                     created_at=task.queued_at,
                 )
             )
+
+    @staticmethod
+    def _add_delivery_records(
+        session: AsyncSession,
+        task: Task,
+        now: datetime,
+    ) -> None:
+        session.add(
+            TaskEvent(
+                id=new_id("tev"),
+                owner_user_id=task.owner_user_id,
+                task_id=task.id,
+                seq=1,
+                stage="queued",
+                progress=0,
+                created_at=now,
+            )
+        )
+        session.add(
+            Outbox(
+                id=new_id("out"),
+                owner_user_id=task.owner_user_id,
+                task_id=task.id,
+                queue="privacy",
+                payload={"task_id": task.id},
+                attempts=0,
+                available_at=now,
+                created_at=now,
+            )
+        )
 
     async def find_active_deletion(
         self,
@@ -577,6 +646,39 @@ class SqlPrivacyRepository:
                 )
             )
             return self._task(row)
+
+    async def find_export_artifact(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> PrivacyExportArtifact | None:
+        async with self.sessions() as session:
+            owners = await authorized_owner_ids(session, owner_user_id)
+            task = await session.scalar(
+                select(Task).where(
+                    Task.id == task_id,
+                    Task.owner_user_id.in_(owners),
+                    Task.type == "data_export",
+                    Task.status == "succeeded",
+                )
+            )
+            if task is None or not task.result_ref:
+                return None
+            file_row = await session.scalar(
+                select(File).where(
+                    File.id == task.result_ref,
+                    File.owner_user_id == task.owner_user_id,
+                    File.status == "confirmed",
+                    File.deleted_at.is_(None),
+                )
+            )
+            if file_row is None:
+                return None
+            return PrivacyExportArtifact(
+                file_id=file_row.id,
+                object_key=file_row.object_key,
+                display_name=file_row.display_name,
+            )
 
     async def data_exports_since(
         self,
@@ -684,6 +786,8 @@ class SqlPrivacyRepository:
                         progress=0,
                     )
                     session.add(task)
+                    await session.flush()
+                    self._add_delivery_records(session, task, now)
                 session.add(
                     IdempotencyRecord(
                         id=new_id("idem"),

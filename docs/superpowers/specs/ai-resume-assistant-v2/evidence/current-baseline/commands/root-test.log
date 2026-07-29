@@ -1,0 +1,100 @@
+$ pnpm -r test && node --test scripts/tests/dev-supervisor.test.mjs && node scripts/run-python.mjs test
+Scope: 6 of 7 workspace projects
+packages/ai test$ vitest run tests
+packages/design-tokens test$ vitest run
+packages/test-fixtures test$ vitest run --passWithNoTests
+packages/shared test$ vitest run
+packages/test-fixtures test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/packages/test-fixtures
+packages/shared test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/packages/shared
+packages/ai test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/packages/ai
+packages/design-tokens test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/packages/design-tokens
+packages/test-fixtures test: No test files found, exiting with code 0
+packages/test-fixtures test: include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+packages/test-fixtures test: exclude:  **/node_modules/**, **/.git/**
+packages/test-fixtures test: Done
+packages/shared test:  Test Files  2 passed (2)
+packages/shared test:       Tests  8 passed (8)
+packages/shared test:    Start at  01:35:10
+packages/shared test:    Duration  205ms (transform 36ms, setup 0ms, import 60ms, tests 25ms, environment 0ms)
+packages/design-tokens test:  Test Files  1 passed (1)
+packages/design-tokens test:       Tests  2 passed (2)
+packages/design-tokens test:    Start at  01:35:10
+packages/design-tokens test:    Duration  216ms (transform 17ms, setup 0ms, import 27ms, tests 39ms, environment 0ms)
+packages/design-tokens test: Done
+packages/shared test: Done
+packages/ai test:  Test Files  8 passed | 1 skipped (9)
+packages/ai test:       Tests  71 passed | 1 skipped (72)
+packages/ai test:    Start at  01:35:10
+packages/ai test:    Duration  648ms (transform 420ms, setup 0ms, import 1.99s, tests 345ms, environment 1ms)
+packages/ai test: Done
+app/web test$ vitest run
+app/miniprogram test$ vitest run
+app/miniprogram test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/app/miniprogram
+app/web test:  RUN  v4.1.10 /Users/zhangyiying/ai-Resume-optimization/app/web
+app/miniprogram test:  Test Files  3 passed (3)
+app/miniprogram test:       Tests  12 passed (12)
+app/miniprogram test:    Start at  01:35:11
+app/miniprogram test:    Duration  234ms (transform 129ms, setup 0ms, import 171ms, tests 19ms, environment 0ms)
+app/miniprogram test: Done
+app/web test:  Test Files  7 passed (7)
+app/web test:       Tests  21 passed (21)
+app/web test:    Start at  01:35:11
+app/web test:    Duration  764ms (transform 151ms, setup 256ms, import 370ms, tests 451ms, environment 2.16s)
+app/web test: Done
+✔ local development starts only the web and required backend processes (0.559583ms)
+✔ returns a child failure and terminates its sibling (130.612834ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 169.456959
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/zhangyiying/ai-Resume-optimization/packages/api
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.14.2
+collected 455 items
+
+tests/test_acceptance_evidence_security.py .....................         [  4%]
+tests/test_acceptance_release_review.py ................................ [ 11%]
+........................                                                 [ 16%]
+tests/test_ai_cancellation.py ..                                         [ 17%]
+tests/test_auth.py .........................                             [ 22%]
+tests/test_auth_preflight.py ....                                        [ 23%]
+tests/test_contracts.py .....                                            [ 24%]
+tests/test_errors.py ....                                                [ 25%]
+tests/test_exports.py .....                                              [ 26%]
+tests/test_facts.py .....                                                [ 27%]
+tests/test_idempotency.py ........                                       [ 29%]
+tests/test_imports.py ........                                           [ 31%]
+tests/test_local_app.py ...                                              [ 32%]
+tests/test_matching.py ....                                              [ 32%]
+tests/test_migration_0008.py .                                           [ 33%]
+tests/test_outbox.py .....                                               [ 34%]
+tests/test_privacy.py ........                                           [ 36%]
+tests/test_resume_versions.py ..............                             [ 39%]
+tests/test_schema_constraints.py .....................                   [ 43%]
+tests/test_suggestions.py .......                                        [ 45%]
+tests/test_task3_sql_integration.py ................                     [ 48%]
+tests/test_task4_acceptance.py ......................................... [ 57%]
+......................                                                   [ 62%]
+tests/test_task4_claim_evidence_contract.py ....................         [ 67%]
+tests/test_task4_migrations.py .....                                     [ 68%]
+tests/test_task4_round5_adversarial.py ......                            [ 69%]
+tests/test_task4_round8_release_gates.py ............................... [ 76%]
+............                                                             [ 78%]
+tests/test_task4_sql_integration.py ...........................          [ 84%]
+tests/test_task7_review_fixes.py ..........................              [ 90%]
+tests/test_task_fix_api_and_sse.py ....                                  [ 91%]
+tests/test_task_fix_dispatch_and_worker.py ......                        [ 92%]
+tests/test_task_fix_usage_and_claims.py ........                         [ 94%]
+tests/test_task_recovery.py ....                                         [ 95%]
+tests/test_task_state.py ......                                          [ 96%]
+tests/test_trace.py ...                                                  [ 97%]
+tests/test_usage.py ............                                         [100%]
+
+============================= 455 passed in 33.79s =============================

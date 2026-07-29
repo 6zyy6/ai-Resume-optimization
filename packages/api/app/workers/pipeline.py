@@ -1,17 +1,47 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.integrations.ai_client import InternalAiClient
-from app.integrations.ai_client import AiClient
+from app.integrations.ai_client import AiCancellation, AiClient, InternalAiClient
 from app.integrations.storage import StoragePort, build_storage
 from app.modules.exports.service import ExportService
 from app.modules.imports.service import ImportService
+from app.modules.intake.service import IntakeService
 from app.modules.jobs.service import JobService
 from app.modules.matching.service import MatchingService
+from app.modules.privacy.worker import PrivacyWorker
 from app.modules.tasks.service import TaskClaim, TaskService
 from app.workers.execution import register_operation
+
+
+@dataclass(frozen=True)
+class TaskAiCancellation(AiCancellation):
+    task_service: TaskService
+    claim: TaskClaim
+
+    async def register_run(self, ai_run_id: str) -> bool:
+        return await self.task_service.register_ai_run(
+            self.claim.owner_user_id,
+            self.claim.task_id,
+            self.claim.token,
+            ai_run_id,
+        )
+
+    async def is_cancel_requested(self) -> bool:
+        return await self.task_service.is_cancel_requested(
+            self.claim.owner_user_id,
+            self.claim.task_id,
+        )
+
+    async def acknowledge_cancel(self, ai_run_id: str) -> None:
+        await self.task_service.acknowledge_ai_cancel(
+            self.claim.owner_user_id,
+            self.claim.task_id,
+            ai_run_id,
+        )
 
 
 def configure_pipeline_operations(
@@ -29,9 +59,11 @@ def configure_pipeline_operations(
         else None
     )
     imports = ImportService(sessions, storage)
+    intake = IntakeService(sessions)
     jobs = JobService(sessions, ai_client)
     matching = MatchingService(sessions, ai_client)
     exports = ExportService(sessions, storage)
+    privacy = PrivacyWorker(sessions, storage)
 
     async def parse_resume_import(claim: TaskClaim) -> str:
         task = await _task(task_service, claim)
@@ -46,6 +78,9 @@ def configure_pipeline_operations(
             _resource(task, "job_description"),
             trace_id=task.trace_id,
             task_id=task.id,
+            claim_token=claim.token,
+            task_service=task_service,
+            cancellation=TaskAiCancellation(task_service, claim),
         )
 
     async def match_resume_to_job(claim: TaskClaim) -> str:
@@ -55,6 +90,9 @@ def configure_pipeline_operations(
             _resource(task, "match_analysis"),
             trace_id=task.trace_id,
             task_id=task.id,
+            claim_token=claim.token,
+            task_service=task_service,
+            cancellation=TaskAiCancellation(task_service, claim),
         )
 
     async def render_resume_export(claim: TaskClaim) -> str:
@@ -63,10 +101,29 @@ def configure_pipeline_operations(
             claim.owner_user_id, _resource(task, "export")
         )
 
+    async def generate_intake_draft(claim: TaskClaim) -> str:
+        task = await _task(task_service, claim)
+        return await intake.process_draft(
+            claim.owner_user_id,
+            _resource(task, "intake_session"),
+            task_id=task.id,
+            claim_token=claim.token,
+            task_service=task_service,
+        )
+
+    async def export_private_data(claim: TaskClaim) -> str:
+        return await privacy.export_data(claim.owner_user_id, claim.task_id)
+
+    async def delete_private_data(claim: TaskClaim) -> str:
+        return await privacy.delete_account(claim.owner_user_id, claim.task_id)
+
     register_operation("parse_resume_import", parse_resume_import)
     register_operation("parse_job", parse_job)
     register_operation("match_resume_to_job", match_resume_to_job)
     register_operation("render_resume_export", render_resume_export)
+    register_operation("generate_intake_draft", generate_intake_draft)
+    register_operation("data_export", export_private_data)
+    register_operation("account_deletion", delete_private_data)
 
 
 async def _task(service: TaskService, claim: TaskClaim):

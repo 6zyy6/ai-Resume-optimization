@@ -23,6 +23,13 @@ class PrivacyTask:
     queued_at: datetime
 
 
+@dataclass(frozen=True)
+class PrivacyExportArtifact:
+    file_id: str
+    object_key: str
+    display_name: str
+
+
 class PrivacyRepository(Protocol):
     async def find_idempotent(
         self,
@@ -39,6 +46,11 @@ class PrivacyRepository(Protocol):
     ) -> tuple[PrivacyTask, ...]: ...
     async def save_task(self, task: PrivacyTask, route: str, key: str) -> None: ...
     async def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None: ...
+    async def find_export_artifact(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> PrivacyExportArtifact | None: ...
 
 
 class InMemoryPrivacyRepository:
@@ -86,6 +98,13 @@ class InMemoryPrivacyRepository:
 
     async def bind_idempotency(self, task: PrivacyTask, route: str, key: str) -> None:
         self._idempotency[(task.owner_user_id, route, key)] = task.id
+
+    async def find_export_artifact(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> PrivacyExportArtifact | None:
+        return None
 
 
 class PrivacyError(Exception):
@@ -233,6 +252,23 @@ class PrivacyService:
             "/v1/me/deletion-requests",
             idempotency_key,
         )
+
+    async def get_data_export(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> PrivacyExportArtifact:
+        artifact = await self.repository.find_export_artifact(
+            owner_user_id,
+            task_id,
+        )
+        if artifact is None:
+            raise PrivacyError(
+                "RESOURCE_NOT_FOUND",
+                "Completed data export not found",
+                404,
+            )
+        return artifact
 
 
 def build_default_privacy_service(

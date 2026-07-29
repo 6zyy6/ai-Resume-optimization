@@ -91,6 +91,70 @@ async def test_task_api_is_read_only_owner_scoped_and_cursor_paginated(
     assert "claim_token" not in page_one.json()["items"][0]
 
 
+@pytest.mark.anyio
+async def test_task_cancel_requires_global_idempotency_and_owner_scope(
+    sql_session_factory,
+):
+    """A retried cancel must not target a different task under the same key."""
+    await _seed_users(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    first = await service.create_task(
+        "usr_api_a",
+        task_type="resume_optimize",
+        queue="ai.batch",
+        trace_id="tr_cancel_1",
+        idempotency_key="cancel-task-1",
+        admission=TaskAdmission.ai(),
+    )
+    second = await service.create_task(
+        "usr_api_a",
+        task_type="privacy_export",
+        queue="privacy",
+        trace_id="tr_cancel_2",
+        idempotency_key="cancel-task-2",
+        admission=TaskAdmission.unmetered(),
+    )
+    private = await service.create_task(
+        "usr_api_b",
+        task_type="privacy_export",
+        queue="privacy",
+        trace_id="tr_cancel_private",
+        idempotency_key="cancel-task-private",
+        admission=TaskAdmission.unmetered(),
+    )
+    application = create_app(
+        Settings(app_env="test", database_url="sqlite+aiosqlite://")
+    )
+    application.state.task_service = service
+    application.dependency_overrides[require_session] = _authenticated
+
+    with TestClient(application) as client:
+        missing = client.post(f"/v1/tasks/{first.id}/cancel")
+        assert missing.status_code == 422
+        cancelled = client.post(
+            f"/v1/tasks/{first.id}/cancel",
+            headers={"Idempotency-Key": "cancel-key"},
+        )
+        replay = client.post(
+            f"/v1/tasks/{first.id}/cancel",
+            headers={"Idempotency-Key": "cancel-key"},
+        )
+        changed = client.post(
+            f"/v1/tasks/{second.id}/cancel",
+            headers={"Idempotency-Key": "cancel-key"},
+        )
+        forbidden = client.post(
+            f"/v1/tasks/{private.id}/cancel",
+            headers={"Idempotency-Key": "private-cancel"},
+        )
+
+    assert cancelled.status_code == 200
+    assert replay.json() == cancelled.json()
+    assert changed.status_code == 409
+    assert changed.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
+    assert forbidden.status_code == 404
+
+
 def test_task_list_infrastructure_failure_uses_stable_error_envelope():
     """Database failures at the public boundary must not escape as raw 500 errors."""
     application = create_app(

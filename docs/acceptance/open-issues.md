@@ -1,16 +1,23 @@
 # 公开上线遗留问题清单
 
 更新时间：2026-07-29
-关联候选版本：`709d8f53ef5aed90189e4c7fc5979b614046090e`
+关联候选版本：待本轮实现提交后生成（开发基线 `ab89b8b`）
 
 本清单只记录尚未关闭的问题和外部验收阻断。已修复的登录、事实证据、异步等待、Outbox 分发和 CloudBase 运行时配置问题见 `review-findings.md`。
 
-## OI-01：取消未停止运行中的 AI 调用
+## OI-00：Pi 多副本运行状态尚缺真实 Redis 证据
+
+- 严重度：P0 验收阻断
+- 状态：BLOCKED（工程实现完成，当前环境没有 Redis 服务，真实集成用例被跳过）
+- 已完成：Pi RunStore 已拆分为 Memory/Redis 适配器；Redis 状态 TTL 为 24 小时，取消使用 pub/sub 加 250 ms 补偿轮询，owner 使用 5 秒心跳续租 15 秒 lease，失联后查询会原子转为 `failed/owner_instance_lost`。
+- 尚缺证据：设置 `TEST_REDIS_URL` 后执行真实双客户端 100 次 create/get/cancel、owner lease 失效和 Redis 重启测试，并在两个 Pi 进程间完成相同验证。
+- 完成条件：100 次跨副本循环 `run_not_found=0`；owner 终止后运行在 lease 到期后进入明确失败终态；Redis 重启后服务恢复且不存在永久 running。
+
+## OI-01：取消链路已实现，尚缺真实模型证据
 
 - 严重度：Sev2
-- 状态：OPEN
-- 影响：用户取消任务后，数据库任务会进入 `cancelled`，但已经发往 Pi/模型供应商的调用仍可能继续产生 token 或工具事件；不满足 AI-12「5 秒内停止新增 token/tool 事件」。
-- 当前原因：Task 取消只更新业务任务状态；没有持久化并向 Pi 传播对应 `ai_run_id` 的取消信号。
+- 状态：BLOCKED（工程实现与确定性测试完成，需要 Redis 和真实模型供应商执行 AI-12）
+- 已完成：Task 持久化 `active_ai_run_id`、取消请求/确认时间；InternalAiClient 最多 500 ms 检查取消并调用 Pi；Job/Match 在同一事务内先锁定 Task claim，再写业务结果与 succeeded；Pi 的 20 任务跨副本内存测试在 5 秒门限内完成。
 - 完成条件：
   1. 任务、Worker 与 Pi 之间持久化关联 `ai_run_id`；
   2. `POST /v1/tasks/{task_id}/cancel` 向 Pi 发送已认证取消请求；
@@ -52,4 +59,4 @@
 
 ## 发布门禁
 
-在 OI-01 未关闭或 OI-02 至 OI-05 任一项仍为 BLOCKED 时，版本状态必须保持 **NOT READY FOR PUBLIC RELEASE**。验收清单的每个 P0 项必须在相同 `commit_sha`、候选镜像和构建版本下具备哈希证据后，才能变为 `PASS`。
+在 OI-00 至 OI-05 任一项仍为 BLOCKED 时，版本状态必须保持 **NOT READY FOR PUBLIC RELEASE**。验收清单的每个 P0 项必须在相同 `commit_sha`、候选镜像和构建版本下具备哈希证据后，才能变为 `PASS`。

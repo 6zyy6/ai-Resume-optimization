@@ -21,6 +21,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.facts.router import router as facts_router
 from app.modules.exports.router import router as exports_router
 from app.modules.imports.router import router as imports_router
+from app.modules.intake.router import router as intake_router
 from app.modules.jobs.router import router as jobs_router
 from app.modules.matching.router import router as matching_router
 from app.modules.privacy.router import router as privacy_router
@@ -28,15 +29,18 @@ from app.modules.resumes.router import router as resumes_router
 from app.modules.suggestions.router import router as suggestions_router
 from app.modules.tasks.router import router as tasks_router
 from app.modules.usage.router import router as usage_router
+from app.modules.users.router import router as users_router
 
 
 def build_application() -> FastAPI:
     app = FastAPI(title="AI Resume API", version="1")
     app.include_router(auth_router)
+    app.include_router(users_router)
     app.include_router(usage_router)
     app.include_router(privacy_router)
     app.include_router(facts_router)
     app.include_router(resumes_router)
+    app.include_router(intake_router)
     app.include_router(imports_router)
     app.include_router(jobs_router)
     app.include_router(matching_router)

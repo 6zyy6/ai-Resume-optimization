@@ -23,7 +23,7 @@ from app.db.models import (
     VersionOperation,
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
-from app.integrations.ai_client import AiClient
+from app.integrations.ai_client import AiCancellation, AiClient
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.service import TaskAdmission, TaskService
 
@@ -154,12 +154,6 @@ class MatchingService:
                 raise MatchServiceError(
                     "RESOURCE_NOT_FOUND", "Resume version or job not found", 404
                 )
-            version = await self._target_version(
-                session,
-                owner,
-                version,
-                job,
-            )
             requirements = list(
                 (
                     await session.scalars(
@@ -178,22 +172,17 @@ class MatchingService:
                     "Parse the job description before matching",
                     409,
                 )
-            facts = list(
-                (
-                    await session.scalars(
-                        select(Fact).where(
-                            Fact.owner_user_id.in_(owners),
-                            Fact.status == "confirmed",
-                        )
-                    )
-                ).all()
-            )
-            classified = classify_requirements(
-                [
-                    {"id": item.id, "text": item.text_encrypted}
-                    for item in requirements
-                ],
-                facts=tuple(item.value_encrypted for item in facts),
+            if any(not requirement.confirmed for requirement in requirements):
+                raise MatchServiceError(
+                    "JOB_REQUIREMENTS_NOT_CONFIRMED",
+                    "Confirm every job requirement before matching",
+                    409,
+                )
+            version = await self._target_version(
+                session,
+                owner,
+                version,
+                job,
             )
             analysis = MatchAnalysis(
                 id=new_id("match"),
@@ -205,72 +194,6 @@ class MatchingService:
                 workflow_version="match-resume-to-jd@1",
             )
             session.add(analysis)
-            await session.flush()
-            match_items: list[MatchItem] = []
-            suggestions: list[Suggestion] = []
-            target_path, original_text = _first_bullet(version.snapshot_json)
-            for result, requirement in zip(classified, requirements, strict=True):
-                fact_indexes = [
-                    int(reference.split(":", 1)[1])
-                    for reference in result.evidence_refs
-                ]
-                fact_refs = [
-                    facts[index].id
-                    for index in fact_indexes
-                    if 0 <= index < len(facts)
-                ]
-                item = MatchItem(
-                    id=new_id("mit"),
-                    owner_user_id=owner,
-                    analysis_id=analysis.id,
-                    requirement_id=requirement.id,
-                    requirement_owner_user_id=requirement.owner_user_id,
-                    category=result.category,
-                    evidence_refs=fact_refs,
-                )
-                session.add(item)
-                match_items.append(item)
-                if result.category not in {"underexpressed", "needs_confirmation"}:
-                    continue
-                risk_flags = (
-                    [] if result.category == "underexpressed" and fact_refs
-                    else ["needs_confirmation"]
-                )
-                evidence_text = "、".join(
-                    fact.value_encrypted
-                    for fact in facts
-                    if fact.id in fact_refs
-                )
-                suggested = (
-                    f"{evidence_text}：{original_text}"
-                    if evidence_text
-                    else original_text
-                )
-                suggestion = Suggestion(
-                    id=new_id("sug"),
-                    owner_user_id=owner,
-                    analysis_id=analysis.id,
-                    target_path=target_path,
-                    original_hash=_hash(original_text),
-                    original_text_encrypted=original_text,
-                    suggested_encrypted=suggested,
-                    requirement_id=requirement.id,
-                    reason="使用已确认经历加强与岗位要求的关联表达",
-                    risk_flags=risk_flags,
-                    status="pending" if target_path and not risk_flags else "blocked",
-                )
-                session.add(suggestion)
-                await session.flush()
-                for fact_id in fact_refs:
-                    session.add(
-                        SuggestionFactLink(
-                            suggestion_id=suggestion.id,
-                            fact_id=fact_id,
-                            owner_user_id=owner,
-                            claim_range={"start": 0, "end": len(suggested)},
-                        )
-                    )
-                suggestions.append(suggestion)
             await session.flush()
             task = await task_service.create_task_in_session(
                 session,
@@ -297,17 +220,9 @@ class MatchingService:
             )
             return MatchAnalysisResult(
                 analysis,
-                match_items,
-                suggestions,
-                {
-                    suggestion.id: [
-                        link.fact_id
-                        for link in session.new
-                        if isinstance(link, SuggestionFactLink)
-                        and link.suggestion_id == suggestion.id
-                    ]
-                    for suggestion in suggestions
-                },
+                [],
+                [],
+                {},
                 {
                     requirement.id: requirement.text_encrypted
                     for requirement in requirements
@@ -543,7 +458,12 @@ class MatchingService:
         *,
         trace_id: str,
         task_id: str,
+        claim_token: str | None = None,
+        task_service: TaskService | None = None,
+        cancellation: AiCancellation | None = None,
     ) -> str:
+        if (claim_token is None) != (task_service is None):
+            raise TypeError("claim_token and task_service must be provided together")
         result = await self.get(owner_id, analysis_id)
         if result is None:
             raise MatchServiceError(
@@ -551,37 +471,63 @@ class MatchingService:
             )
         if result.analysis.status == "succeeded":
             return result.analysis.id
-        if self.ai_client is not None:
-            async with self.sessions() as session:
-                owners = await authorized_owner_ids(session, owner_id)
-                facts = list(
-                    (
-                        await session.scalars(
-                            select(Fact).where(
-                                Fact.owner_user_id.in_(owners),
-                                Fact.status == "confirmed",
-                            )
+        async with self.sessions() as session:
+            owners = await authorized_owner_ids(session, owner_id)
+            facts = list(
+                (
+                    await session.scalars(
+                        select(Fact).where(
+                            Fact.owner_user_id.in_(owners),
+                            Fact.status == "confirmed",
                         )
-                    ).all()
-                )
-                requirements = list(
-                    (
-                        await session.scalars(
-                            select(JdRequirement).where(
-                                JdRequirement.job_id == result.analysis.job_id,
-                                JdRequirement.owner_user_id.in_(owners),
-                            )
-                        )
-                    ).all()
-                )
-                version = await session.scalar(
-                    select(ResumeVersion).where(
-                        ResumeVersion.id == result.analysis.resume_version_id,
-                        ResumeVersion.owner_user_id.in_(owners),
                     )
+                ).all()
+            )
+            requirements = list(
+                (
+                    await session.scalars(
+                        select(JdRequirement).where(
+                            JdRequirement.job_id == result.analysis.job_id,
+                            JdRequirement.owner_user_id
+                            == result.analysis.job_owner_user_id,
+                        )
+                    )
+                ).all()
+            )
+            version = await session.scalar(
+                select(ResumeVersion).where(
+                    ResumeVersion.id == result.analysis.resume_version_id,
+                    ResumeVersion.owner_user_id.in_(owners),
                 )
-            if version is None:
-                raise RuntimeError("Match resume version is missing")
+            )
+        if version is None:
+            raise RuntimeError("Match resume version is missing")
+        classified = classify_requirements(
+            [
+                {"id": item.id, "text": item.text_encrypted}
+                for item in requirements
+            ],
+            facts=tuple(item.value_encrypted for item in facts),
+        )
+        category_map = {
+            "proved": "direct",
+            "underexpressed": "transferable",
+            "needs_confirmation": "needs_evidence",
+            "real_gap": "gap",
+        }
+        matches: list[Any] = [
+            {
+                "category": category_map[item.category],
+                "fact_refs": [
+                    facts[int(reference.split(":", 1)[1])].id
+                    for reference in item.evidence_refs
+                    if int(reference.split(":", 1)[1]) < len(facts)
+                ],
+                "requirement_refs": [item.requirement_id],
+            }
+            for item in classified
+        ]
+        if self.ai_client is not None:
             ai_result = await self.ai_client.run(
                 workflow_type="match_resume_to_jd",
                 workflow_version="1",
@@ -608,13 +554,22 @@ class MatchingService:
                         for item in requirements
                     ],
                 },
+                cancellation=cancellation,
             )
-            matches = ai_result.get("result", ai_result).get("matches")
-            if isinstance(matches, list):
-                await self._apply_ai_matches(
-                    owner_id, analysis_id, matches
-                )
+            candidate = ai_result.get("result", ai_result).get("matches")
+            if isinstance(candidate, list):
+                matches = candidate
         async with self.sessions.begin() as session:
+            claimed_task = (
+                await task_service.claimed_task_in_session(
+                    session,
+                    owner_id,
+                    task_id,
+                    claim_token,
+                )
+                if task_service is not None and claim_token is not None
+                else None
+            )
             owners = await authorized_owner_ids(session, owner_id)
             analysis = await session.scalar(
                 select(MatchAnalysis)
@@ -628,7 +583,18 @@ class MatchingService:
                 raise MatchServiceError(
                     "RESOURCE_NOT_FOUND", "Match analysis not found", 404
                 )
+            await self._apply_ai_matches_in_session(
+                session,
+                analysis,
+                matches,
+            )
             analysis.status = "succeeded"
+            if claimed_task is not None:
+                await task_service.complete_task_in_session(
+                    session,
+                    claimed_task,
+                    analysis.id,
+                )
             await session.flush()
             return analysis.id
 
@@ -722,10 +688,10 @@ class MatchingService:
             {row.id: row.text_encrypted for row in requirements},
         )
 
-    async def _apply_ai_matches(
+    async def _apply_ai_matches_in_session(
         self,
-        owner_id: str,
-        analysis_id: str,
+        session: AsyncSession,
+        analysis: MatchAnalysis,
         matches: list[Any],
     ) -> None:
         category_map = {
@@ -734,179 +700,147 @@ class MatchingService:
             "needs_evidence": "needs_confirmation",
             "gap": "real_gap",
         }
-        async with self.sessions.begin() as session:
-            owners = await authorized_owner_ids(session, owner_id)
-            analysis = await session.scalar(
-                select(MatchAnalysis).where(
-                    MatchAnalysis.id == analysis_id,
-                    MatchAnalysis.owner_user_id.in_(owners),
+        existing_suggestion_ids = list(
+            (
+                await session.scalars(
+                    select(Suggestion.id).where(
+                        Suggestion.analysis_id == analysis.id,
+                        Suggestion.owner_user_id == analysis.owner_user_id,
+                    )
+                )
+            ).all()
+        )
+        if existing_suggestion_ids:
+            await session.execute(
+                delete(SuggestionFactLink).where(
+                    SuggestionFactLink.suggestion_id.in_(
+                        existing_suggestion_ids
+                    ),
+                    SuggestionFactLink.owner_user_id
+                    == analysis.owner_user_id,
                 )
             )
-            if analysis is None:
-                raise MatchServiceError(
-                    "RESOURCE_NOT_FOUND", "Match analysis not found", 404
-                )
-            items = list(
-                (
-                    await session.scalars(
-                        select(MatchItem).where(
-                            MatchItem.analysis_id == analysis_id,
-                            MatchItem.owner_user_id.in_(owners),
-                        )
-                    )
-                ).all()
-            )
-            by_requirement = {item.requirement_id: item for item in items}
-            facts = list(
-                (
-                    await session.scalars(
-                        select(Fact).where(
-                            Fact.owner_user_id == analysis.owner_user_id,
-                            Fact.status == "confirmed",
-                        )
-                    )
-                ).all()
-            )
-            facts_by_id = {fact.id: fact for fact in facts}
-            requirements = list(
-                (
-                    await session.scalars(
-                        select(JdRequirement).where(
-                            JdRequirement.job_id == analysis.job_id,
-                            JdRequirement.owner_user_id
-                            == analysis.job_owner_user_id,
-                        )
-                    )
-                ).all()
-            )
-            requirements_by_id = {
-                requirement.id: requirement for requirement in requirements
-            }
-            version = await session.scalar(
-                select(ResumeVersion).where(
-                    ResumeVersion.id == analysis.resume_version_id,
-                    ResumeVersion.owner_user_id == analysis.owner_user_id,
+            await session.execute(
+                delete(Suggestion).where(
+                    Suggestion.id.in_(existing_suggestion_ids),
+                    Suggestion.owner_user_id == analysis.owner_user_id,
                 )
             )
-            if version is None:
-                raise RuntimeError("Match resume version is missing")
-            target_path, original_text = _first_bullet(version.snapshot_json)
-            existing = list(
-                (
-                    await session.scalars(
-                        select(Suggestion).where(
-                            Suggestion.analysis_id == analysis.id,
-                            Suggestion.owner_user_id
-                            == analysis.owner_user_id,
-                        )
-                    )
-                ).all()
+        await session.execute(
+            delete(MatchItem).where(
+                MatchItem.analysis_id == analysis.id,
+                MatchItem.owner_user_id == analysis.owner_user_id,
             )
-            by_suggestion_requirement = {
-                row.requirement_id: row
-                for row in existing
-                if row.requirement_id is not None
-            }
-            for match in matches:
-                if not isinstance(match, dict):
-                    continue
-                category = category_map.get(match.get("category"))
-                if category is None:
-                    continue
-                for requirement_id in match.get("requirement_refs", []):
-                    item = by_requirement.get(requirement_id)
-                    if item is None:
-                        continue
-                    item.category = category
-                    item.evidence_refs = [
-                        fact_id
-                        for fact_id in match.get("fact_refs", [])
-                        if fact_id in facts_by_id
-                    ]
-            for item in items:
-                suggestion = by_suggestion_requirement.get(item.requirement_id)
-                if item.category not in {
-                    "underexpressed",
-                    "needs_confirmation",
-                }:
-                    if suggestion is not None:
-                        await session.execute(
-                            delete(SuggestionFactLink).where(
-                                SuggestionFactLink.suggestion_id
-                                == suggestion.id,
-                                SuggestionFactLink.owner_user_id
-                                == analysis.owner_user_id,
-                            )
-                        )
-                        await session.delete(suggestion)
-                    continue
-                fact_refs = [
-                    fact_id
-                    for fact_id in item.evidence_refs
-                    if fact_id in facts_by_id
-                ]
-                evidence_text = "、".join(
-                    facts_by_id[fact_id].value_encrypted
-                    for fact_id in fact_refs
+        )
+        facts = list(
+            (
+                await session.scalars(
+                    select(Fact).where(
+                        Fact.owner_user_id == analysis.owner_user_id,
+                        Fact.status == "confirmed",
+                    )
                 )
-                suggested_text = (
-                    f"{evidence_text}：{original_text}"
-                    if evidence_text
-                    else original_text
+            ).all()
+        )
+        facts_by_id = {fact.id: fact for fact in facts}
+        requirements = list(
+            (
+                await session.scalars(
+                    select(JdRequirement).where(
+                        JdRequirement.job_id == analysis.job_id,
+                        JdRequirement.owner_user_id
+                        == analysis.job_owner_user_id,
+                    )
                 )
-                risk_flags = (
-                    []
-                    if item.category == "underexpressed" and fact_refs
-                    else ["needs_confirmation"]
+            ).all()
+        )
+        by_requirement: dict[str, tuple[str, list[str]]] = {}
+        for match in matches:
+            if not isinstance(match, dict):
+                continue
+            category = category_map.get(match.get("category"))
+            if category is None:
+                continue
+            fact_refs = [
+                fact_id
+                for fact_id in match.get("fact_refs", [])
+                if fact_id in facts_by_id
+            ]
+            for requirement_id in match.get("requirement_refs", []):
+                by_requirement[requirement_id] = (category, fact_refs)
+        version = await session.scalar(
+            select(ResumeVersion).where(
+                ResumeVersion.id == analysis.resume_version_id,
+                ResumeVersion.owner_user_id == analysis.owner_user_id,
+            )
+        )
+        if version is None:
+            raise RuntimeError("Match resume version is missing")
+        target_path, original_text = _first_bullet(version.snapshot_json)
+        for requirement in requirements:
+            category, fact_refs = by_requirement.get(
+                requirement.id,
+                ("real_gap", []),
+            )
+            session.add(
+                MatchItem(
+                    id=new_id("mit"),
+                    owner_user_id=analysis.owner_user_id,
+                    analysis_id=analysis.id,
+                    requirement_id=requirement.id,
+                    requirement_owner_user_id=requirement.owner_user_id,
+                    category=category,
+                    evidence_refs=fact_refs,
                 )
-                if suggestion is None:
-                    suggestion = Suggestion(
-                        id=new_id("sug"),
-                        owner_user_id=analysis.owner_user_id,
-                        analysis_id=analysis.id,
-                        target_path=target_path,
-                        original_hash=_hash(original_text),
-                        original_text_encrypted=original_text,
-                        suggested_encrypted=suggested_text,
-                        requirement_id=item.requirement_id,
-                        reason="使用已确认经历加强与岗位要求的关联表达",
-                        risk_flags=risk_flags,
-                        status=(
-                            "pending"
-                            if target_path and not risk_flags
-                            else "blocked"
-                        ),
-                    )
-                    session.add(suggestion)
-                    await session.flush()
-                else:
-                    suggestion.suggested_encrypted = suggested_text
-                    suggestion.risk_flags = risk_flags
-                    suggestion.status = (
-                        "pending"
-                        if target_path and not risk_flags
-                        else "blocked"
-                    )
-                    await session.execute(
-                        delete(SuggestionFactLink).where(
-                            SuggestionFactLink.suggestion_id == suggestion.id,
-                            SuggestionFactLink.owner_user_id
-                            == analysis.owner_user_id,
-                        )
-                    )
-                for fact_id in fact_refs:
-                    session.add(
-                        SuggestionFactLink(
-                            suggestion_id=suggestion.id,
-                            fact_id=fact_id,
-                            owner_user_id=analysis.owner_user_id,
-                            claim_range={
-                                "start": 0,
-                                "end": len(suggested_text),
-                            },
-                        )
-                    )
+            )
+            if category not in {"underexpressed", "needs_confirmation"}:
+                continue
+            evidence_text = "、".join(
+                facts_by_id[fact_id].value_encrypted
+                for fact_id in fact_refs
+            )
+            suggested_text = (
+                f"{evidence_text}：{original_text}"
+                if evidence_text
+                else original_text
+            )
+            risk_flags = (
+                []
+                if category == "underexpressed" and fact_refs
+                else ["needs_confirmation"]
+            )
+            suggestion = Suggestion(
+                id=new_id("sug"),
+                owner_user_id=analysis.owner_user_id,
+                analysis_id=analysis.id,
+                target_path=target_path,
+                original_hash=_hash(original_text),
+                original_text_encrypted=original_text,
+                suggested_encrypted=suggested_text,
+                requirement_id=requirement.id,
+                reason="使用已确认经历加强与岗位要求的关联表达",
+                risk_flags=risk_flags,
+                status=(
+                    "pending"
+                    if target_path and not risk_flags
+                    else "blocked"
+                ),
+            )
+            session.add(suggestion)
             await session.flush()
+            for fact_id in fact_refs:
+                session.add(
+                    SuggestionFactLink(
+                        suggestion_id=suggestion.id,
+                        fact_id=fact_id,
+                        owner_user_id=analysis.owner_user_id,
+                        claim_range={
+                            "start": 0,
+                            "end": len(suggested_text),
+                        },
+                    )
+                )
+        await session.flush()
 
 
 def _first_bullet(snapshot: dict[str, Any]) -> tuple[str, str]:

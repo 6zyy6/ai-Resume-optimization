@@ -17,6 +17,9 @@ class Settings:
     cos_secret_key: str = ""
     ai_internal_url: str = "http://127.0.0.1:3101"
     ai_service_token: str = ""
+    auth_redis_url: str = "redis://127.0.0.1:6379/2"
+    local_auth_secret: str = ""
+    local_email_otp: str = ""
 
 
 def get_settings() -> Settings:
@@ -45,4 +48,10 @@ def get_settings() -> Settings:
         cos_secret_key=os.getenv("COS_SECRET_KEY", ""),
         ai_internal_url=os.getenv("AI_INTERNAL_URL", "http://127.0.0.1:3101"),
         ai_service_token=os.getenv("AI_SERVICE_TOKEN", ""),
+        auth_redis_url=os.getenv(
+            "AUTH_REDIS_URL",
+            os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/2"),
+        ),
+        local_auth_secret=os.getenv("LOCAL_AUTH_SECRET", ""),
+        local_email_otp=os.getenv("LOCAL_EMAIL_OTP", ""),
     )

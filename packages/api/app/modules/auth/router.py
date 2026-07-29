@@ -12,6 +12,8 @@ from app.modules.auth.schemas import (
     EmailStartRequest,
     EmailVerifyRequest,
     OtpStartedResponse,
+    PasswordLoginRequest,
+    PasswordRegisterRequest,
     WechatLoginRequest,
 )
 from app.modules.auth.service import (
@@ -101,6 +103,46 @@ async def verify_email(
 ) -> AuthenticatedResponse:
     try:
         result = await service.verify_email(payload.email, payload.code, payload.consents)
+    except AuthError as error:
+        raise_auth_error(request, error)
+    set_session_cookie(response, result, service)
+    return AuthenticatedResponse(user_id=result.user_id, expires_at=result.expires_at)
+
+
+@router.post("/password/register", response_model=AuthenticatedResponse)
+async def register_password(
+    payload: PasswordRegisterRequest,
+    request: Request,
+    response: Response,
+    service: AuthService = Depends(get_auth_service),
+) -> AuthenticatedResponse:
+    try:
+        result = await service.register_password(
+            payload.email,
+            payload.code,
+            payload.password,
+            payload.consents,
+        )
+    except AuthError as error:
+        raise_auth_error(request, error)
+    set_session_cookie(response, result, service)
+    return AuthenticatedResponse(user_id=result.user_id, expires_at=result.expires_at)
+
+
+@router.post("/password/login", response_model=AuthenticatedResponse)
+async def login_password(
+    payload: PasswordLoginRequest,
+    request: Request,
+    response: Response,
+    service: AuthService = Depends(get_auth_service),
+) -> AuthenticatedResponse:
+    try:
+        result = await service.login_password(
+            payload.email,
+            payload.password,
+            request.client.host if request.client else "unknown",
+            payload.consents,
+        )
     except AuthError as error:
         raise_auth_error(request, error)
     set_session_cookie(response, result, service)

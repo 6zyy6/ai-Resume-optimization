@@ -1,0 +1,80 @@
+(node:91340) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+
+Running 2 tests using 2 workers
+
+(node:91353) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:91352) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:91352) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:91353) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:91353) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:91352) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  2 [chromium] › tests/e2e-web/zero-to-resume.spec.ts:17:5 › completes zero-to-resume through API-backed save, matching, suggestion and export (10.0s)
+  ✘  1 [chromium] › tests/e2e-web/optimize-existing.spec.ts:4:5 › completes import, confirmation, JD, suggestion and export through the adapter (10.1s)
+[31mTesting stopped early after 2 maximum allowed failures.[39m
+
+
+  1) [chromium] › tests/e2e-web/optimize-existing.spec.ts:4:5 › completes import, confirmation, JD, suggestion and export through the adapter 
+
+    [31mTest timeout of 10000ms exceeded.[39m
+
+    Error: locator.fill: Test timeout of 10000ms exceeded.
+    Call log:
+    [2m  - waiting for getByLabel('JD 原文')[22m
+
+
+       9 |   await page.getByLabel("选择简历文件").setInputFiles({ buffer: Buffer.from("resume"), mimeType: "text/plain", name: "resume.txt" });
+      10 |   await page.getByRole("button", { name: "确认并进入岗位信息" }).click();
+    > 11 |   await page.getByLabel("JD 原文").fill("需要用户研究和内容策划能力");
+         |                                  ^
+      12 |   await page.getByRole("button", { name: "解析岗位要求" }).click();
+      13 |   await page.getByRole("button", { name: "确认并开始匹配" }).click();
+      14 |   await expect(page.getByText("真实缺口")).toBeVisible();
+        at /Users/zhangyiying/ai-Resume-optimization/tests/e2e-web/optimize-existing.spec.ts:11:34
+
+    Error Context: test-results/optimize-existing-complete-08484--export-through-the-adapter-chromium/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/optimize-existing-complete-08484--export-through-the-adapter-chromium/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/optimize-existing-complete-08484--export-through-the-adapter-chromium/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) [chromium] › tests/e2e-web/zero-to-resume.spec.ts:17:5 › completes zero-to-resume through API-backed save, matching, suggestion and export 
+
+    [31mTest timeout of 10000ms exceeded.[39m
+
+    Error: locator.fill: Test timeout of 10000ms exceeded.
+    Call log:
+    [2m  - waiting for getByLabel('你的回答')[22m
+
+
+      21 |   await page.getByRole("link", { name: /我还没有简历/ }).click();
+      22 |   for (let index = 0; index < 6; index += 1) {
+    > 23 |     await page.getByLabel("你的回答").fill(`第 ${index + 1} 步真实回答`);
+         |                                   ^
+      24 |     await page.getByRole("button", { name: "确认并继续" }).click();
+      25 |   }
+      26 |   await expect(page).toHaveURL(/resumes\/resume_r01\/edit/);
+        at /Users/zhangyiying/ai-Resume-optimization/tests/e2e-web/zero-to-resume.spec.ts:23:35
+
+    Error Context: test-results/zero-to-resume-completes-z-ea95e-ching-suggestion-and-export-chromium/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/zero-to-resume-completes-z-ea95e-ching-suggestion-and-export-chromium/trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results/zero-to-resume-completes-z-ea95e-ching-suggestion-and-export-chromium/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    [chromium] › tests/e2e-web/optimize-existing.spec.ts:4:5 › completes import, confirmation, JD, suggestion and export through the adapter 
+    [chromium] › tests/e2e-web/zero-to-resume.spec.ts:17:5 › completes zero-to-resume through API-backed save, matching, suggestion and export 
+  1 error was not a part of any test, see above for details

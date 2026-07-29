@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import os
+from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -29,6 +30,8 @@ from app.modules.exports.router import router as exports_router
 from app.modules.exports.service import ExportService
 from app.modules.imports.router import router as imports_router
 from app.modules.imports.service import ImportService
+from app.modules.intake.router import router as intake_router
+from app.modules.intake.service import IntakeService
 from app.modules.jobs.router import router as jobs_router
 from app.modules.jobs.service import JobService
 from app.modules.matching.router import router as matching_router
@@ -45,7 +48,8 @@ from app.modules.tasks.router import router as tasks_router
 from app.modules.tasks.service import TaskService
 from app.modules.usage.router import router as usage_router
 from app.modules.usage.service import UsageRepository, build_default_usage_service
-from app.modules.users.service import EmailCrypto, KeyProvider
+from app.modules.users.router import router as users_router
+from app.modules.users.service import EmailCrypto, KeyProvider, MeService
 from app.workers.dispatcher import OutboxDispatcher, build_default_dispatcher
 
 
@@ -63,6 +67,7 @@ class ApplicationDependencies:
     task_dispatcher: OutboxDispatcher | None = None
     storage: StoragePort | None = None
     ai_client: AiClient | None = None
+    auth_code_factory: Callable[[], str] | None = None
 
 def api_error_response(
     request: Request,
@@ -129,6 +134,7 @@ def create_app(
         wechat_exchange=dependencies.wechat_exchange if dependencies else None,
         email_crypto=dependencies.email_crypto if dependencies else None,
         keys=dependencies.keys if dependencies else None,
+        code_factory=dependencies.auth_code_factory if dependencies else None,
     )
     application.state.usage_service = build_default_usage_service(
         dependencies.usage_repository if dependencies else None,
@@ -142,6 +148,11 @@ def create_app(
     application.state.fact_service = FactService(task4_sessions)
     application.state.resume_service = ResumeService(task4_sessions)
     application.state.task_service = TaskService(task4_sessions)
+    application.state.intake_service = IntakeService(task4_sessions)
+    application.state.me_service = MeService(
+        task4_sessions,
+        application.state.auth_service.users,
+    )
     storage = (
         dependencies.storage
         if dependencies and dependencies.storage
@@ -171,10 +182,12 @@ def create_app(
         dependencies is not None or resolved.app_env != "production"
     )
     application.include_router(auth_router)
+    application.include_router(users_router)
     application.include_router(usage_router)
     application.include_router(privacy_router)
     application.include_router(facts_router)
     application.include_router(resumes_router)
+    application.include_router(intake_router)
     application.include_router(imports_router)
     application.include_router(jobs_router)
     application.include_router(matching_router)

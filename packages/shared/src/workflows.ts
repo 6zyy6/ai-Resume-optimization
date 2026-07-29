@@ -10,6 +10,17 @@ export type ClaimEvidence = {
   fact_refs: string[];
 };
 
+export class TaskTerminalError extends Error {
+  constructor(
+    public readonly taskId: string,
+    public readonly status: string,
+    public readonly errorCode?: string | null,
+  ) {
+    super(errorCode ?? `Task ${taskId} ${status}`);
+    this.name = "TaskTerminalError";
+  }
+}
+
 export function claimEvidenceForText(bulletId: string, text: string, factId: string): ClaimEvidence[] {
   return text ? [{ bullet_id: bulletId, start: 0, end: text.length, fact_refs: [factId] }] : [];
 }
@@ -24,7 +35,7 @@ export async function waitForTask<T extends TaskProgress>(
     const task = await readTask();
     if (task.status === "succeeded") return task;
     if (task.status === "failed" || task.status === "cancelled") {
-      throw new Error(task.error_code ?? `Task ${taskId} ${task.status}`);
+      throw new TaskTerminalError(taskId, task.status, task.error_code);
     }
     if (intervalMs) await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
   }

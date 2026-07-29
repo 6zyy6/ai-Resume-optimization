@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 
+import { ProtectedBoundary } from "../features/session/ProtectedBoundary";
 import "@resume/design-tokens/tokens.css";
 import "./globals.css";
 
@@ -16,5 +17,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
-  return <html lang="zh-CN"><body>{children}</body></html>;
+  return <html lang="zh-CN"><body><ProtectedBoundary>{children}</ProtectedBoundary></body></html>;
 }

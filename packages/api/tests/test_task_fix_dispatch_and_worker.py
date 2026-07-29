@@ -175,3 +175,24 @@ async def test_unknown_worker_operation_fails_task_instead_of_leaking_live_claim
     stored = await service.get_task("usr_worker", task.id)
     assert stored is not None
     assert stored.claim_token is None
+
+
+async def test_worker_reuses_one_event_loop_across_tasks(sql_session_factory):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    first = await _task(service, "worker-loop-first")
+    second = await _task(service, "worker-loop-second")
+    loops = []
+
+    async def operation(_claim) -> str:
+        loops.append(asyncio.get_running_loop())
+        return "resume_version:rv_worker"
+
+    configure_worker(service, lambda task_type: operation)
+    registered = celery_app.tasks["app.workers.execution.execute_task"]
+    first_result = await asyncio.to_thread(registered.run, first.id, "usr_worker")
+    second_result = await asyncio.to_thread(registered.run, second.id, "usr_worker")
+
+    assert first_result["status"] == "succeeded"
+    assert second_result["status"] == "succeeded"
+    assert loops[0] is loops[1]

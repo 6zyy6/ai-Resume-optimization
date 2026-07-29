@@ -62,12 +62,14 @@ class ImportedFactInput(BaseModel):
 
     kind: str = Field(min_length=1, max_length=64)
     value: str = Field(min_length=1, max_length=10000)
+    draft_index: int | None = Field(default=None, ge=0)
 
 
 class ImportConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     facts: list[ImportedFactInput] = Field(default_factory=list, max_length=500)
+    title: str = Field(default="导入基础简历", min_length=1, max_length=255)
 
 
 class ImportResponse(BaseModel):
@@ -80,6 +82,8 @@ class ImportResponse(BaseModel):
     fallback_reason: str | None
     task_id: str | None
     fact_ids: list[str] = Field(default_factory=list)
+    resume_id: str | None = None
+    version_id: str | None = None
 
 
 def get_import_service(request: Request) -> ImportService:
@@ -119,6 +123,8 @@ def _import(row, fact_ids: list[str] | None = None) -> ImportResponse:
         fallback_reason=row.fallback_reason,
         task_id=row.task_id,
         fact_ids=fact_ids or [],
+        resume_id=row.resume_id,
+        version_id=row.version_id,
     )
 
 
@@ -126,12 +132,15 @@ def _import(row, fact_ids: list[str] | None = None) -> ImportResponse:
 async def create_upload_token(
     payload: UploadTokenRequest,
     request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     authenticated: AuthenticatedSession = Depends(require_session),
     service: ImportService = Depends(get_import_service),
 ) -> UploadTokenResponse:
     try:
         row, url = await service.create_upload_token(
-            authenticated.user_id, **payload.model_dump()
+            authenticated.user_id,
+            **payload.model_dump(),
+            idempotency_key=_key(idempotency_key, request),
         )
     except ImportServiceError as error:
         _raise(request, error)
@@ -232,6 +241,7 @@ async def confirm_import(
             import_id,
             [item.model_dump() for item in payload.facts],
             _key(idempotency_key, request),
+            title=payload.title,
         )
     except ImportServiceError as error:
         _raise(request, error)

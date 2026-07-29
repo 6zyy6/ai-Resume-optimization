@@ -31,12 +31,12 @@ export function Field({
     name,
   };
   return (
-    <label className="field" htmlFor={name}>
-      <span className="field__label">{label}</span>
+    <div className="field">
+      <label className="field__label" htmlFor={name}>{label}</label>
       {multiline ? <textarea {...common as TextareaHTMLAttributes<HTMLTextAreaElement>} /> : <input {...common as InputHTMLAttributes<HTMLInputElement>} />}
       <span className={`field__message ${error ? "field__message--error" : ""}`} id={descriptionId}>
         {error ? `! ${error}` : helper ?? " "}
       </span>
-    </label>
+    </div>
   );
 }

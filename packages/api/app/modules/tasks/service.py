@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
 from app.db.models import Outbox, Task, TaskEvent, UsageLedger
-from app.db.ownership import authorized_owner_ids
+from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.state import TERMINAL_STATUSES, TaskStateError, require_transition
 from app.modules.usage.service import evaluate_usage
@@ -357,8 +357,200 @@ class TaskService:
             if task.status in TERMINAL_STATUSES:
                 return task
             task.cancellation_requested = True
+            task.ai_cancel_requested_at = (
+                task.ai_cancel_requested_at or self.clock.now()
+            )
             await self._finish(session, task, "cancelled")
             return task
+
+    async def request_cancel_idempotent(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        idempotency_key: str,
+    ) -> Task:
+        body = {"task_id": task_id}
+        async with self.idempotency.transaction(self.sessions) as session:
+            owner = await canonical_user_id(session, owner_user_id)
+            try:
+                claim = await self.idempotency.claim(
+                    session,
+                    owner,
+                    "/v1/tasks/:task_id/cancel",
+                    idempotency_key,
+                    body,
+                )
+            except IdempotencyConflict as error:
+                raise TaskServiceError(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "Idempotency-Key was reused with a different request",
+                    409,
+                ) from error
+            owners = await authorized_owner_ids(session, owner_user_id)
+            if claim.is_replay:
+                task = await session.scalar(
+                    select(Task).where(
+                        Task.id == (claim.replay_response or {})["id"],
+                        Task.owner_user_id.in_(owners),
+                    )
+                )
+                if task is None:
+                    raise RuntimeError("Idempotent cancelled task is missing")
+                return task
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.owner_user_id.in_(owners),
+                )
+                .with_for_update()
+            )
+            if task is None:
+                raise TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404)
+            if task.status not in TERMINAL_STATUSES:
+                task.cancellation_requested = True
+                task.ai_cancel_requested_at = (
+                    task.ai_cancel_requested_at or self.clock.now()
+                )
+                await self._finish(session, task, "cancelled")
+            response = self._task_payload(task)
+            await self.idempotency.complete(session, claim, 200, response)
+            return task
+
+    async def register_ai_run(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+        ai_run_id: str,
+    ) -> bool:
+        async with self.sessions.begin() as session:
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.owner_user_id == owner_user_id,
+                )
+                .with_for_update()
+            )
+            if task is None:
+                raise TaskClaimError(
+                    "TASK_CLAIM_STALE",
+                    "Task claim is missing, expired or superseded",
+                )
+            if task.cancellation_requested:
+                if task.claim_token != claim_token:
+                    raise TaskClaimError(
+                        "TASK_CLAIM_STALE",
+                        "Task claim is missing, expired or superseded",
+                    )
+                if (
+                    task.active_ai_run_id is not None
+                    and task.active_ai_run_id != ai_run_id
+                ):
+                    raise TaskClaimError(
+                        "TASK_AI_RUN_STALE",
+                        "A cancelled task already references another AI run",
+                    )
+                if task.active_ai_run_id == ai_run_id:
+                    return False
+                task.active_ai_run_id = ai_run_id
+                await session.flush()
+                return False
+            if (
+                task.status != "running"
+                or task.claim_token != claim_token
+                or task.claim_lease_expires_at is None
+                or _as_utc(task.claim_lease_expires_at) <= self.clock.now()
+            ):
+                raise TaskClaimError(
+                    "TASK_CLAIM_STALE",
+                    "Task claim is missing, expired or superseded",
+                )
+            if task.active_ai_run_id == ai_run_id:
+                return True
+            if task.active_ai_run_id is not None:
+                raise TaskClaimError(
+                    "TASK_AI_RUN_CONFLICT",
+                    "Task claim already references another active AI run",
+                )
+            task.active_ai_run_id = ai_run_id
+            task.ai_cancel_acknowledged_at = None
+            await session.flush()
+            return True
+
+    async def is_cancel_requested(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> bool:
+        async with self.sessions() as session:
+            value = await session.scalar(
+                select(Task.cancellation_requested).where(
+                    Task.id == task_id,
+                    Task.owner_user_id == owner_user_id,
+                )
+            )
+            return value is True
+
+    async def acknowledge_ai_cancel(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> Task:
+        async with self.sessions.begin() as session:
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.owner_user_id == owner_user_id,
+                    Task.active_ai_run_id == ai_run_id,
+                    Task.cancellation_requested.is_(True),
+                )
+                .with_for_update()
+            )
+            if task is None:
+                raise TaskClaimError(
+                    "TASK_AI_RUN_STALE",
+                    "AI run is missing, superseded or not cancelled",
+                )
+            task.ai_cancel_acknowledged_at = (
+                task.ai_cancel_acknowledged_at or self.clock.now()
+            )
+            task.claim_token = None
+            task.claim_lease_expires_at = None
+            await session.flush()
+            return task
+
+    async def claimed_task_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+    ) -> Task:
+        return await self._claimed_task(
+            session,
+            owner_user_id,
+            task_id,
+            claim_token,
+        )
+
+    async def complete_task_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+        result_ref: str,
+    ) -> Task:
+        await self._finish(
+            session,
+            task,
+            "succeeded",
+            result_ref=result_ref,
+            progress=100,
+        )
+        return task
 
     async def release_claim_for_retry(
         self,
@@ -545,8 +737,9 @@ class TaskService:
         task.finished_at = now
         task.result_ref = result_ref
         task.error_code = error_code
-        task.claim_token = None
-        task.claim_lease_expires_at = None
+        if status != "cancelled" or task.usage_type != "ai_task":
+            task.claim_token = None
+            task.claim_lease_expires_at = None
         if progress is not None:
             task.progress = progress
         await session.flush()

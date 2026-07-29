@@ -28,6 +28,19 @@ class EmailVerifyRequest(StrictModel):
     consents: list[ConsentInput] | None = Field(default=None, max_length=2)
 
 
+class PasswordRegisterRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=320)
+    code: str = Field(pattern=r"^\d{6}$")
+    password: str = Field(min_length=8, max_length=128)
+    consents: list[ConsentInput] | None = Field(default=None, max_length=2)
+
+
+class PasswordLoginRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+    consents: list[ConsentInput] | None = Field(default=None, max_length=2)
+
+
 class WechatLoginRequest(StrictModel):
     code: str = Field(min_length=1, max_length=512)
     consents: list[ConsentInput] | None = Field(default=None, max_length=2)

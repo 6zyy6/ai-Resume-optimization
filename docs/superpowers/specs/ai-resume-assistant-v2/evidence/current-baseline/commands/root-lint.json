@@ -1,0 +1,8 @@
+{
+  "command": "pnpm lint",
+  "started_at": "2026-07-29T17:35:08.686Z",
+  "ended_at": "2026-07-29T17:35:09.969Z",
+  "exit_code": 0,
+  "raw_log": "docs/superpowers/specs/ai-resume-assistant-v2/evidence/current-baseline/commands/root-lint.log",
+  "raw_log_sha256": "4322f5f74c7a109393477a608d6f1b35a0c067a288cbeb28103e71a98a261307"
+}

@@ -1,0 +1,74 @@
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class IntakeStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    restart: bool = False
+
+
+class IntakeQuestionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    type: Literal["short_answer", "deep_answer"]
+    prompt: str
+    reason: Literal["conflict", "missing_unit", "ambiguous_role"] | None = None
+
+
+class IntakeFactSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    kind: str
+    value: str
+    status: Literal["unconfirmed", "confirmed", "rejected"]
+
+
+class IntakeSessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    status: Literal["active", "drafting", "completed", "abandoned"]
+    version: int
+    current_question: IntakeQuestionResponse | None
+    completed_count: int
+    remaining_estimate: int
+    answered_question_ids: list[str]
+    skipped_question_ids: list[str]
+    fact_summaries: list[IntakeFactSummary]
+    task_id: str | None
+    resume_id: str | None
+
+
+class IntakeAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    question_id: str = Field(min_length=1, max_length=64)
+    answer: str | None = Field(default=None, min_length=1, max_length=1000)
+    skipped: bool = False
+    base_version: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def answer_or_skip(self) -> "IntakeAnswerRequest":
+        if self.skipped == (self.answer is not None):
+            raise ValueError("Provide an answer or set skipped=true")
+        return self
+
+
+class IntakeDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    base_version: int = Field(ge=0)
+    title: str = Field(min_length=1, max_length=255)
+
+
+class IntakeDraftResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str
+    task_id: str
+    status: Literal["queued"]
+    version: int

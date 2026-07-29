@@ -5,13 +5,17 @@ import { resolve } from "node:path";
 const command = process.argv[2];
 const python = resolve(".venv/bin/python");
 
+if (["dev", "migrate"].includes(command) && existsSync(".env")) {
+  process.loadEnvFile(".env");
+}
+
 if (!existsSync(python)) {
   throw new Error(
     "Python environment is missing. Run: python3.12 -m venv .venv && .venv/bin/python -m pip install -r packages/api/requirements.lock",
   );
 }
 
-const args = ["lint", "test", "build", "dev"].includes(command)
+const args = ["lint", "test", "build", "dev", "migrate"].includes(command)
   ? ["scripts/python_task.py", command]
   : [command];
 const result = spawnSync(python, args, { stdio: "inherit" });

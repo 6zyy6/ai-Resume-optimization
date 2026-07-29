@@ -16,12 +16,14 @@ from app.db.models import (
     ResumeVersion,
     SourceRecord,
     Suggestion,
+    Task,
     VersionOperation,
 )
 from app.modules.resumes.service import canonical_snapshot
 from app.integrations.ai_client import InternalAiClient
 from app.modules.matching.service import MATCH_CATEGORIES, classify_requirements
 import httpx
+from sqlalchemy import select
 
 
 def test_matching_emits_exactly_the_four_contract_categories():
@@ -138,10 +140,28 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
             task_id=parsed.json()["task_id"],
         )
     )
-    match = client.post(
+    blocked_match = client.post(
         "/v1/match-analyses",
         json={"resume_version_id": version_id, "job_id": job.json()["id"]},
         headers={"Idempotency-Key": "match-create"},
+    )
+    assert blocked_match.status_code == 409
+    assert (
+        blocked_match.json()["error"]["code"]
+        == "JOB_REQUIREMENTS_NOT_CONFIRMED"
+    )
+    parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()
+    for index, requirement in enumerate(parsed_job["requirements"]):
+        confirmed = client.patch(
+            f"/v1/jobs/{job.json()['id']}/requirements/{requirement['id']}",
+            json={"confirmed": True},
+            headers={"Idempotency-Key": f"confirm-requirement-{index}"},
+        )
+        assert confirmed.status_code == 200
+    match = client.post(
+        "/v1/match-analyses",
+        json={"resume_version_id": version_id, "job_id": job.json()["id"]},
+        headers={"Idempotency-Key": "match-after-confirm"},
     )
     asyncio.run(
         client.app.state.matching_service.process_match(
@@ -162,18 +182,60 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
     assert parsed.json()["task_id"]
     assert match.status_code == 202
     assert match.json()["status"] == "queued"
+    assert match.json()["items"] == []
     assert completed.json()["status"] == "succeeded"
-    assert match.json()["items"][0]["category"] == "underexpressed"
-    assert len(match.json()["items"][0]["evidence_refs"]) == 1
+    assert completed.json()["items"][0]["category"] == "underexpressed"
+    assert len(completed.json()["items"][0]["evidence_refs"]) == 1
     item = suggestions.json()["items"][0]
     assert suggestions.status_code == 200
     assert item["status"] == "pending"
-    assert item["requirement_id"] == match.json()["items"][0]["requirement_id"]
+    assert item["requirement_id"] == completed.json()["items"][0]["requirement_id"]
     assert item["original_text"] == "使用 Python 开发服务"
     assert item["suggested_text"]
     assert item["reason"]
     assert item["fact_refs"]
     assert item["risk_flags"] == []
+
+
+def test_job_parse_reuses_active_task_across_new_idempotency_keys(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    job = client.post(
+        "/v1/jobs",
+        json={"title": "后端实习生", "raw": "Python SQL"},
+        headers={"Idempotency-Key": "guard-job"},
+    )
+    first = client.post(
+        f"/v1/jobs/{job.json()['id']}/parse",
+        headers={"Idempotency-Key": "guard-parse-first"},
+    )
+    second = client.post(
+        f"/v1/jobs/{job.json()['id']}/parse",
+        headers={"Idempotency-Key": "guard-parse-second"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.json()["task_id"] == first.json()["task_id"]
+    assert asyncio.run(_job_parse_task_count(sessions, job.json()["id"])) == 1
+
+    asyncio.run(
+        client.app.state.job_service.process_parse(
+            "usr_a",
+            job.json()["id"],
+            trace_id="guard-parse",
+            task_id=first.json()["task_id"],
+        )
+    )
+    parsed = client.post(
+        f"/v1/jobs/{job.json()['id']}/parse",
+        headers={"Idempotency-Key": "guard-parse-after-complete"},
+    )
+    assert parsed.status_code == 202
+    assert parsed.json()["status"] == "parsed"
+    assert parsed.json()["task_id"] == first.json()["task_id"]
+    assert asyncio.run(_job_parse_task_count(sessions, job.json()["id"])) == 1
 
 
 def test_pipeline_resources_are_not_visible_across_owners(pipeline_client):
@@ -185,6 +247,11 @@ def test_pipeline_resources_are_not_visible_across_owners(pipeline_client):
         headers={"Idempotency-Key": "delete-other-file"},
     ).status_code == 404
     assert client.get("/v1/imports/import_b").status_code == 404
+    assert client.post(
+        "/v1/imports/import_b/confirm",
+        json={"title": "不能访问", "facts": []},
+        headers={"Idempotency-Key": "confirm-other-import"},
+    ).status_code == 404
     assert client.post(
         "/v1/jobs/job_b/parse",
         headers={"Idempotency-Key": "parse-other-job"},
@@ -276,6 +343,20 @@ async def _seed_resume(sessions) -> str:
             )
         )
     return version.id
+
+
+async def _job_parse_task_count(sessions, job_id: str) -> int:
+    async with sessions() as session:
+        return len(
+            (
+                await session.scalars(
+                    select(Task).where(
+                        Task.resource_type == "job_description",
+                        Task.resource_id == job_id,
+                    )
+                )
+            ).all()
+        )
 
 
 async def _seed_other_owner_pipeline(sessions) -> None:

@@ -356,3 +356,31 @@ def test_trusted_proxy_can_supply_original_request_protocol():
         )
 
     assert response.status_code == 200
+
+
+def test_trusted_proxy_can_supply_original_request_host_and_port():
+    application = FastAPI()
+    application.add_middleware(
+        CsrfProtectionMiddleware,
+        trusted_proxy_ips=("testclient",),
+    )
+    application.add_middleware(RequestContextMiddleware)
+
+    @application.post("/mutation")
+    async def mutate():
+        return JSONResponse({"mutated": True})
+
+    with TestClient(application) as client:
+        client.cookies.set("session", "authenticated-cookie-session")
+        response = client.post(
+            "/mutation",
+            headers={
+                "Host": "127.0.0.1:8000",
+                "Origin": "http://127.0.0.1:3000",
+                "Sec-Fetch-Site": "same-origin",
+                "X-Forwarded-Host": "127.0.0.1:3000",
+                "X-Forwarded-Proto": "http",
+            },
+        )
+
+    assert response.status_code == 200

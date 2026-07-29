@@ -94,6 +94,8 @@ def test_metadata_contains_complete_owner_scoped_foundation():
         "facts",
         "fact_sources",
         "fact_revisions",
+        "intake_sessions",
+        "intake_answers",
             "resumes",
             "targeted_resume_keys",
             "resume_versions",
@@ -125,6 +127,22 @@ def test_metadata_contains_complete_owner_scoped_foundation():
     for table_name in owner_scoped_tables:
         owner_column = Base.metadata.tables[table_name].c.owner_user_id
         assert owner_column.nullable is False, table_name
+
+
+def test_metadata_registers_migration_indexes():
+    expected_indexes = {
+        "tasks": {
+            "ix_tasks_active_usage",
+            "ix_tasks_active_ai_run_id",
+        },
+        "outbox": {"ix_outbox_dispatch_ready"},
+    }
+
+    for table_name, expected_names in expected_indexes.items():
+        actual_names = {
+            index.name for index in Base.metadata.tables[table_name].indexes
+        }
+        assert expected_names <= actual_names
 
 
 def test_memory_resource_repositories_are_owner_scoped():

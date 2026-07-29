@@ -1,5 +1,19 @@
 [
   {
+    "date": "2026-07-30",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "enrichment": "product-interface",
+    "brief": "V2 API-backed resume creation and optimization workflow"
+  },
+  {
+    "date": "2026-07-30",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "enrichment": "none",
+    "brief": "Email password login and verified registration"
+  },
+  {
     "date": "2026-07-29",
     "macrostructure": "Narrative Workflow",
     "theme": "Cobalt",

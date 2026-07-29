@@ -12,6 +12,7 @@ from app.modules.auth.service import (
     AuthService,
     HmacSecretHasher,
     InMemoryAuthRepository,
+    ScryptPasswordHasher,
     build_default_auth_service,
     cookie_secure_for_environment,
 )
@@ -122,6 +123,34 @@ def verify_email(client, harness: AuthHarness, email: str, *, consent: bool = Tr
     return client.post("/v1/auth/email/verify", json=payload)
 
 
+def register_password(
+    client,
+    harness: AuthHarness,
+    email: str,
+    password: str = "resume-password-2026",
+):
+    return client.post(
+        "/v1/auth/password/register",
+        json={
+            "email": email,
+            "code": harness.sender.latest_code(email.lower()),
+            "password": password,
+            "consents": [
+                {
+                    "document_type": "user_agreement",
+                    "document_version": "2026-07-27",
+                    "decision": "accepted",
+                },
+                {
+                    "document_type": "privacy_policy",
+                    "document_version": "2026-07-27",
+                    "decision": "accepted",
+                },
+            ],
+        },
+    )
+
+
 def test_email_otp_is_six_digits_and_expires_after_ten_minutes(
     client,
     auth_harness: AuthHarness,
@@ -139,6 +168,121 @@ def test_email_otp_is_six_digits_and_expires_after_ten_minutes(
     expired = verify_email(client, auth_harness, email)
     assert expired.status_code == 401
     assert expired.json()["error"]["code"] == "AUTH_CODE_INVALID"
+
+
+def test_email_password_registration_hashes_password_and_supports_login(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "Person@Example.COM"
+    password = "resume-password-2026"
+    assert start_email(client, email).status_code == 202
+
+    registered = register_password(client, auth_harness, email, password)
+
+    assert registered.status_code == 200
+    user = auth_harness.repository.users[registered.json()["user_id"]]
+    assert user.password_hash
+    assert password not in user.password_hash
+    assert client.post("/v1/auth/logout").status_code == 204
+
+    logged_in = client.post(
+        "/v1/auth/password/login",
+        json={"email": email, "password": password},
+    )
+
+    assert logged_in.status_code == 200
+    assert logged_in.json()["user_id"] == user.id
+    assert "HttpOnly" in logged_in.headers["set-cookie"]
+
+
+def test_existing_otp_user_can_set_a_password_after_email_verification(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+    otp_login = verify_email(client, auth_harness, email)
+    user_id = otp_login.json()["user_id"]
+    assert client.post("/v1/auth/logout").status_code == 204
+    auth_harness.clock.advance(seconds=60)
+    assert start_email(client, email).status_code == 202
+
+    registered = register_password(client, auth_harness, email)
+
+    assert registered.status_code == 200
+    assert registered.json()["user_id"] == user_id
+    assert auth_harness.repository.users[user_id].password_hash
+
+
+def test_password_registration_rejects_an_account_that_already_has_a_password(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+    assert register_password(client, auth_harness, email).status_code == 200
+    assert client.post("/v1/auth/logout").status_code == 204
+    auth_harness.clock.advance(seconds=60)
+    assert start_email(client, email).status_code == 202
+
+    duplicate = register_password(client, auth_harness, email)
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "AUTH_ACCOUNT_EXISTS"
+
+
+def test_password_login_uses_a_generic_error_and_rate_limits_failures(
+    client,
+    auth_harness: AuthHarness,
+):
+    email = "person@example.com"
+    assert start_email(client, email).status_code == 202
+    assert register_password(client, auth_harness, email).status_code == 200
+    assert client.post("/v1/auth/logout").status_code == 204
+
+    for _ in range(5):
+        rejected = client.post(
+            "/v1/auth/password/login",
+            json={"email": email, "password": "wrong-password"},
+        )
+        assert rejected.status_code == 401
+        assert rejected.json()["error"]["code"] == "AUTH_CREDENTIALS_INVALID"
+
+    limited = client.post(
+        "/v1/auth/password/login",
+        json={"email": email, "password": "wrong-password"},
+    )
+    unknown = client.post(
+        "/v1/auth/password/login",
+        json={"email": "unknown@example.com", "password": "wrong-password"},
+    )
+
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "AUTH_RATE_LIMITED"
+    assert unknown.status_code == 401
+    assert unknown.json()["error"]["code"] == "AUTH_CREDENTIALS_INVALID"
+
+
+def test_password_auth_validates_password_length_and_rejects_unknown_fields(
+    client,
+    auth_harness: AuthHarness,
+):
+    short = client.post(
+        "/v1/auth/password/login",
+        json={"email": "person@example.com", "password": "short"},
+    )
+    unknown = client.post(
+        "/v1/auth/password/login",
+        json={
+            "email": "person@example.com",
+            "password": "long-enough-password",
+            "unexpected": True,
+        },
+    )
+
+    assert short.status_code == 422
+    assert unknown.status_code == 422
 
 
 def test_email_otp_requires_sixty_seconds_before_resend(
@@ -459,10 +603,30 @@ def test_logout_revokes_the_hashed_session(
     assert "session=" in logged_out.headers["set-cookie"]
 
 
-def test_session_cookie_is_secure_outside_test_environments():
+def test_session_cookie_is_secure_only_in_production():
     assert cookie_secure_for_environment("production") is True
-    assert cookie_secure_for_environment("development") is True
+    assert cookie_secure_for_environment("development") is False
     assert cookie_secure_for_environment("test") is False
+
+
+def test_default_auth_service_can_use_a_development_otp():
+    service = build_default_auth_service(
+        "development",
+        code_factory=lambda: "123456",
+    )
+
+    assert service.code_factory() == "123456"
+
+
+def test_scrypt_password_hash_is_salted_and_rejects_invalid_encodings():
+    hasher = ScryptPasswordHasher()
+    first = hasher.hash_password("resume-password-2026")
+    second = hasher.hash_password("resume-password-2026")
+
+    assert first != second
+    assert hasher.verify_password("resume-password-2026", first) is True
+    assert hasher.verify_password("wrong-password", first) is False
+    assert hasher.verify_password("resume-password-2026", "invalid") is False
 
 
 @pytest.mark.anyio
@@ -478,6 +642,25 @@ async def test_unconfigured_external_auth_providers_fail_instead_of_claiming_suc
         await service.login_wechat("code")
     assert wechat_error.value.code == "AUTH_PROVIDER_UNAVAILABLE"
     assert wechat_error.value.status_code == 503
+
+    with pytest.raises(AuthError) as password_error:
+        await service.login_password(
+            "person@example.com",
+            "resume-password-2026",
+            "127.0.0.1",
+        )
+    assert password_error.value.code == "AUTH_CREDENTIALS_INVALID"
+    assert password_error.value.status_code == 401
+
+    production_service = build_default_auth_service("production")
+    with pytest.raises(AuthError) as production_password_error:
+        await production_service.login_password(
+            "person@example.com",
+            "resume-password-2026",
+            "127.0.0.1",
+        )
+    assert production_password_error.value.code == "AUTH_PROVIDER_UNAVAILABLE"
+    assert production_password_error.value.status_code == 503
 
 
 def test_production_auth_without_injected_ports_is_unconfigured_not_an_import_crash():

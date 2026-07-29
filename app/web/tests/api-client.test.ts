@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { createWebApiClient } from "../features/api/client";
+import { apiBrowserUrl, createWebApiClient } from "../features/api/client";
 
 describe("Web API client", () => {
+  it("routes relative signed storage URLs through the Next API proxy", () => {
+    expect(apiBrowserUrl("/v1/storage/upload?token=abc")).toBe(
+      "/api/v1/storage/upload?token=abc",
+    );
+    expect(apiBrowserUrl("https://cos.example/object?signature=abc")).toBe(
+      "https://cos.example/object?signature=abc",
+    );
+  });
+
   it("routes requests through an injected fixture transport", async () => {
     const calls: string[] = [];
     const inits: RequestInit[] = [];

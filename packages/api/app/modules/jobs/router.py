@@ -55,6 +55,7 @@ class JobResponse(BaseModel):
     id: str
     title: str
     company: str | None
+    raw: str
     status: str
     requirements: list[RequirementResponse] = Field(default_factory=list)
     task_id: str | None = None
@@ -103,6 +104,7 @@ def _job(row, requirements=(), task_id: str | None = None) -> JobResponse:
         id=row.id,
         title=row.title,
         company=row.company,
+        raw=row.raw_encrypted,
         status=row.status,
         requirements=[_requirement(item) for item in requirements],
         task_id=task_id if task_id is not None else row.task_id,

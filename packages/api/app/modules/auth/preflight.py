@@ -12,6 +12,9 @@ RESEND_WAIT = timedelta(seconds=60)
 IP_RATE_WINDOW = timedelta(minutes=1)
 EMAIL_RATE_WINDOW = timedelta(hours=1)
 RATE_LIMIT = 5
+PASSWORD_RATE_WINDOW = timedelta(minutes=15)
+PASSWORD_EMAIL_RATE_LIMIT = 5
+PASSWORD_IP_RATE_LIMIT = 20
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,19 @@ class AuthPreflightStore(Protocol):
     ) -> OtpChallenge | None: ...
 
     async def consume_challenge(self, email_hash: str) -> None: ...
+
+    async def check_password_attempt(
+        self,
+        email_hash: str,
+        ip_hash: str,
+        now: datetime,
+    ) -> None: ...
+
+    async def clear_password_attempts(
+        self,
+        email_hash: str,
+        ip_hash: str,
+    ) -> None: ...
 
 
 class InMemoryAuthPreflightBackend:
@@ -134,6 +150,47 @@ class InMemoryAuthPreflightStore:
         async with self.backend.lock:
             self.backend.challenges.pop(email_hash, None)
 
+    async def check_password_attempt(
+        self,
+        email_hash: str,
+        ip_hash: str,
+        now: datetime,
+    ) -> None:
+        async with self.backend.lock:
+            email_events = self.backend.rate_events.setdefault(
+                ("password-email", email_hash),
+                [],
+            )
+            ip_events = self.backend.rate_events.setdefault(
+                ("password-ip", ip_hash),
+                [],
+            )
+            email_events[:] = [
+                event for event in email_events if event > now - PASSWORD_RATE_WINDOW
+            ]
+            ip_events[:] = [
+                event for event in ip_events if event > now - PASSWORD_RATE_WINDOW
+            ]
+            if len(email_events) >= PASSWORD_EMAIL_RATE_LIMIT:
+                raise AuthPreflightRejected(
+                    self._retry_after(email_events, now, PASSWORD_RATE_WINDOW)
+                )
+            if len(ip_events) >= PASSWORD_IP_RATE_LIMIT:
+                raise AuthPreflightRejected(
+                    self._retry_after(ip_events, now, PASSWORD_RATE_WINDOW)
+                )
+            email_events.append(now)
+            ip_events.append(now)
+
+    async def clear_password_attempts(
+        self,
+        email_hash: str,
+        ip_hash: str,
+    ) -> None:
+        async with self.backend.lock:
+            self.backend.rate_events.pop(("password-email", email_hash), None)
+            self.backend.rate_events.pop(("password-ip", ip_hash), None)
+
 
 class UnavailableAuthPreflightStore:
     async def issue(
@@ -152,6 +209,21 @@ class UnavailableAuthPreflightStore:
         raise AuthPreflightUnavailable
 
     async def consume_challenge(self, email_hash: str) -> None:
+        raise AuthPreflightUnavailable
+
+    async def check_password_attempt(
+        self,
+        email_hash: str,
+        ip_hash: str,
+        now: datetime,
+    ) -> None:
+        raise AuthPreflightUnavailable
+
+    async def clear_password_attempts(
+        self,
+        email_hash: str,
+        ip_hash: str,
+    ) -> None:
         raise AuthPreflightUnavailable
 
 
@@ -189,6 +261,33 @@ redis.call('ZADD', KEYS[4], now, member)
 redis.call('PEXPIRE', KEYS[3], ip_window)
 redis.call('PEXPIRE', KEYS[4], email_window)
 redis.call('PEXPIRE', KEYS[5], email_window)
+return {0, 0}
+"""
+    _PASSWORD_ATTEMPT_SCRIPT = """
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local email_limit = tonumber(ARGV[3])
+local ip_limit = tonumber(ARGV[4])
+
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now - window)
+
+if redis.call('ZCARD', KEYS[1]) >= email_limit then
+  local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+  return {1, tonumber(oldest[2]) + window - now}
+end
+if redis.call('ZCARD', KEYS[2]) >= ip_limit then
+  local oldest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+  return {2, tonumber(oldest[2]) + window - now}
+end
+
+local sequence = redis.call('INCR', KEYS[3])
+local member = tostring(now) .. ':' .. tostring(sequence)
+redis.call('ZADD', KEYS[1], now, member)
+redis.call('ZADD', KEYS[2], now, member)
+redis.call('PEXPIRE', KEYS[1], window)
+redis.call('PEXPIRE', KEYS[2], window)
+redis.call('PEXPIRE', KEYS[3], window)
 return {0, 0}
 """
 
@@ -265,3 +364,34 @@ return {0, 0}
 
     async def consume_challenge(self, email_hash: str) -> None:
         await self.client.getdel(self._key("challenge", email_hash))
+
+    async def check_password_attempt(
+        self,
+        email_hash: str,
+        ip_hash: str,
+        now: datetime,
+    ) -> None:
+        now_ms = int(now.timestamp() * 1000)
+        result = await self.client.eval(
+            self._PASSWORD_ATTEMPT_SCRIPT,
+            3,
+            self._key("rate-password-email", email_hash),
+            self._key("rate-password-ip", ip_hash),
+            self._key("sequence", "password"),
+            now_ms,
+            int(PASSWORD_RATE_WINDOW.total_seconds() * 1000),
+            PASSWORD_EMAIL_RATE_LIMIT,
+            PASSWORD_IP_RATE_LIMIT,
+        )
+        if int(result[0]) != 0:
+            raise AuthPreflightRejected(max(1, (int(result[1]) + 999) // 1000))
+
+    async def clear_password_attempts(
+        self,
+        email_hash: str,
+        ip_hash: str,
+    ) -> None:
+        await self.client.delete(
+            self._key("rate-password-email", email_hash),
+            self._key("rate-password-ip", ip_hash),
+        )

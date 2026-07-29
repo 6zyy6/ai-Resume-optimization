@@ -6,8 +6,11 @@
     "acceptance": "node scripts/acceptance/run.mjs",
     "build": "pnpm -r build && node scripts/run-python.mjs build",
     "dev": "node scripts/dev-supervisor.mjs",
+    "dev:miniprogram": "pnpm --filter @resume/miniprogram dev",
+    "dev:web": "pnpm --filter @resume/web dev",
     "generate": "node scripts/run-python.mjs packages/api/scripts/export_openapi.py",
     "lint": "pnpm -r lint && node scripts/run-python.mjs lint",
+    "predev": "pnpm --filter @resume/ai build && node scripts/run-python.mjs migrate",
     "test": "pnpm -r test && node --test scripts/tests/dev-supervisor.test.mjs && node scripts/run-python.mjs test",
     "test:contract": "vitest run tests/contract"
   },

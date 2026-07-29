@@ -1,9 +1,13 @@
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.core.ids import new_id
+from app.db.models import User, UserConsent, UserIdentity
+from app.db.ownership import canonical_user_id
 from app.modules.auth.schemas import ConsentInput
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 @dataclass
@@ -13,6 +17,7 @@ class UserAccount:
     email_encrypted: str | None
     email_lookup_hash: str | None
     created_at: datetime
+    password_hash: str | None = None
 
 
 @dataclass
@@ -49,6 +54,7 @@ class UserStore(Protocol):
 
 class EmailCrypto(Protocol):
     def encrypt(self, email: str, key: bytes) -> str: ...
+    def decrypt(self, encrypted: str, key: bytes) -> str: ...
     def lookup_hash(self, email: str, key: bytes) -> str: ...
 
 
@@ -78,6 +84,12 @@ class UserService:
             self.keys.get_key("email-lookup"),
         )
 
+    def decrypt_email(self, encrypted: str) -> str:
+        return self.email_crypto.decrypt(
+            encrypted,
+            self.keys.get_key("email-encryption"),
+        )
+
     async def find_by_email(self, email: str) -> UserAccount | None:
         return await self.repository.find_user_by_email_hash(self.email_lookup_hash(email))
 
@@ -86,6 +98,7 @@ class UserService:
         email: str,
         now: datetime,
         consents: tuple[ConsentInput, ...],
+        password_hash: str | None = None,
     ) -> UserAccount:
         normalized = self.normalize_email(email)
         lookup_hash = self.email_lookup_hash(normalized)
@@ -98,6 +111,7 @@ class UserService:
             ),
             email_lookup_hash=lookup_hash,
             created_at=now,
+            password_hash=password_hash,
         )
         identity = IdentityRecord(
             id=new_id("idn"),
@@ -142,3 +156,75 @@ class UserService:
                 verified_at=now,
             )
         )
+
+
+class MeService:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        users: UserService,
+    ) -> None:
+        self.sessions = sessions
+        self.users = users
+
+    async def get(self, user_id: str) -> dict[str, Any] | None:
+        async with self.sessions() as session:
+            owner = await canonical_user_id(session, user_id)
+            user = await session.scalar(select(User).where(User.id == owner))
+            if user is None:
+                return None
+            identities = list(
+                (
+                    await session.scalars(
+                        select(UserIdentity.type).where(
+                            UserIdentity.owner_user_id == owner
+                        )
+                    )
+                ).all()
+            )
+            consent_rows = list(
+                (
+                    await session.scalars(
+                        select(UserConsent)
+                        .where(
+                            UserConsent.owner_user_id == owner,
+                            UserConsent.decision == "accepted",
+                        )
+                        .order_by(UserConsent.decided_at)
+                    )
+                ).all()
+            )
+            consent_versions = {
+                consent.document_type: consent.document_version
+                for consent in consent_rows
+            }
+            return {
+                "user_id": owner,
+                "masked_email": (
+                    _mask_email(self.users.decrypt_email(user.email_encrypted))
+                    if user.email_encrypted
+                    else None
+                ),
+                "identity_type": _identity_type(identities),
+                "consent_versions": consent_versions,
+            }
+
+
+def _identity_type(identities: list[str]) -> str:
+    has_email = any(item.startswith("email") for item in identities)
+    has_wechat = "wechat_miniprogram" in identities
+    if has_email and has_wechat:
+        return "hybrid"
+    if has_email:
+        return "email"
+    if has_wechat:
+        return "wechat"
+    return "unknown"
+
+
+def _mask_email(email: str) -> str:
+    local, separator, domain = email.partition("@")
+    if not separator:
+        return "***"
+    visible = local[:2] if len(local) > 1 else local[:1]
+    return f"{visible}***@{domain}"

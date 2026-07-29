@@ -63,8 +63,9 @@
     },
     "ai": {
       "build": {"context": "../..", "dockerfile": "infra/docker/ai.Dockerfile"},
-      "environment": {"AI_HOST": "0.0.0.0", "AI_PORT": "3101", "AI_RUNTIME_MODE": "${AI_RUNTIME_MODE:-fixture}", "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN:?set AI_SERVICE_TOKEN}", "AI_MODEL_ROUTES_JSON": "${AI_MODEL_ROUTES_JSON:-{}}", "OPENAI_API_KEY": "${OPENAI_API_KEY:-}"},
-      "networks": ["internal"],
+      "environment": {"AI_HOST": "0.0.0.0", "AI_PORT": "3101", "AI_RUNTIME_MODE": "${AI_RUNTIME_MODE:-fixture}", "AI_SERVICE_TOKEN": "${AI_SERVICE_TOKEN:?set AI_SERVICE_TOKEN}", "AI_REDIS_URL": "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/1", "AI_TEXT_PROVIDER": "${AI_TEXT_PROVIDER:-deepseek}", "AI_TEXT_MODEL": "${AI_TEXT_MODEL:-deepseek-v4-flash}", "AI_TEXT_FALLBACK_MODEL": "${AI_TEXT_FALLBACK_MODEL:-deepseek-v4-pro}", "AI_MODEL_ROUTES_JSON": "${AI_MODEL_ROUTES_JSON:-}", "DEEPSEEK_API_KEY": "${DEEPSEEK_API_KEY:-}", "AI_PDF_VISION_ENABLED": "${AI_PDF_VISION_ENABLED:-false}", "AI_VISION_PROVIDER": "${AI_VISION_PROVIDER:-qwen-token-plan-cn}", "AI_VISION_MODEL": "${AI_VISION_MODEL:-qwen3.6-plus}", "QWEN_TOKEN_PLAN_CN_API_KEY": "${QWEN_TOKEN_PLAN_CN_API_KEY:-}"},
+      "networks": ["data", "internal"],
+      "depends_on": {"redis": {"condition": "service_healthy"}},
       "healthcheck": {"test": ["CMD", "node", "-e", "fetch('http://localhost:3101/internal/v1/health/ready').then(r=>{if(!r.ok)process.exit(1)})"], "interval": "10s", "timeout": "5s", "retries": 5},
       "deploy": {"resources": {"limits": {"cpus": "10"}}}
     },

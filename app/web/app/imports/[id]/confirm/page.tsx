@@ -1,108 +1,257 @@
 "use client";
 
-import { useState } from "react";
+import { ApiError } from "@resume/shared/client";
 import type { components } from "@resume/shared/schema";
-import { claimEvidenceForText, waitForTask } from "@resume/shared/workflows";
-import { useRouter } from "next/navigation";
+import { waitForTask } from "@resume/shared/workflows";
+import { useParams, useRouter } from "next/navigation";
+import { type ChangeEvent, useEffect, useRef, useState } from "react";
 
 import { Page } from "../../../../components/Page";
 import { Button } from "../../../../components/ui/Button";
 import { Field } from "../../../../components/ui/Field";
 import { StatusTag } from "../../../../components/ui/StatusTag";
-import { createWebApiClient } from "../../../../features/api/client";
+import { apiBrowserUrl, createWebApiClient } from "../../../../features/api/client";
 
-const modules = [
-  ["基本信息", "confirmed"],
-  ["教育经历", "confirmed"],
-  ["实习经历", "uncertain"],
-  ["项目经历", "missing"],
-  ["校园与活动", "missing"],
-  ["技能", "uncertain"],
-  ["荣誉", "missing"],
-] as const;
+type DraftFact = components["schemas"]["ImportedFactInput"] & { id: string };
+
+function toDraftFacts(items: components["schemas"]["ImportResponse"]["draft_facts"]): DraftFact[] {
+  return items.flatMap((item, index) => {
+    const kind = typeof item.kind === "string" ? item.kind : "";
+    const value = typeof item.value === "string" ? item.value : "";
+    return kind && value ? [{ draft_index: index, id: `draft-${index}`, kind, value }] : [];
+  });
+}
+
+function finalizedPath(resource: components["schemas"]["ImportResponse"]): string | null {
+  return resource.status === "confirmed" && resource.resume_id && resource.version_id
+    ? `/resumes/${resource.resume_id}/edit?version=${resource.version_id}`
+    : null;
+}
 
 export default function ImportConfirmPage() {
-  const [fallback, setFallback] = useState(false);
-  const [file, setFile] = useState<File | null>(null);
+  const { id } = useParams<{ id: string }>();
   const router = useRouter();
-  async function confirmImport() {
-    if (!file) return;
+  const [resource, setResource] = useState<components["schemas"]["ImportResponse"] | null>(null);
+  const [draftFacts, setDraftFacts] = useState<DraftFact[]>([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [fallbackText, setFallbackText] = useState("");
+  const [resumeTitle, setResumeTitle] = useState("导入基础简历");
+  const [state, setState] = useState<"idle" | "loading" | "uploading" | "parsing" | "saving" | "error">(
+    id === "new" ? "idle" : "loading",
+  );
+  const [message, setMessage] = useState("");
+  const operationKeys = useRef<Record<string, string>>({});
+
+  useEffect(() => {
+    if (id === "new") return;
+    let active = true;
+    createWebApiClient().get<components["schemas"]["ImportResponse"]>(`/v1/imports/${id}`).then(
+      (imported) => {
+        if (!active) return;
+        const destination = finalizedPath(imported);
+        if (destination) {
+          router.push(destination);
+          return;
+        }
+        setResource(imported);
+        setDraftFacts(toDraftFacts(imported.draft_facts));
+        setState("idle");
+      },
+      () => {
+        if (active) {
+          setMessage("无法读取导入结果，请从任务中心重试。");
+          setState("error");
+        }
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  async function uploadAndParse() {
+    if (!file || state === "uploading" || state === "parsing") return;
     const api = createWebApiClient();
-    const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-    const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    const tokenBody: components["schemas"]["UploadTokenRequest"] = {
-      display_name: file.name,
-      mime: file.type || "text/plain",
-      purpose: "resume_import",
-      sha256,
-      size: file.size,
-    };
-    const token = await api.post<typeof tokenBody, components["schemas"]["UploadTokenResponse"]>(
-      "/v1/files/upload-tokens", tokenBody, crypto.randomUUID(),
-    );
-    const uploaded = await fetch(token.upload_url, { body: file, method: "PUT" });
-    if (!uploaded.ok) throw new Error("文件上传失败");
-    await api.post(`/v1/files/${token.file_id}/confirm-upload`, {}, crypto.randomUUID());
-    const importBody: components["schemas"]["ImportCreate"] = { file_id: token.file_id };
-    const imported = await api.post<typeof importBody, components["schemas"]["ImportResponse"]>(
-      "/v1/imports", importBody, crypto.randomUUID(),
-    );
-    if (!imported.task_id) throw new Error("导入任务未创建");
-    await waitForTask(
-      () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${imported.task_id}`),
-      imported.task_id,
-    );
-    await api.get<components["schemas"]["ImportResponse"]>(`/v1/imports/${imported.id}`);
-    const confirmBody: components["schemas"]["ImportConfirm"] = {
-      facts: modules.filter(([, state]) => state !== "missing").map(([kind]) => ({ kind, value: `${kind}：待用户确认` })),
-    };
-    const confirmed = await api.post<typeof confirmBody, components["schemas"]["ImportResponse"]>(`/v1/imports/${imported.id}/confirm`, confirmBody, crypto.randomUUID());
-    const resumeBody: components["schemas"]["ResumeCreate"] = { kind: "base", title: file.name };
-    const resume = await api.post<typeof resumeBody, components["schemas"]["ResumeResponse"]>("/v1/resumes", resumeBody, crypto.randomUUID());
-    const snapshot: components["schemas"]["ResumeSnapshot"] = {
-      schema_version: "1",
-      sections: confirmBody.facts?.map((fact, index) => ({
-        id: `import-${index}`,
-        items: [{ fact_refs: [], id: `import-bullet-${index}`, text: fact.value }],
-        title: fact.kind,
-        type: fact.kind,
-      })) ?? [],
-      target: null,
-      title: file.name,
-    };
-    const claim_evidence = snapshot.sections.flatMap((section, index) => {
-      const item = section.items[0];
-      const factId = confirmed.fact_ids?.[index];
-      return factId ? claimEvidenceForText(item.id, item.text, factId) : [];
-    });
-    const versionBody: components["schemas"]["VersionCreate"] = { base_version: resume.version, claim_evidence, snapshot };
-    const version = await api.post<typeof versionBody, components["schemas"]["ResumeVersionResponse"]>(
-      `/v1/resumes/${resume.id}/versions`, versionBody, crypto.randomUUID(),
-    );
-    router.push(`/jobs/new?version=${version.id}`);
+    setState("uploading");
+    setMessage("正在上传文件…");
+    try {
+      const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+      const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      const tokenBody: components["schemas"]["UploadTokenRequest"] = {
+        display_name: file.name,
+        mime: file.type || "text/plain",
+        purpose: "resume_import",
+        sha256,
+        size: file.size,
+      };
+      operationKeys.current.uploadToken ||= crypto.randomUUID();
+      const token = await api.post<typeof tokenBody, components["schemas"]["UploadTokenResponse"]>(
+        "/v1/files/upload-tokens",
+        tokenBody,
+        operationKeys.current.uploadToken,
+      );
+      const uploaded = await fetch(apiBrowserUrl(token.upload_url), { body: file, method: "PUT" });
+      if (!uploaded.ok) throw new Error("upload failed");
+      operationKeys.current.confirmUpload ||= crypto.randomUUID();
+      await api.post(`/v1/files/${token.file_id}/confirm-upload`, {}, operationKeys.current.confirmUpload);
+      const importBody: components["schemas"]["ImportCreate"] = { file_id: token.file_id };
+      operationKeys.current.createImport ||= crypto.randomUUID();
+      const imported = await api.post<typeof importBody, components["schemas"]["ImportResponse"]>(
+        "/v1/imports",
+        importBody,
+        operationKeys.current.createImport,
+      );
+      if (!imported.task_id) throw new Error("missing task");
+      setState("parsing");
+      setMessage("上传完成，正在解析文件…");
+      await waitForTask(
+        () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${imported.task_id}`),
+        imported.task_id,
+      );
+      const parsed = await api.get<components["schemas"]["ImportResponse"]>(`/v1/imports/${imported.id}`);
+      setResource(parsed);
+      setDraftFacts(toDraftFacts(parsed.draft_facts));
+      setResumeTitle(file.name.replace(/\.(pdf|docx|txt)$/i, "") || "导入基础简历");
+      setState("idle");
+      setMessage(parsed.status === "needs_paste" ? "文件无法解析，请粘贴文本继续。" : "解析完成，请逐条确认。");
+      window.history.replaceState({}, "", `/imports/${parsed.id}/confirm`);
+      operationKeys.current = {};
+    } catch {
+      setState("error");
+      setMessage("上传或解析失败。你可以更换文件，或粘贴文本继续。");
+    }
   }
+
+  function updateFact(index: number, patch: Partial<DraftFact>) {
+    setDraftFacts((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  }
+
+  function usePastedText() {
+    const lines = fallbackText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    setDraftFacts(lines.map((value, index) => ({ draft_index: null, id: `paste-${index}`, kind: "resume_text", value })));
+    setMessage(`已从粘贴文本中保留 ${lines.length} 条，请逐条确认。`);
+  }
+
+  async function deleteSource() {
+    if (!resource) {
+      setFile(null);
+      return;
+    }
+    setState("saving");
+    try {
+      operationKeys.current.deleteSource ||= crypto.randomUUID();
+      await createWebApiClient().delete(`/v1/files/${resource.file_id}`, operationKeys.current.deleteSource);
+      delete operationKeys.current.deleteSource;
+      setResource(null);
+      setDraftFacts([]);
+      setFile(null);
+      setMessage("源文件已删除。");
+      setState("idle");
+    } catch {
+      setMessage("删除失败，请稍后重试。");
+      setState("error");
+    }
+  }
+
+  async function confirmImport() {
+    if (!resource || draftFacts.length === 0 || state === "saving") return;
+    setState("saving");
+    setMessage("正在保存事实与首个简历版本…");
+    try {
+      const api = createWebApiClient();
+      const facts = draftFacts.map(({ draft_index, kind, value }) => ({
+        draft_index,
+        kind: kind.trim(),
+        value: value.trim(),
+      })).filter((fact) => fact.kind && fact.value);
+      const confirmBody: components["schemas"]["ImportConfirm"] = {
+        facts,
+        title: resumeTitle.trim(),
+      };
+      operationKeys.current.finalize ||= crypto.randomUUID();
+      const confirmed = await api.post<typeof confirmBody, components["schemas"]["ImportResponse"]>(
+        `/v1/imports/${resource.id}/confirm`,
+        confirmBody,
+        operationKeys.current.finalize,
+      );
+      if (!confirmed.resume_id || !confirmed.version_id) throw new Error("finalize result missing");
+      delete operationKeys.current.finalize;
+      router.push(`/resumes/${confirmed.resume_id}/edit?version=${confirmed.version_id}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "IMPORT_ALREADY_FINALIZED") {
+        try {
+          const finalized = await createWebApiClient().get<components["schemas"]["ImportResponse"]>(
+            `/v1/imports/${resource.id}`,
+          );
+          const destination = finalizedPath(finalized);
+          if (destination) {
+            delete operationKeys.current.finalize;
+            router.push(destination);
+            return;
+          }
+        } catch {
+          // Keep the existing draft and retry key when recovery is uncertain.
+        }
+      }
+      setMessage("保存失败。已解析的字段仍保留在页面中，请重试。");
+      setState("error");
+    }
+  }
+
   return (
-    <Page eyebrow="导入确认" title="先确认解析结果，再写入事实库。">
+    <Page
+      eyebrow="导入并确认"
+      status={message ? { label: message, tone: state === "error" ? "error" : state === "idle" ? "success" : "pending" } : undefined}
+      title={resource ? "逐条核对解析结果" : "上传已有简历"}
+    >
       <aside className="rule-strip">支持 PDF、DOCX、TXT · 最大 10 MiB · PDF 最多 10 页 · 不支持扫描件 OCR</aside>
-      <label className="field"><span className="field__label">选择简历文件</span><input accept=".pdf,.docx,.txt" aria-label="选择简历文件" onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)} type="file" /><span className="field__message">{file?.name || "尚未选择文件"}</span></label>
-      <div className="split-layout">
-        <section className="panel panel--wide">
-          <header><h2>识别模块</h2><StatusTag tone="pending">3 项待确认</StatusTag></header>
-          <ul className="module-list">
-            {modules.map(([name, state]) => (
-              <li key={name}><strong>{name}</strong><StatusTag tone={state === "confirmed" ? "success" : state === "uncertain" ? "pending" : "error"}>{state}</StatusTag><Button variant="quiet">编辑</Button></li>
-            ))}
-          </ul>
+      {!resource ? (
+        <section className="panel">
+          <label className="field">
+            <span className="field__label">选择简历文件</span>
+            <input
+              accept=".pdf,.docx,.txt"
+              aria-label="选择简历文件"
+              disabled={state === "uploading" || state === "parsing"}
+              onChange={(event) => setFile(event.currentTarget.files?.[0] ?? null)}
+              type="file"
+            />
+            <span className="field__message">{file?.name || "尚未选择文件"}</span>
+          </label>
+          <div className="button-row">
+            <Button disabled={!file || state === "uploading" || state === "parsing"} onClick={() => void uploadAndParse()} state={state === "uploading" || state === "parsing" ? "loading" : "default"}>上传并解析</Button>
+            {file ? <Button onClick={() => setFile(null)} variant="quiet">移除文件</Button> : null}
+          </div>
         </section>
-        <aside className="panel">
-          <h2>解析失败也不会丢文件</h2>
-          <p>你可以改为粘贴文本，或立即删除上传文件。</p>
-          <Button onClick={() => setFallback(!fallback)} variant="secondary">粘贴文本</Button>
-          {fallback ? <Field label="简历文本" multiline name="resume-text" /> : null}
-          <Button state="error" variant="quiet">删除文件</Button>
-        </aside>
-      </div>
-      <div className="sticky-action"><Button onClick={() => void confirmImport()}>确认并进入岗位信息</Button></div>
+      ) : null}
+
+      {state === "loading" ? <section className="panel" role="status">正在读取解析结果…</section> : null}
+      {resource ? (
+        <div className="split-layout">
+          <section className="panel panel--wide">
+            <header><h2>解析字段</h2><StatusTag tone={draftFacts.length > 0 ? "pending" : "info"}>{draftFacts.length} 条待确认</StatusTag></header>
+            {draftFacts.length === 0 ? <p>没有识别到可确认字段。请粘贴文本，或删除后更换文件。</p> : null}
+            <div className="settings-list">
+              {draftFacts.map((fact, index) => (
+                <article className="audit-card" key={fact.id}>
+                  <Field label={`字段 ${index + 1} 类型`} name={`kind-${index}`} onChange={(event: ChangeEvent<HTMLInputElement>) => updateFact(index, { kind: event.currentTarget.value })} value={fact.kind} />
+                  <Field label={`字段 ${index + 1} 内容`} multiline name={`value-${index}`} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => updateFact(index, { value: event.currentTarget.value })} value={fact.value} />
+                  <Button onClick={() => setDraftFacts((items) => items.filter((_, itemIndex) => itemIndex !== index))} variant="quiet">不采用这条</Button>
+                </article>
+              ))}
+            </div>
+            <Field label="基础简历名称" name="resume-title" onChange={(event: ChangeEvent<HTMLInputElement>) => setResumeTitle(event.currentTarget.value)} value={resumeTitle} />
+          </section>
+          <aside className="panel">
+            <h2>解析失败时</h2>
+            <Field label="粘贴简历文本" multiline name="fallback-text" onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setFallbackText(event.currentTarget.value)} value={fallbackText} />
+            <Button disabled={!fallbackText.trim()} onClick={usePastedText} variant="secondary">使用粘贴文本</Button>
+            <Button onClick={() => void deleteSource()} state={state === "error" ? "error" : "default"} variant="quiet">删除源文件</Button>
+          </aside>
+        </div>
+      ) : null}
+      {resource && draftFacts.length > 0 ? <div className="sticky-action"><Button disabled={state === "saving"} onClick={() => void confirmImport()} state={state === "saving" ? "loading" : state === "error" ? "error" : "default"}>确认并创建基础简历</Button></div> : null}
+      {state === "error" ? <p className="auth-error" role="alert">{message}</p> : null}
     </Page>
   );
 }

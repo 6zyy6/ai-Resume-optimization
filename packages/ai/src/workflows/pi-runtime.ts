@@ -13,8 +13,12 @@ import {
   createModels,
 } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import {
+  qwenTokenPlanCnProvider,
+} from "@earendil-works/pi-ai/providers/qwen-token-plan-cn";
 
 import {
   WORKFLOW_TYPES,
@@ -495,5 +499,7 @@ function createApprovedModels(): Models {
   models.setProvider(openaiProvider());
   models.setProvider(anthropicProvider());
   models.setProvider(googleProvider());
+  models.setProvider(deepseekProvider());
+  models.setProvider(qwenTokenPlanCnProvider());
   return models;
 }

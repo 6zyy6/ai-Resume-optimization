@@ -1,0 +1,8 @@
+{
+  "command": "pnpm --filter @resume/web lint",
+  "started_at": "2026-07-29T17:30:02.934Z",
+  "ended_at": "2026-07-29T17:30:03.503Z",
+  "exit_code": 0,
+  "raw_log": "docs/superpowers/specs/ai-resume-assistant-v2/evidence/current-baseline/commands/web-lint.log",
+  "raw_log_sha256": "081b740eb376ce4ae5966aebc06ac43c3f2093803a90f3e5e89906498c543433"
+}

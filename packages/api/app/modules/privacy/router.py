@@ -35,6 +35,14 @@ class PrivacyTaskResponse(BaseModel):
     queued_at: datetime
 
 
+class PrivacyExportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    file_id: str
+    download_url: str
+    download_expires_in: int
+
+
 def get_privacy_service(request: Request) -> PrivacyService:
     return request.app.state.privacy_service
 
@@ -122,3 +130,32 @@ async def request_deletion(
     except PrivacyError as error:
         raise_privacy_error(request, error)
     return task_response(task)
+
+
+@router.get(
+    "/data-exports/{task_id}",
+    response_model=PrivacyExportResponse,
+)
+async def get_data_export(
+    task_id: str,
+    request: Request,
+    authenticated: AuthenticatedSession = Depends(require_session),
+    service: PrivacyService = Depends(get_privacy_service),
+) -> PrivacyExportResponse:
+    try:
+        artifact = await service.get_data_export(
+            authenticated.user_id,
+            task_id,
+        )
+    except PrivacyError as error:
+        raise_privacy_error(request, error)
+    expires_in = 900
+    return PrivacyExportResponse(
+        file_id=artifact.file_id,
+        download_url=request.app.state.storage.download_url(
+            artifact.object_key,
+            artifact.display_name,
+            expires_in,
+        ),
+        download_expires_in=expires_in,
+    )

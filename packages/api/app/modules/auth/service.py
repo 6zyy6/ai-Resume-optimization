@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import hmac
 import secrets
@@ -52,6 +53,11 @@ class SecretHasher(Protocol):
     def hash_secret(self, value: str, key: bytes) -> str: ...
 
 
+class PasswordHasher(Protocol):
+    def hash_password(self, password: str) -> str: ...
+    def verify_password(self, password: str, encoded: str) -> bool: ...
+
+
 class AuthProviderUnavailable(Exception):
     pass
 
@@ -81,6 +87,11 @@ class AuthRepository(Protocol):
     async def find_session(self, token_hash: str) -> SessionRecord | None: ...
     async def revoke_all_sessions(self, user_id: str, now: datetime) -> None: ...
     async def consents_for_user(self, user_id: str) -> tuple[ConsentRecord, ...]: ...
+    async def set_password_if_missing(
+        self,
+        user_id: str,
+        password_hash: str,
+    ) -> bool: ...
     async def merge_users(self, source_user_id: str, target_user_id: str) -> None: ...
     async def create_user_with_identity_and_consents(
         self,
@@ -93,6 +104,73 @@ class AuthRepository(Protocol):
 class HmacSecretHasher:
     def hash_secret(self, value: str, key: bytes) -> str:
         return hmac.new(key, value.encode(), hashlib.sha256).hexdigest()
+
+
+class ScryptPasswordHasher:
+    algorithm = "scrypt"
+    version = "v1"
+    n = 2**14
+    r = 8
+    p = 1
+    salt_bytes = 16
+    derived_bytes = 32
+
+    def hash_password(self, password: str) -> str:
+        salt = secrets.token_bytes(self.salt_bytes)
+        derived = hashlib.scrypt(
+            password.encode(),
+            salt=salt,
+            n=self.n,
+            r=self.r,
+            p=self.p,
+            dklen=self.derived_bytes,
+        )
+        return "$".join(
+            (
+                self.algorithm,
+                self.version,
+                str(self.n),
+                str(self.r),
+                str(self.p),
+                base64.urlsafe_b64encode(salt).decode(),
+                base64.urlsafe_b64encode(derived).decode(),
+            )
+        )
+
+    def verify_password(self, password: str, encoded: str) -> bool:
+        try:
+            algorithm, version, n, r, p, salt_value, expected_value = encoded.split(
+                "$"
+            )
+            if (
+                algorithm != self.algorithm
+                or version != self.version
+                or int(n) != self.n
+                or int(r) != self.r
+                or int(p) != self.p
+            ):
+                return False
+            salt = base64.urlsafe_b64decode(salt_value.encode())
+            expected = base64.urlsafe_b64decode(expected_value.encode())
+            if len(salt) != self.salt_bytes or len(expected) != self.derived_bytes:
+                return False
+        except (binascii.Error, TypeError, ValueError):
+            return False
+        actual = hashlib.scrypt(
+            password.encode(),
+            salt=salt,
+            n=self.n,
+            r=self.r,
+            p=self.p,
+            dklen=self.derived_bytes,
+        )
+        return hmac.compare_digest(actual, expected)
+
+
+DEFAULT_PASSWORD_HASHER = ScryptPasswordHasher()
+DUMMY_PASSWORD_HASH = DEFAULT_PASSWORD_HASHER.hash_password(
+    "this-password-does-not-belong-to-an-account"
+)
 
 
 class SystemClock:
@@ -118,6 +196,11 @@ class EnvelopeEmailCrypto:
 
     def lookup_hash(self, email: str, key: bytes) -> str:
         return hmac.new(key, email.encode(), hashlib.sha256).hexdigest()
+
+    def decrypt(self, encrypted: str, key: bytes) -> str:
+        payload = base64.urlsafe_b64decode(encrypted.encode())
+        nonce, ciphertext = payload[:12], payload[12:]
+        return AESGCM(key).decrypt(nonce, ciphertext, b"email:v1").decode()
 
 
 class UnavailableEmailSender:
@@ -181,6 +264,17 @@ class InMemoryAuthRepository:
             if consent.owner_user_id == user_id
         )
 
+    async def set_password_if_missing(
+        self,
+        user_id: str,
+        password_hash: str,
+    ) -> bool:
+        user = self.users.get(user_id)
+        if user is None or user.password_hash is not None:
+            return False
+        user.password_hash = password_hash
+        return True
+
     async def merge_users(self, source_user_id: str, target_user_id: str) -> None:
         source = self.users[source_user_id]
         source.status = "merged"
@@ -240,7 +334,7 @@ class LoginResult:
 
 
 def cookie_secure_for_environment(app_env: str) -> bool:
-    return app_env != "test"
+    return app_env == "production"
 
 
 class AuthService:
@@ -257,6 +351,7 @@ class AuthService:
         code_factory: Callable[[], str],
         token_factory: Callable[[], str],
         app_env: str,
+        password_hasher: PasswordHasher | None = None,
     ) -> None:
         self.repository = repository
         self.preflight_store = preflight_store
@@ -267,6 +362,7 @@ class AuthService:
         self.clock = clock
         self.code_factory = code_factory
         self.token_factory = token_factory
+        self.password_hasher = password_hasher or DEFAULT_PASSWORD_HASHER
         self.cookie_secure = cookie_secure_for_environment(app_env)
         self.users = UserService(repository, email_crypto, keys)
 
@@ -420,6 +516,127 @@ class AuthService:
         await self.preflight_store.consume_challenge(
             self.users.email_lookup_hash(normalized)
         )
+        return await self._create_session(user.id)
+
+    async def register_password(
+        self,
+        email: str,
+        code: str,
+        password: str,
+        consents: list[ConsentInput] | None,
+    ) -> LoginResult:
+        normalized = self.users.normalize_email(email)
+        user = await self._verify_code(normalized, code)
+        validated_consents = self._validated_consents(consents)
+        password_hash = self.password_hasher.hash_password(password)
+        if user is None:
+            if validated_consents is None:
+                raise AuthError(
+                    "CONSENT_REQUIRED",
+                    "Consent is required before registration",
+                    403,
+                )
+            user = await self.users.create_email_user(
+                normalized,
+                self.clock.now(),
+                validated_consents,
+                password_hash,
+            )
+        else:
+            if user.status != "active":
+                raise AuthError("AUTH_ACCOUNT_INACTIVE", "Account is not active", 403)
+            if user.password_hash is not None:
+                raise AuthError(
+                    "AUTH_ACCOUNT_EXISTS",
+                    "An account with this email already has a password",
+                    409,
+                )
+            if not await self._has_required_consents(user.id):
+                if validated_consents is None:
+                    raise AuthError(
+                        "CONSENT_REQUIRED",
+                        "Current consent is required before registration",
+                        403,
+                    )
+                await self._accept_consents(user.id, validated_consents)
+            if not await self.repository.set_password_if_missing(
+                user.id,
+                password_hash,
+            ):
+                raise AuthError(
+                    "AUTH_ACCOUNT_EXISTS",
+                    "An account with this email already has a password",
+                    409,
+                )
+        await self.preflight_store.consume_challenge(
+            self.users.email_lookup_hash(normalized)
+        )
+        return await self._create_session(user.id)
+
+    async def login_password(
+        self,
+        email: str,
+        password: str,
+        ip_address: str,
+        consents: list[ConsentInput] | None = None,
+    ) -> LoginResult:
+        normalized = self.users.normalize_email(email)
+        email_hash = self.users.email_lookup_hash(normalized)
+        ip_hash = self._hash(ip_address, "ip-rate-limit")
+        try:
+            await self.preflight_store.check_password_attempt(
+                email_hash,
+                ip_hash,
+                self.clock.now(),
+            )
+        except AuthPreflightRejected as error:
+            raise AuthError(
+                "AUTH_RATE_LIMITED",
+                "Too many authentication attempts",
+                429,
+                error.retry_after,
+            )
+        except AuthPreflightUnavailable:
+            raise AuthError(
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "Authentication provider is unavailable",
+                503,
+            )
+        user = await self.repository.find_user_by_email_hash(email_hash)
+        encoded = (
+            user.password_hash
+            if user is not None and user.password_hash is not None
+            else DUMMY_PASSWORD_HASH
+        )
+        password_matches = self.password_hasher.verify_password(password, encoded)
+        if (
+            user is None
+            or user.password_hash is None
+            or not password_matches
+            or user.status != "active"
+        ):
+            raise AuthError(
+                "AUTH_CREDENTIALS_INVALID",
+                "Email or password is invalid",
+                401,
+            )
+        if not await self._has_required_consents(user.id):
+            validated_consents = self._validated_consents(consents)
+            if validated_consents is None:
+                raise AuthError(
+                    "CONSENT_REQUIRED",
+                    "Current consent is required before login",
+                    403,
+                )
+            await self._accept_consents(user.id, validated_consents)
+        try:
+            await self.preflight_store.clear_password_attempts(email_hash, ip_hash)
+        except AuthPreflightUnavailable:
+            raise AuthError(
+                "AUTH_PROVIDER_UNAVAILABLE",
+                "Authentication provider is unavailable",
+                503,
+            )
         return await self._create_session(user.id)
 
     async def login_wechat(
@@ -654,6 +871,7 @@ def build_default_auth_service(
     wechat_exchange: WechatExchange | None = None,
     email_crypto: EmailCrypto | None = None,
     keys: KeyProvider | None = None,
+    code_factory: Callable[[], str] | None = None,
 ) -> AuthService:
     return AuthService(
         repository=repository or InMemoryAuthRepository(),
@@ -669,7 +887,8 @@ def build_default_auth_service(
         keys=keys or ProcessKeys(),
         hasher=HmacSecretHasher(),
         clock=SystemClock(),
-        code_factory=lambda: f"{secrets.randbelow(1_000_000):06d}",
+        code_factory=code_factory
+        or (lambda: f"{secrets.randbelow(1_000_000):06d}"),
         token_factory=lambda: secrets.token_urlsafe(32),
         app_env=app_env,
     )

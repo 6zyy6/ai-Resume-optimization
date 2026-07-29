@@ -29,7 +29,7 @@ export function Button({
       {...props}
       aria-busy={state === "loading" || undefined}
       aria-disabled={inaccessible || undefined}
-      aria-label={typeof children === "string" ? children : props["aria-label"]}
+      aria-label={props["aria-label"] ?? (typeof children === "string" ? children : undefined)}
       className={`button button--${variant} is-${state} ${props.className ?? ""}`}
       disabled={inaccessible}
       data-state={state}

@@ -8,8 +8,8 @@
     "concurrency": 10,
     "network": {"ingress": "internal", "egress": "internet"},
     "ports": [{"containerPort": 3101}],
-    "envFromSecrets": ["AI_SERVICE_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "AI_MODEL_ROUTES_JSON"],
-    "env": {"AI_RUNTIME_MODE": "production", "AI_HOST": "0.0.0.0", "AI_PORT": "3101", "APP_COMMIT_SHA": "${COMMIT_SHA}"},
+    "envFromSecrets": ["AI_SERVICE_TOKEN", "AI_REDIS_URL", "DEEPSEEK_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY", "AI_MODEL_ROUTES_JSON"],
+    "env": {"AI_RUNTIME_MODE": "production", "AI_HOST": "0.0.0.0", "AI_PORT": "3101", "AI_TEXT_PROVIDER": "deepseek", "AI_TEXT_MODEL": "deepseek-v4-flash", "AI_TEXT_FALLBACK_MODEL": "deepseek-v4-pro", "AI_PDF_VISION_ENABLED": "false", "AI_VISION_PROVIDER": "qwen-token-plan-cn", "AI_VISION_MODEL": "qwen3.6-plus", "APP_COMMIT_SHA": "${COMMIT_SHA}"},
     "health": {"live": "/internal/v1/health/live", "ready": "/internal/v1/health/ready", "version": "/internal/v1/version"},
     "rollout": {"strategy": "canary", "canaryPercent": 10, "observationMinutes": 30}
   }

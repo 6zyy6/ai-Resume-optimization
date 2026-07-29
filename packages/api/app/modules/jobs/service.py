@@ -8,9 +8,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
-from app.db.models import JdRequirement, JobDescription
+from app.db.models import JdRequirement, JobDescription, Task
 from app.db.ownership import authorized_owner_ids, canonical_user_id
-from app.integrations.ai_client import AiClient
+from app.integrations.ai_client import AiCancellation, AiClient
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.service import TaskAdmission, TaskService
 
@@ -106,6 +106,34 @@ class JobService:
             current = await self._job(session, owner_id, job_id, lock=True)
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
+            existing_task = (
+                await session.scalar(
+                    select(Task).where(
+                        Task.id == current.task_id,
+                        Task.owner_user_id == owner,
+                        Task.type == "parse_job",
+                    )
+                )
+                if current.task_id
+                else None
+            )
+            if current.status == "parsed" or (
+                current.status == "queued"
+                and existing_task is not None
+                and existing_task.status in {"queued", "running"}
+            ):
+                requirements = await self._requirements(session, current)
+                await self.idempotency.complete(
+                    session,
+                    claim,
+                    202,
+                    {
+                        "id": current.id,
+                        "status": current.status,
+                        "task_id": current.task_id,
+                    },
+                )
+                return current, requirements
             current.status = "queued"
             task = await task_service.create_task_in_session(
                 session,
@@ -140,7 +168,12 @@ class JobService:
         *,
         trace_id: str,
         task_id: str,
+        claim_token: str | None = None,
+        task_service: TaskService | None = None,
+        cancellation: AiCancellation | None = None,
     ) -> str:
+        if (claim_token is None) != (task_service is None):
+            raise TypeError("claim_token and task_service must be provided together")
         job = await self.get(owner_id, job_id)
         if job is None:
             raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
@@ -155,15 +188,32 @@ class JobService:
                 task_id=task_id,
                 facts=[],
                 input_data={"raw": job.raw_encrypted},
+                cancellation=cancellation,
             )
             candidate = result.get("result", result).get("requirements")
             if isinstance(candidate, list) and candidate:
                 requirements = self._validate_ai_requirements(candidate)
         async with self.sessions.begin() as session:
+            claimed_task = (
+                await task_service.claimed_task_in_session(
+                    session,
+                    owner_id,
+                    task_id,
+                    claim_token,
+                )
+                if task_service is not None and claim_token is not None
+                else None
+            )
             current = await self._job(session, owner_id, job_id, lock=True)
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
             if current.status == "parsed":
+                if claimed_task is not None:
+                    await task_service.complete_task_in_session(
+                        session,
+                        claimed_task,
+                        current.id,
+                    )
                 return current.id
             await session.execute(
                 delete(JdRequirement).where(
@@ -185,6 +235,12 @@ class JobService:
             ]
             session.add_all(rows)
             current.status = "parsed"
+            if claimed_task is not None:
+                await task_service.complete_task_in_session(
+                    session,
+                    claimed_task,
+                    current.id,
+                )
             await session.flush()
             return current.id
 

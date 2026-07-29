@@ -7,6 +7,8 @@ import {
   createPiRuntime,
 } from "../workflows/run-workflow.js";
 import { buildApp } from "./app.js";
+import { MemoryRunStore } from "./memory-run-store.js";
+import { RedisRunStore } from "./redis-run-store.js";
 
 const fixtureOutputs: Partial<Record<WorkflowType, unknown>> = {
   extract_facts: { facts: [] },
@@ -47,10 +49,18 @@ const runtime =
   mode === "fixture"
     ? createFixtureRuntime(fixtureOutputs)
     : createPiRuntime({ router: modelRouter });
+const runStore =
+  mode === "fixture"
+    ? new MemoryRunStore()
+    : await RedisRunStore.connect({
+        url: process.env.AI_REDIS_URL ?? process.env.REDIS_URL ?? "",
+      });
 const app = buildApp({
   mode,
   runtime,
   modelRouter,
+  runStore,
+  instanceId: process.env.AI_INSTANCE_ID ?? process.env.HOSTNAME,
   serviceToken: process.env.AI_SERVICE_TOKEN,
 });
 const requestedPort = Number(process.env.AI_PORT ?? "3101");

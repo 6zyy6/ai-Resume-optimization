@@ -1,0 +1,8 @@
+{
+  "command": "pnpm test",
+  "started_at": "2026-07-29T17:35:10.015Z",
+  "ended_at": "2026-07-29T17:35:47.404Z",
+  "exit_code": 0,
+  "raw_log": "docs/superpowers/specs/ai-resume-assistant-v2/evidence/current-baseline/commands/root-test.log",
+  "raw_log_sha256": "33a4eb8efade5c52c8c7abce7808db8c9ba1e5ad597971c1b844096e2901f9ed"
+}

@@ -1,0 +1,13 @@
+{
+  "date": "2026-07-30",
+  "framework": "Next.js 16 app router",
+  "font_stack": "Space Grotesk display, Inter body, system mono",
+  "palette": "Shared semantic tokens from packages/design-tokens",
+  "motion": "CSS-only, reduced-motion supported",
+  "spacing": "4px semantic scale in app/web/app/globals.css",
+  "preserved": [
+    "Cobalt theme",
+    "Workbench macrostructure",
+    "Existing split authentication layout"
+  ]
+}

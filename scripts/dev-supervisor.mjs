@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 function exitCode(code, signal) {
@@ -11,7 +13,9 @@ function waitForClose(child) {
 
 export function runDevSupervisor(commands) {
   return new Promise((resolve) => {
-    const children = commands.map(({ command, args }) => spawn(command, args, { stdio: "inherit" }));
+    const children = commands.map(({ command, args, cwd }) =>
+      spawn(command, args, { cwd, stdio: "inherit" }),
+    );
     let finished = false;
 
     const removeSignalHandlers = () => {
@@ -50,10 +54,66 @@ export function runDevSupervisor(commands) {
   });
 }
 
+export function localDevCommands(root = process.cwd()) {
+  const apiRoot = resolve(root, "packages/api");
+  const python = resolve(root, ".venv/bin/python");
+  return [
+    {
+      name: "web",
+      command: "pnpm",
+      args: ["--filter", "@resume/web", "dev"],
+      cwd: root,
+    },
+    {
+      name: "api",
+      command: python,
+      args: [
+        "-m",
+        "uvicorn",
+        "app.local_main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+        "--reload",
+      ],
+      cwd: apiRoot,
+    },
+    {
+      name: "ai",
+      command: process.execPath,
+      args: ["packages/ai/dist/src/server/index.js"],
+      cwd: root,
+    },
+    {
+      name: "dispatcher",
+      command: python,
+      args: ["-m", "app.workers.dispatcher"],
+      cwd: apiRoot,
+    },
+    {
+      name: "worker",
+      command: python,
+      args: [
+        "-m",
+        "celery",
+        "-A",
+        "app.workers.celery_app:celery_app",
+        "worker",
+        "-Q",
+        "ai.interactive,ai.batch,file.parse,file.export,privacy",
+        "--pool=solo",
+        "--loglevel=INFO",
+      ],
+      cwd: apiRoot,
+    },
+  ];
+}
+
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  const code = await runDevSupervisor([
-    { command: "pnpm", args: ["-r", "--parallel", "dev"] },
-    { command: process.execPath, args: ["scripts/run-python.mjs", "dev"] },
-  ]);
+  if (existsSync(".env")) {
+    process.loadEnvFile(".env");
+  }
+  const code = await runDevSupervisor(localDevCommands());
   process.exitCode = code;
 }

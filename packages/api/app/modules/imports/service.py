@@ -12,11 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
 from app.db.models import (
+    BulletFactLink,
     Fact,
     FactSource,
     File,
+    Resume,
     ResumeImport,
+    ResumeVersion,
     SourceRecord,
+    VersionOperation,
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.integrations.storage import StoragePort
@@ -27,6 +31,7 @@ from app.modules.imports.parsers import (
     FileParseError,
     parse_resume_file,
 )
+from app.modules.resumes.service import canonical_snapshot
 from app.modules.tasks.service import TaskAdmission, TaskService
 
 
@@ -95,11 +100,44 @@ class ImportService:
         size: int,
         sha256: str,
         purpose: str,
+        idempotency_key: str,
     ) -> tuple[File, str]:
         self._validate_upload_metadata(display_name, mime, size, sha256)
-        object_key = f"uploads/{new_id('obj')}"
-        async with self.sessions.begin() as session:
+        body = {
+            "display_name": display_name,
+            "mime": mime,
+            "size": size,
+            "sha256": sha256,
+            "purpose": purpose,
+        }
+        async with self.idempotency.transaction(self.sessions) as session:
             owner = await canonical_user_id(session, owner_id)
+            try:
+                claim = await self.idempotency.claim(
+                    session,
+                    owner,
+                    "/v1/files/upload-tokens",
+                    idempotency_key,
+                    body,
+                )
+            except IdempotencyConflict as error:
+                raise ImportServiceError(
+                    "IDEMPOTENCY_KEY_REUSED",
+                    "Idempotency-Key was reused with a different request",
+                    409,
+                ) from error
+            if claim.is_replay:
+                response = claim.replay_response or {}
+                row = await session.scalar(
+                    select(File).where(
+                        File.id == response["id"],
+                        File.owner_user_id == owner,
+                    )
+                )
+                if row is None:
+                    raise RuntimeError("Idempotent upload token is missing")
+                return row, response["upload_url"]
+            object_key = f"uploads/{new_id('obj')}"
             row = File(
                 id=new_id("file"),
                 owner_user_id=owner,
@@ -114,7 +152,18 @@ class ImportService:
             )
             session.add(row)
             await session.flush()
-        return row, self.storage.upload_url(object_key, mime, size, 600)
+            upload_url = self.storage.upload_url(object_key, mime, size, 600)
+            await self.idempotency.complete(
+                session,
+                claim,
+                201,
+                {
+                    "id": row.id,
+                    "status": row.status,
+                    "upload_url": upload_url,
+                },
+            )
+            return row, upload_url
 
     async def confirm_upload(
         self,
@@ -357,11 +406,13 @@ class ImportService:
         self,
         owner_id: str,
         import_id: str,
-        facts: list[dict[str, str]],
+        facts: list[dict[str, Any]],
         idempotency_key: str,
+        *,
+        title: str,
     ) -> tuple[ResumeImport, list[str]]:
         route = f"/v1/imports/{import_id}/confirm"
-        body = {"facts": facts}
+        body = {"facts": facts, "title": title}
         async with self.idempotency.transaction(self.sessions) as session:
             owner = await canonical_user_id(session, owner_id)
             try:
@@ -400,24 +451,40 @@ class ImportService:
                 raise ImportServiceError(
                     "IMPORT_NOT_READY", "Import parsing is not complete", 409
                 )
+            if row.status == "confirmed":
+                raise ImportServiceError(
+                    "IMPORT_ALREADY_FINALIZED",
+                    "Import has already been finalized",
+                    409,
+                )
             if row.status == "needs_paste" and not facts:
                 raise ImportServiceError(
                     "FILE_PARSE_FAILED",
                     "Paste resume facts before confirmation",
                     422,
                 )
-            selected = facts or list(row.draft_facts)
+            selected = self._selected_facts(row, facts)
+            if not selected:
+                raise ImportServiceError(
+                    "IMPORT_FACTS_REQUIRED",
+                    "Select at least one imported fact",
+                    422,
+                )
             fact_ids: list[str] = []
-            for item in selected:
+            fact_rows: list[tuple[Fact, list[str]]] = []
+            for item, source_value in selected:
                 value = item["value"].strip()
-                if not value:
-                    continue
+                source_hash = hashlib.sha256(source_value.encode()).hexdigest()
                 source = SourceRecord(
                     id=new_id("src"),
                     owner_user_id=owner,
-                    source_type="imported_resume",
+                    source_type=(
+                        "imported_resume"
+                        if row.status == "parsed"
+                        else "user_confirmation"
+                    ),
                     source_ref=row.id,
-                    content_encrypted=value,
+                    content_encrypted=source_value,
                 )
                 fact = Fact(
                     id=new_id("fact"),
@@ -433,19 +500,181 @@ class ImportService:
                         fact_id=fact.id,
                         source_record_id=source.id,
                         owner_user_id=owner,
-                        source_hash=hashlib.sha256(value.encode()).hexdigest(),
+                        source_range={"start": 0, "end": len(source_value)},
+                        source_hash=source_hash,
                     )
                 )
                 await session.flush()
                 fact.status = "confirmed"
                 fact.confirmed_at = datetime.now(timezone.utc)
                 fact_ids.append(fact.id)
+                source_hashes = [source_hash]
+                if row.status == "parsed" and value != source_value:
+                    confirmed_hash = hashlib.sha256(value.encode()).hexdigest()
+                    confirmed_source = SourceRecord(
+                        id=new_id("src"),
+                        owner_user_id=owner,
+                        source_type="user_confirmation",
+                        source_ref=row.id,
+                        content_encrypted=value,
+                    )
+                    session.add(confirmed_source)
+                    await session.flush()
+                    session.add(
+                        FactSource(
+                            fact_id=fact.id,
+                            source_record_id=confirmed_source.id,
+                            owner_user_id=owner,
+                            source_range={"start": 0, "end": len(value)},
+                            source_hash=confirmed_hash,
+                        )
+                    )
+                    source_hashes.append(confirmed_hash)
+                fact_rows.append((fact, source_hashes))
+            resume = Resume(
+                id=new_id("resume"),
+                owner_user_id=owner,
+                kind="base",
+                title=title,
+                head_version=0,
+                head_version_id=None,
+            )
+            session.add(resume)
+            await session.flush()
+            items: list[dict[str, Any]] = []
+            link_values: list[tuple[str, Fact, list[str]]] = []
+            for fact, source_hashes in fact_rows:
+                bullet_id = new_id("bullet")
+                items.append(
+                    {
+                        "id": bullet_id,
+                        "text": fact.value_encrypted,
+                        "fact_refs": [fact.id],
+                    }
+                )
+                link_values.append((bullet_id, fact, source_hashes))
+            snapshot, snapshot_hash = canonical_snapshot(
+                {
+                    "schema_version": "1",
+                    "title": title,
+                    "target": None,
+                    "sections": [
+                        {
+                            "id": new_id("section"),
+                            "type": "experience",
+                            "title": "导入经历",
+                            "items": items,
+                        }
+                    ],
+                }
+            )
+            version = ResumeVersion(
+                id=new_id("rver"),
+                owner_user_id=owner,
+                resume_id=resume.id,
+                parent_version_id=None,
+                snapshot_json=snapshot,
+                snapshot_hash=snapshot_hash,
+                created_by=owner,
+            )
+            session.add(version)
+            await session.flush()
+            session.add(
+                VersionOperation(
+                    id=new_id("vop"),
+                    owner_user_id=owner,
+                    version_id=version.id,
+                    operation_type="save",
+                    actor=owner,
+                    metadata_json={"source": "resume_import", "import_id": row.id},
+                )
+            )
+            for bullet_id, fact, source_hashes in link_values:
+                session.add(
+                    BulletFactLink(
+                        resume_version_id=version.id,
+                        bullet_id=bullet_id,
+                        fact_id=fact.id,
+                        fact_owner_user_id=fact.owner_user_id,
+                        owner_user_id=owner,
+                        claim_start=0,
+                        claim_end=len(fact.value_encrypted),
+                        claim_range={
+                            "start": 0,
+                            "end": len(fact.value_encrypted),
+                        },
+                        fact_value_encrypted_at_link=fact.value_encrypted,
+                        fact_status_at_link=fact.status,
+                        fact_source_hashes_at_link=source_hashes,
+                    )
+                )
+            resume.head_version = 1
+            resume.head_version_id = version.id
             row.status = "confirmed"
             row.confirmed_at = datetime.now(timezone.utc)
+            row.resume_id = resume.id
+            row.version_id = version.id
             await session.flush()
-            response = {"id": row.id, "status": row.status, "fact_ids": fact_ids}
+            response = {
+                "id": row.id,
+                "status": row.status,
+                "fact_ids": fact_ids,
+                "resume_id": row.resume_id,
+                "version_id": row.version_id,
+            }
             await self.idempotency.complete(session, claim, 200, response)
             return row, fact_ids
+
+    @staticmethod
+    def _selected_facts(
+        row: ResumeImport,
+        facts: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, str], str]]:
+        if not facts:
+            return [
+                (
+                    {"kind": item["kind"], "value": item["value"]},
+                    item["value"],
+                )
+                for item in row.draft_facts
+                if item.get("value", "").strip()
+            ]
+        selected: list[tuple[dict[str, str], str]] = []
+        indexes: set[int] = set()
+        for item in facts:
+            kind = item["kind"].strip() or "resume_text"
+            value = item["value"].strip()
+            if not value:
+                raise ImportServiceError(
+                    "IMPORT_DRAFT_FACT_INVALID",
+                    "Selected imported facts cannot be empty",
+                    422,
+                )
+            index = item.get("draft_index")
+            if index is None and row.status == "parsed":
+                exact = [
+                    candidate_index
+                    for candidate_index, candidate in enumerate(row.draft_facts)
+                    if candidate["kind"] == kind and candidate["value"] == value
+                ]
+                index = exact[0] if len(exact) == 1 else None
+            if row.status == "parsed":
+                if (
+                    index is None
+                    or index >= len(row.draft_facts)
+                    or index in indexes
+                ):
+                    raise ImportServiceError(
+                        "IMPORT_DRAFT_FACT_INVALID",
+                        "Selected fact does not reference one parsed draft fact",
+                        422,
+                    )
+                indexes.add(index)
+                source_value = row.draft_facts[index]["value"]
+            else:
+                source_value = value
+            selected.append(({"kind": kind, "value": value}, source_value))
+        return selected
 
     async def delete_file(
         self,

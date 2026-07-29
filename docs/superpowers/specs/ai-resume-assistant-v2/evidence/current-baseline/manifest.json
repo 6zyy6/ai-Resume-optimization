@@ -1,0 +1,287 @@
+{
+  "browser": "Chrome 150.0.7871.187",
+  "captures": [
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n今天的工作台\n\n先完成一份能投递的版本。\n从真实经历开始\n新建基础简历\n开始 →\n已有文件\n导入并优化\n选择文件 →\n最近简历\n查看全部\n\n创建或导入第一份简历后，这里会显示你自己的版本。\n\n任务\n\n任务进度和失败原因会在任务页显示。\n\n查看任务\n今日 AI 用量\n\n登录后可查看当天的实际用量。\n\n账户设置\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "先完成一份能投递的版本。",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/home",
+      "screenshot": "390x844/home.png",
+      "screenshot_sha256": "2b7218b4e83bc89391f44231d4d72e3c699fab205b7b37568da026f9b264d082",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n步骤 1 / 6 · 还剩 5 个主要问题\n\n先确定这份简历的方向\n求职方向\n教育信息\n经历雷达\n经历深挖\n确认事实\n生成草稿\n\n后退不会删除已确认的事实。\n\n求职方向 · 目标岗位\n\n你准备申请什么岗位？\n目标岗位\n0 / 1000 字\n保存并继续\n跳过此题\n\n即时预览\n\n求职目标\n\n填写后，这里会显示你的目标岗位。\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "先确定这份简历的方向",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/create",
+      "screenshot": "390x844/create.png",
+      "screenshot_sha256": "a7e6348ba18f08139a8978f453e1415626ecf640e2a27300d549debfe4bd9d06",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n我的简历\n\n基础版本与岗位版本\n新建简历\n✓\n基础简历\n产品运营实习\n\n最近更新：今天\n\n编辑\n历史版本\n岗位优化\ni\n岗位版本\n内容运营 · 某教育产品\n\n基础版本保持不变\n\n编辑\n导出\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "基础版本与岗位版本",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/resumes",
+      "screenshot": "390x844/resumes.png",
+      "screenshot_sha256": "51ac79fbde4fd0b3ce5dfd48b4ce4f7d98bc363befacef7eb22f2d0e4c4752e9",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n经历事实库\n\n面试时能解释的内容\n新增事实\n教育\n项目\n实习\n校园\n竞赛\n兼职\n志愿\n技能与荣誉\n✓\nconfirmed · 有来源\n课程产品设计\n\n设计访谈提纲并整理访谈结论。\n\n查看来源\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "面试时能解释的内容",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/facts",
+      "screenshot": "390x844/facts.png",
+      "screenshot_sha256": "f56a9bf6c43f69ca6e2353ec19ae147626ac69839aa0e4c0907c77aa1cf357e4",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n异步任务\n\n任务中心\n…\n匹配分析 · 排队中\n内容运营岗位匹配\n\n输入已保存，可以离开此页面。\n\n取消任务\n!\n导出失败\nPDF 导出\n\n版本与模板选择已保留，可以重试。\n\n!\n重新导出\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "任务中心",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/tasks",
+      "screenshot": "390x844/tasks.png",
+      "screenshot_sha256": "d38626b2af6c75d09f967032f5a4d5513f3a0efee9975ea82d482d4a4815554d",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n\n账号、隐私与数据\n\n个人设置\n账号绑定\n\n已验证邮箱用于 Web 登录和跨端同步。\n\n✓\n邮箱已验证\n数据副本\n\n请求一份账号、简历和事实记录的数据副本。\n\n申请数据导出\n删除账号与数据\n\n删除请求进入异步任务；执行前会再次确认。\n\n!\n申请删除\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "个人设置",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/settings",
+      "screenshot": "390x844/settings.png",
+      "screenshot_sha256": "29e836072b85b177b609849edd56564287da5faebcb131b961671945192b3f49",
+      "viewport": "390x844"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n今天的工作台\n\n先完成一份能投递的版本。\n从真实经历开始\n新建基础简历\n开始 →\n已有文件\n导入并优化\n选择文件 →\n最近简历\n查看全部\n\n创建或导入第一份简历后，这里会显示你自己的版本。\n\n任务\n\n任务进度和失败原因会在任务页显示。\n\n查看任务\n今日 AI 用量\n\n登录后可查看当天的实际用量。\n\n账户设置\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "先完成一份能投递的版本。",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/home",
+      "screenshot": "1440x900/home.png",
+      "screenshot_sha256": "6013bbc7c31592986697939b9351813ab9965cb022d79914ae615898e67f9320",
+      "viewport": "1440x900"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n步骤 1 / 6 · 还剩 5 个主要问题\n\n先确定这份简历的方向\n求职方向\n教育信息\n经历雷达\n经历深挖\n确认事实\n生成草稿\n\n后退不会删除已确认的事实。\n\n求职方向 · 目标岗位\n\n你准备申请什么岗位？\n目标岗位\n0 / 1000 字\n保存并继续\n跳过此题\n\n即时预览\n\n求职目标\n\n填写后，这里会显示你的目标岗位。\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "先确定这份简历的方向",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/create",
+      "screenshot": "1440x900/create.png",
+      "screenshot_sha256": "f04f15b26f994ac3fd9142efb249395798f65a7b195af9e52acb5a792c72241a",
+      "viewport": "1440x900"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n我的简历\n\n基础版本与岗位版本\n新建简历\n✓\n基础简历\n产品运营实习\n\n最近更新：今天\n\n编辑\n历史版本\n岗位优化\ni\n岗位版本\n内容运营 · 某教育产品\n\n基础版本保持不变\n\n编辑\n导出\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "基础版本与岗位版本",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/resumes",
+      "screenshot": "1440x900/resumes.png",
+      "screenshot_sha256": "a15b8e4db8978cacb6c80315a25aa10fab437b3a3fd3d439df2226c6e88f30cc",
+      "viewport": "1440x900"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n经历事实库\n\n面试时能解释的内容\n新增事实\n教育\n项目\n实习\n校园\n竞赛\n兼职\n志愿\n技能与荣誉\n✓\nconfirmed · 有来源\n课程产品设计\n\n设计访谈提纲并整理访谈结论。\n\n查看来源\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "面试时能解释的内容",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/facts",
+      "screenshot": "1440x900/facts.png",
+      "screenshot_sha256": "e3bb92563250ea87b0720c310e58baab5eeced89c20419d044185f1a289ff176",
+      "viewport": "1440x900"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n异步任务\n\n任务中心\n…\n匹配分析 · 排队中\n内容运营岗位匹配\n\n输入已保存，可以离开此页面。\n\n取消任务\n!\n导出失败\nPDF 导出\n\n版本与模板选择已保留，可以重试。\n\n!\n重新导出\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "任务中心",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/tasks",
+      "screenshot": "1440x900/tasks.png",
+      "screenshot_sha256": "0a2c902e3f2337fabbc9c3de144cc0d08508453dd55453c32b2a9cb30dd0d725",
+      "viewport": "1440x900"
+    },
+    {
+      "api_requests": [],
+      "cookies": [],
+      "http_status": 200,
+      "metrics": {
+        "body_text_prefix": "简历证据台\n首页\n我的简历\n经历事实\n任务中心\n设置\n⌘ K\n快速前往\n\n账号、隐私与数据\n\n个人设置\n账号绑定\n\n已验证邮箱用于 Web 登录和跨端同步。\n\n✓\n邮箱已验证\n数据副本\n\n请求一份账号、简历和事实记录的数据副本。\n\n申请数据导出\n删除账号与数据\n\n删除请求进入异步任务；执行前会再次确认。\n\n!\n申请删除\n\n每一句经历，都应该经得起面试追问。\n\n隐私与数据",
+        "h1": "个人设置",
+        "horizontal_overflow": false,
+        "runtime_error_overlay": false,
+        "wrapped_clickable_count": 0
+      },
+      "path": "/settings",
+      "screenshot": "1440x900/settings.png",
+      "screenshot_sha256": "e06beaa5331723b4cd187ece048f0bde0eb9758a40a97d8e2b7454fc6b4c81a9",
+      "viewport": "1440x900"
+    }
+  ],
+  "commit_sha": "ab89b8b5ac19e7fc657eb5cf7f1a831dccb38762",
+  "created_at": "2026-07-29T17:29:43.158Z",
+  "evidence_status": "BASELINE_DIRTY_WORKTREE",
+  "source_hashes": {
+    "app/web/app/home/page.tsx": "30fe8820b58335ae42968264b55c62b64a5e23cfbc5e27e600b65e59e8d65bc5",
+    "app/web/app/create/page.tsx": "caf4a60f0515f92d5aecf33694a62c0c4eeb7e6be9c7a5b6cf559e114a36cfed",
+    "app/web/app/resumes/page.tsx": "d9b1ff0b54b75ae040bae97123d84376913c47594866ddf0d35f061c4d9bef7c",
+    "app/web/app/facts/page.tsx": "13c888ff13ac1a25db4965e1c389195d5c3bb48040f2dc4e55b8ea1513c983d8",
+    "app/web/app/tasks/page.tsx": "7f097b6697bc5efda312b67bf96f2b396038dc78bc49dc75f0c943ef7088e08f",
+    "app/web/app/settings/page.tsx": "0de9cd105843afa6f772935851a94a4b4c3695358185c3ea1e7792819615eaae"
+  },
+  "web_base_url": "http://127.0.0.1:3000",
+  "working_tree_changes": [
+    "M .env.example",
+    " M .gitignore",
+    " M .hallmark/log.json",
+    " M AGENTS.md",
+    " M app/web/app/create/page.tsx",
+    " M app/web/app/globals.css",
+    " M app/web/app/login/page.tsx",
+    " M app/web/components/ui/Field.tsx",
+    " M app/web/next.config.ts",
+    " M docs/acceptance/open-issues.md",
+    " M docs/runbooks/local-development.md",
+    " M infra/deployment/cloudbase/ai.yaml",
+    " M infra/docker/docker-compose.yml",
+    " M package.json",
+    " M packages/ai/package.json",
+    " M packages/ai/src/model-router.ts",
+    " M packages/ai/src/server/app.ts",
+    " M packages/ai/src/server/index.ts",
+    " M packages/ai/src/workflows/pi-runtime.ts",
+    " M packages/ai/tests/server.test.ts",
+    " M packages/api/app/core/config.py",
+    " M packages/api/app/core/middleware.py",
+    " M packages/api/app/db/models.py",
+    " M packages/api/app/db/task3_repositories.py",
+    " M packages/api/app/integrations/ai_client.py",
+    " M packages/api/app/main.py",
+    " M packages/api/app/modules/auth/preflight.py",
+    " M packages/api/app/modules/auth/router.py",
+    " M packages/api/app/modules/auth/schemas.py",
+    " M packages/api/app/modules/auth/service.py",
+    " M packages/api/app/modules/jobs/service.py",
+    " M packages/api/app/modules/matching/service.py",
+    " M packages/api/app/modules/tasks/service.py",
+    " M packages/api/app/modules/users/service.py",
+    " M packages/api/app/workers/execution.py",
+    " M packages/api/app/workers/pipeline.py",
+    " M packages/api/tests/test_acceptance_release_review.py",
+    " M packages/api/tests/test_auth.py",
+    " M packages/api/tests/test_auth_preflight.py",
+    " M packages/api/tests/test_matching.py",
+    " M packages/api/tests/test_schema_constraints.py",
+    " M packages/api/tests/test_task3_sql_integration.py",
+    " M packages/api/tests/test_task7_review_fixes.py",
+    " M packages/api/tests/test_task_fix_dispatch_and_worker.py",
+    " M packages/api/tests/test_task_state.py",
+    " M packages/shared/generated/openapi.json",
+    " M packages/shared/generated/schema.ts",
+    " M pnpm-lock.yaml",
+    " M scripts/dev-supervisor.mjs",
+    " M scripts/python_task.py",
+    " M scripts/run-python.mjs",
+    " M scripts/tests/dev-supervisor.test.mjs",
+    "?? .hallmark/preflight.json",
+    "?? \"PRD-AI-\\345\\244\\247\\345\\255\\246\\347\\224\\237\\347\\256\\200\\345\\216\\206\\345\\212\\251\\346\\211\\213.md\"",
+    "?? app/web/app/register/",
+    "?? app/web/tests/auth-pages.test.tsx",
+    "?? app/web/tests/create-page.test.tsx",
+    "?? docs/superpowers/plans/2026-07-29-release-blockers-resolution.md",
+    "?? docs/superpowers/specs/ai-resume-assistant-v2/",
+    "?? packages/ai/DEPENDENCIES.md",
+    "?? packages/ai/src/server/memory-run-store.ts",
+    "?? packages/ai/src/server/redis-run-store.ts",
+    "?? packages/ai/src/server/run-store.ts",
+    "?? packages/ai/tests/model-router.test.ts",
+    "?? packages/ai/tests/redis-run-store.integration.test.ts",
+    "?? packages/ai/tests/run-store.test.ts",
+    "?? packages/api/app/local.py",
+    "?? packages/api/app/local_main.py",
+    "?? packages/api/migrations/versions/0007_task_ai_run_cancellation.py",
+    "?? packages/api/migrations/versions/0008_split_immutable_state_triggers.py",
+    "?? packages/api/migrations/versions/0009_email_password_credentials.py",
+    "?? packages/api/tests/test_ai_cancellation.py",
+    "?? packages/api/tests/test_local_app.py",
+    "?? packages/api/tests/test_migration_0008.py",
+    "?? scripts/acceptance/capture-v2-web-baseline.mjs",
+    "?? \"\\347\\253\\236\\345\\223\\201\\350\\260\\203\\347\\240\\224-AI\\345\\244\\247\\345\\255\\246\\347\\224\\237\\347\\256\\200\\345\\216\\206\\345\\212\\251\\346\\211\\213.md\""
+  ]
+}

@@ -1,0 +1,148 @@
+$ pnpm -r build && node scripts/run-python.mjs build
+Scope: 6 of 7 workspace projects
+packages/ai build$ tsc --project tsconfig.json
+packages/design-tokens build$ tsc --project tsconfig.json
+packages/shared build$ tsc --project tsconfig.json
+packages/test-fixtures build$ tsc --project tsconfig.json
+packages/test-fixtures build: Done
+packages/design-tokens build: Done
+packages/shared build: Done
+packages/ai build: Done
+app/miniprogram build$ pnpm --filter @resume/shared build && taro build --type weapp
+app/web build$ next build
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/miniprogram build: $ tsc --project tsconfig.json
+app/web build:    ▲ Next.js 16.0.10 (Turbopack)
+app/web build:    Creating an optimized production build ...
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/miniprogram build: 👽 Taro v4.2.1
+app/web build:  ✓ Compiled successfully in 2.0s
+app/web build:    Running TypeScript ...
+app/miniprogram build: ● Webpack █████████████████████████  (0%)  
+app/miniprogram build:  
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (10%) 0/28 entries 28/28 dependen
+app/miniprogram build: cies 0/28 modules 1 active 
+app/miniprogram build:  babel-loader › src/app.config.ts
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (11%) 1/28 entries 28/28 dependen
+app/miniprogram build: cies 1/28 modules 27 active 
+app/miniprogram build:  ...a7ce27610e8f5c0d7a64/node_modules/@tarojs/webpack5-runner/dist/template/co
+app/miniprogram build: mp.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 107/180 depen
+app/miniprogram build: dencies 14/48 modules 33 active 
+app/miniprogram build:  ..._modules/.pnpm/@tarojs+runtime@4.2.1/node_modules/@tarojs/runtime/dist/ind
+app/miniprogram build: ex.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 188/246 depen
+app/miniprogram build: dencies 14/61 modules 39 active 
+app/miniprogram build:  ...m/@tarojs+react@4.2.1_react@19.2.3/node_modules/@tarojs/react/dist/react.e
+app/miniprogram build: sm.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 201/271 depen
+app/miniprogram build: dencies 17/64 modules 45 active 
+app/miniprogram build:  ...ss
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 205/273 depen
+app/miniprogram build: dencies 18/68 modules 46 active 
+app/miniprogram build:  ..../../node_modules/.pnpm/react@19.2.3/node_modules/react/cjs/react.producti
+app/miniprogram build: on.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 239/338 depen
+app/miniprogram build: dencies 24/82 modules 53 active 
+app/miniprogram build:  ...odules/.pnpm/@tarojs+runtime@4.2.1/node_modules/@tarojs/runtime/dist/dom/s
+app/miniprogram build: vg.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 257/349 depen
+app/miniprogram build: dencies 24/93 modules 56 active 
+app/miniprogram build:  ...npm/@tarojs+runtime@4.2.1/node_modules/@tarojs/runtime/dist/dom/event-sour
+app/miniprogram build: ce.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 292/452 depen
+app/miniprogram build: dencies 27/101 modules 71 active 
+app/miniprogram build:  ...s/.pnpm/@tarojs+runtime@4.2.1/node_modules/@tarojs/runtime/dist/utils/rout
+app/miniprogram build: er.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 443/490 depen
+app/miniprogram build: dencies 45/124 modules 79 active 
+app/miniprogram build:  ...pm/@tarojs+runtime@4.2.1/node_modules/@tarojs/runtime/dist/dom-external/no
+app/miniprogram build: de.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 504/546 depen
+app/miniprogram build: dencies 62/143 modules 81 active 
+app/miniprogram build:  .../@babel+runtime@7.29.7/node_modules/@babel/runtime/helpers/esm/toPropertyK
+app/miniprogram build: ey.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 543/572 depen
+app/miniprogram build: dencies 74/159 modules 84 active 
+app/miniprogram build:  ...de_modules/.pnpm/@tarojs+shared@4.2.1/node_modules/@tarojs/shared/dist/uti
+app/miniprogram build: ls.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (35%) 13/28 entries 587/601 depen
+app/miniprogram build: dencies 97/176 modules 77 active 
+app/miniprogram build:  ...@tarojs+runtime@4.2.1_@tarojs+shared@4.2.1/node_modules/@tarojs/api/dist/e
+app/miniprogram build: nv.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ building (63%) 27/28 entries 616/616 depen
+app/miniprogram build: dencies 178/184 modules 5 active 
+app/miniprogram build:  ....15__esbuild@0.28.1_postcss@8.5.23_/node_modules/css-loader/dist/runtime/a
+app/miniprogram build: pi.js
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ sealing (87%)  
+app/miniprogram build:  code generation
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ sealing (92%) asset processing 
+app/miniprogram build:  CssMinimizerPlugin
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ sealing (92%) asset processing 
+app/miniprogram build:  RealContentHashPlugin
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ● Webpack █████████████████████████ sealing (92%) asset processing 
+app/miniprogram build:  TaroMiniPlugin
+app/miniprogram build: [2K[1A[2K[1A[2K[1A[2K[1A[2K[G
+app/miniprogram build: ✔ Webpack
+app/miniprogram build:   Compiled successfully in 2.56s
+app/miniprogram build: <w> [webpack.cache.PackFileCacheStrategy] Caching failed for pack: Error: Can't resolve '@tarojs/taro-loader/lib/page' in '/Users/zhangyiying/ai-Resume-optimization/app/miniprogram'
+app/miniprogram build: <w> while resolving '@tarojs/taro-loader/lib/page' in /Users/zhangyiying/ai-Resume-optimization/app/miniprogram as file
+app/miniprogram build: <w>  at resolve commonjs @tarojs/taro-loader/lib/page
+app/miniprogram build: Done
+app/web build:    Collecting page data using 9 workers ...
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build:    Generating static pages using 9 workers (0/13) ...
+app/web build: [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+app/web build:    Generating static pages using 9 workers (3/13) 
+app/web build:    Generating static pages using 9 workers (6/13) 
+app/web build:    Generating static pages using 9 workers (9/13) 
+app/web build:  ✓ Generating static pages using 9 workers (13/13) in 218.2ms
+app/web build:    Finalizing page optimization ...
+app/web build: Route (app)
+app/web build: ┌ ○ /
+app/web build: ├ ○ /_not-found
+app/web build: ├ ○ /create
+app/web build: ├ ƒ /exports/[id]
+app/web build: ├ ○ /facts
+app/web build: ├ ○ /home
+app/web build: ├ ƒ /imports/[id]/confirm
+app/web build: ├ ƒ /jobs/[id]/match
+app/web build: ├ ○ /jobs/new
+app/web build: ├ ○ /login
+app/web build: ├ ○ /register
+app/web build: ├ ○ /resumes
+app/web build: ├ ƒ /resumes/[id]/edit
+app/web build: ├ ƒ /resumes/[id]/versions
+app/web build: ├ ○ /settings
+app/web build: ├ ƒ /suggestions/[analysisId]
+app/web build: ├ ○ /tasks
+app/web build: └ ƒ /version
+app/web build: ○  (Static)   prerendered as static content
+app/web build: ƒ  (Dynamic)  server-rendered on demand
+app/web build: Done

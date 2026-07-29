@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     JSON,
     Numeric,
@@ -42,6 +43,7 @@ class User(Base):
     locale: Mapped[str] = mapped_column(String(16), nullable=False, default="zh-CN")
     email_encrypted: Mapped[str | None] = mapped_column(Text)
     email_lookup_hash: Mapped[str | None] = mapped_column(String(128), unique=True)
+    password_hash: Mapped[str | None] = mapped_column(Text, deferred=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -198,6 +200,95 @@ class FactRevision(OwnerMixin, Base):
     new_value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class IntakeSession(OwnerMixin, Base):
+    __tablename__ = "intake_sessions"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uq_intake_session_owner"),
+        UniqueConstraint("active_owner_key", name="uq_intake_session_active_owner"),
+        ForeignKeyConstraint(
+            ["task_id", "owner_user_id"],
+            ["tasks.id", "tasks.owner_user_id"],
+            name="fk_intake_session_task_owner",
+        ),
+        ForeignKeyConstraint(
+            ["resume_id", "owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_intake_session_resume_owner",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'drafting', 'completed', 'abandoned')",
+            name="ck_intake_session_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    active_owner_key: Mapped[str | None] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_question: Mapped[dict | None] = mapped_column(JSON)
+    answered_question_ids: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    skipped_question_ids: Mapped[list[str]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    fact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    draft_title: Mapped[str | None] = mapped_column(String(255))
+    task_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    resume_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
+class IntakeAnswer(OwnerMixin, Base):
+    __tablename__ = "intake_answers"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["session_id", "owner_user_id"],
+            ["intake_sessions.id", "intake_sessions.owner_user_id"],
+            name="fk_intake_answer_session_owner",
+        ),
+        ForeignKeyConstraint(
+            ["fact_id", "owner_user_id"],
+            ["facts.id", "facts.owner_user_id"],
+            name="fk_intake_answer_fact_owner",
+        ),
+        UniqueConstraint(
+            "session_id",
+            "question_id",
+            name="uq_intake_answer_question",
+        ),
+        CheckConstraint(
+            "state IN ('answered', 'negative', 'skipped')",
+            name="ck_intake_answer_state",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    answer_encrypted: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    fact_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
 
 
 class Resume(OwnerMixin, Base):
@@ -574,6 +665,16 @@ class ResumeImport(OwnerMixin, Base):
             ["files.id", "files.owner_user_id"],
             name="fk_resume_import_file_owner",
         ),
+        ForeignKeyConstraint(
+            ["resume_id", "owner_user_id"],
+            ["resumes.id", "resumes.owner_user_id"],
+            name="fk_resume_import_resume_owner",
+        ),
+        ForeignKeyConstraint(
+            ["version_id", "owner_user_id"],
+            ["resume_versions.id", "resume_versions.owner_user_id"],
+            name="fk_resume_import_version_owner",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -583,6 +684,8 @@ class ResumeImport(OwnerMixin, Base):
     draft_facts: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     fallback_reason: Mapped[str | None] = mapped_column(String(64))
     task_id: Mapped[str | None] = mapped_column(String(64))
+    resume_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    version_id: Mapped[str | None] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -591,6 +694,13 @@ class Task(OwnerMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_task_owner"),
+        Index(
+            "ix_tasks_active_usage",
+            "owner_user_id",
+            "usage_type",
+            "status",
+        ),
+        Index("ix_tasks_active_ai_run_id", "active_ai_run_id"),
         CheckConstraint("progress BETWEEN 0 AND 100", name="ck_task_progress"),
         CheckConstraint(
             "status NOT IN ('succeeded', 'failed', 'cancelled') OR finished_at IS NOT NULL",
@@ -618,6 +728,13 @@ class Task(OwnerMixin, Base):
     usage_type: Mapped[str | None] = mapped_column(String(64))
     claim_token: Mapped[str | None] = mapped_column(String(128))
     claim_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_ai_run_id: Mapped[str | None] = mapped_column(String(128))
+    ai_cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    ai_cancel_acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
 
 class TaskEvent(OwnerMixin, Base):
@@ -649,6 +766,7 @@ class Outbox(OwnerMixin, Base):
             name="fk_outbox_task_owner",
         ),
         UniqueConstraint("task_id", name="uq_outbox_task"),
+        Index("ix_outbox_dispatch_ready", "dispatched_at", "available_at"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

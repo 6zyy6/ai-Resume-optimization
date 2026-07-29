@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -9,12 +10,16 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.db.models import (
+    File,
     IdempotencyRecord,
+    JobDescription,
+    Outbox,
     Resume,
     ResumeSection,
     ResumeVersion,
     Session,
     Task,
+    TaskEvent,
     UsageLedger,
     User,
     UserIdentity,
@@ -30,6 +35,7 @@ from app.db.task3_repositories import (
     SqlUsageRepository,
 )
 from app.main import ApplicationDependencies, create_app
+from app.integrations.storage import MemoryStorage
 from app.modules.auth.preflight import InMemoryAuthPreflightStore
 from app.modules.auth.schemas import ConsentInput
 from app.modules.auth.service import (
@@ -43,12 +49,15 @@ from app.modules.privacy.service import (
     PrivacyService,
     PrivacyTask,
 )
+from app.modules.tasks.service import TaskService
 from app.modules.usage.service import (
     InMemoryUsageRepository,
     UsageAdmissionError,
     UsageService,
 )
 from app.modules.users.service import IdentityRecord, UserAccount
+from app.workers.execution import TaskExecutor, resolve_operation
+from app.workers.pipeline import configure_pipeline_operations
 
 
 class StaticKeys:
@@ -128,6 +137,7 @@ async def test_sql_auth_adapter_persists_identity_and_recent_auth_session(
             email_encrypted=None,
             email_lookup_hash=None,
             created_at=now,
+            password_hash="scrypt$v1$stored",
         )
     )
     await repository.save_identity(
@@ -158,6 +168,7 @@ async def test_sql_auth_adapter_persists_identity_and_recent_auth_session(
 
     assert user is not None
     assert user.id == "usr_1"
+    assert user.password_hash == "scrypt$v1$stored"
     assert session is not None
     assert session.authenticated_at == now
 
@@ -580,6 +591,99 @@ async def test_sql_privacy_adapter_persists_task_and_idempotency_mapping(
     )
 
     assert replay == task
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(TaskEvent)) == 1
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 1
+        outbox = await session.scalar(select(Outbox))
+        assert outbox.queue == "privacy"
+        assert outbox.payload == {"task_id": task.id}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("request_type", "expected_user_status"),
+    [
+        ("data_export", "active"),
+        ("account_deletion", "deleted"),
+    ],
+)
+async def test_sql_privacy_tasks_reach_a_worker_terminal_state(
+    sql_session_factory,
+    request_type,
+    expected_user_status,
+):
+    now, _, authenticated, service = await sql_privacy_harness(
+        sql_session_factory
+    )
+    task = (
+        await service.request_data_export(authenticated, "worker-key", "tr_worker")
+        if request_type == "data_export"
+        else await service.request_deletion(authenticated, "worker-key", "tr_worker")
+    )
+    storage = MemoryStorage()
+    async with sql_session_factory.begin() as session:
+        session.add(
+            JobDescription(
+                id=f"job_{request_type}",
+                owner_user_id="usr_1",
+                title="隐私副本岗位",
+                raw_encrypted="仅属于当前用户的岗位正文",
+                status="draft",
+            )
+        )
+        if request_type == "account_deletion":
+            stored = storage.put(
+                "uploads/private.txt",
+                b"private source",
+                "text/plain",
+            )
+            session.add(
+                File(
+                    id="file_private",
+                    owner_user_id="usr_1",
+                    purpose="resume_import",
+                    display_name="private.txt",
+                    object_key="uploads/private.txt",
+                    sha256=stored.sha256,
+                    size=len(stored.content),
+                    mime=stored.mime,
+                    status="confirmed",
+                    expires_at=now + timedelta(days=1),
+                )
+            )
+    task_service = TaskService(sql_session_factory)
+    configure_pipeline_operations(
+        sql_session_factory,
+        Settings(app_env="test", database_url="sqlite+aiosqlite://"),
+        task_service,
+        storage_override=storage,
+    )
+
+    result = await TaskExecutor(
+        task_service,
+        sleep=lambda _: None,
+        jitter=lambda: 0,
+    ).execute("usr_1", task.id, resolve_operation)
+
+    assert result["status"] == "succeeded"
+    async with sql_session_factory() as session:
+        assert (await session.get(User, "usr_1")).status == expected_user_status
+        if request_type == "data_export":
+            file_row = await session.get(File, result["result_ref"])
+            assert file_row is not None
+            exported = storage.get(file_row.object_key)
+            assert exported is not None
+            payload = json.loads(exported.content)
+            assert payload["jobs"][0]["raw"] == "仅属于当前用户的岗位正文"
+            assert payload["account"]["user_id"] == "usr_1"
+        else:
+            assert await session.get(Session, "ses_1") is None
+            assert await session.get(JobDescription, "job_account_deletion") is None
+            assert await session.get(File, "file_private") is None
+            assert storage.get("uploads/private.txt") is None
+            user = await session.get(User, "usr_1")
+            assert user.email_encrypted is None
+            assert user.email_lookup_hash is None
 
 
 async def sql_privacy_harness(sql_session_factory):
@@ -673,6 +777,8 @@ async def test_sql_deletion_state_survives_restart_and_replays_after_revocation(
     ("table_name", "operation"),
     [
         ("tasks", "INSERT"),
+        ("task_events", "INSERT"),
+        ("outbox", "INSERT"),
         ("idempotency_records", "INSERT"),
         ("users", "UPDATE"),
         ("sessions", "UPDATE"),
@@ -715,6 +821,8 @@ async def test_sql_deletion_acceptance_rolls_back_every_step_before_retry(
             )
             == 0
         )
+        assert await session.scalar(select(func.count()).select_from(TaskEvent)) == 0
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
         assert (await session.get(User, "usr_1")).status == "active"
         assert (await session.get(Session, "ses_1")).revoked_at is None
 
@@ -740,5 +848,7 @@ async def test_sql_deletion_acceptance_rolls_back_every_step_before_retry(
             )
             == 1
         )
+        assert await session.scalar(select(func.count()).select_from(TaskEvent)) == 1
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 1
         assert (await session.get(User, "usr_1")).status == "pending_deletion"
         assert (await session.get(Session, "ses_1")).revoked_at is not None
