@@ -31,6 +31,12 @@ export class ApiError extends Error {
 
 type Body = Record<string, unknown> | readonly unknown[] | unknown;
 
+function randomRequestId(): string {
+  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
+  if (randomUUID) return randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
   if (!value || typeof value !== "object") return false;
   const error = value as Partial<ApiErrorBody>;
@@ -52,10 +58,11 @@ export function createApiClient({ baseUrl, request }: ApiClientOptions) {
     body?: Body,
     idempotencyKey?: string,
   ): Promise<TResponse> {
-    const headers = new Headers();
-    headers.set("X-Trace-Id", `tr_${crypto.randomUUID()}`);
-    if (body !== undefined) headers.set("Content-Type", "application/json");
-    if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
+    const headers: Record<string, string> = {
+      "X-Trace-Id": `tr_${randomRequestId()}`,
+    };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
 
     const response = await request(`${root}${path}`, {
       body: body === undefined ? undefined : JSON.stringify(body),

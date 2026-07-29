@@ -2,7 +2,13 @@ packages:
   - "packages/*"
   - "app/*"
 allowBuilds:
+  '@parcel/watcher': true
+  '@swc/core': true
+  '@tarojs/binding': true
+  '@tarojs/cli': true
   '@google/genai': true
   esbuild: true
   protobufjs: true
   sharp: true
+  core-js: true
+  core-js-pure: true

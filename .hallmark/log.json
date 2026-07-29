@@ -1,0 +1,16 @@
+[
+  {
+    "date": "2026-07-29",
+    "macrostructure": "Narrative Workflow",
+    "theme": "Cobalt",
+    "enrichment": "none",
+    "brief": "AI resume assistant WeChat mini program workflow"
+  },
+  {
+    "date": "2026-07-28",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "enrichment": "none",
+    "brief": "AI resume assistant Web application"
+  }
+]
