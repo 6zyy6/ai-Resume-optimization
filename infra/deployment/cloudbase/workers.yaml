@@ -1,0 +1,17 @@
+{
+  "apiVersion": "cloudbase.tencent.com/v1",
+  "kind": "WorkerGroupList",
+  "metadata": {"name": "resume-workers"},
+  "spec": {
+    "network": {"ingress": "none", "egress": "vpc"},
+    "image": "${REGISTRY}/resume-api:${COMMIT_SHA}",
+    "envFromSecrets": ["DATABASE_URL", "CELERY_BROKER_URL", "AI_SERVICE_TOKEN", "STORAGE_SIGNING_SECRET", "COS_SECRET_ID", "COS_SECRET_KEY"],
+    "gracefulShutdownSeconds": 45,
+    "groups": [
+      {"name": "ai-worker", "queues": ["ai.interactive", "ai.batch"], "concurrency": 10, "replicas": {"min": 1, "max": 10}},
+      {"name": "file-worker", "queues": ["file.parse", "file.export"], "concurrency": 5, "replicas": {"min": 1, "max": 5}},
+      {"name": "privacy-worker", "queues": ["privacy"], "concurrency": 2, "replicas": {"min": 1, "max": 2}}
+    ],
+    "health": {"live": "celery inspect ping", "ready": "queue lease probe", "version": "${COMMIT_SHA}"}
+  }
+}

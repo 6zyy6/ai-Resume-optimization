@@ -1,0 +1,14 @@
+{
+  "apiVersion": "cloudbase.tencent.com/v1",
+  "kind": "CloudRunService",
+  "metadata": {"name": "resume-web"},
+  "spec": {
+    "image": "${REGISTRY}/resume-web:${COMMIT_SHA}",
+    "replicas": {"min": 1, "max": 4},
+    "network": {"ingress": "public", "egress": "internet"},
+    "ports": [{"containerPort": 3000}],
+    "env": {"NEXT_PUBLIC_API_BASE_URL": "${PUBLIC_API_BASE_URL}", "APP_COMMIT_SHA": "${COMMIT_SHA}"},
+    "health": {"live": "/", "ready": "/", "version": "/version"},
+    "rollout": {"strategy": "canary", "canaryPercent": 10, "observationMinutes": 30}
+  }
+}

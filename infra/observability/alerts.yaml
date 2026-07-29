@@ -1,0 +1,27 @@
+groups:
+  - name: ai-resume-slo
+    rules:
+      - alert: ApiErrorBudgetBurn
+        expr: sum(rate(http_server_requests_total{status_code=~"5.."}[5m])) / sum(rate(http_server_requests_total[5m])) > 0.01
+        for: 10m
+        labels: {severity: critical}
+      - alert: QueueLeaseBacklog
+        expr: max(task_queue_oldest_age_seconds) > 120
+        for: 10m
+        labels: {severity: warning}
+      - alert: GlobalAiCostWarn
+        expr: ai_daily_cost_cny / ai_daily_cost_limit_cny >= 0.70
+        for: 5m
+        labels: {severity: warning}
+      - alert: GlobalAiCostDegrade
+        expr: ai_daily_cost_cny / ai_daily_cost_limit_cny >= 0.90
+        for: 2m
+        labels: {severity: critical}
+      - alert: GlobalAiCostStop
+        expr: ai_daily_cost_cny / ai_daily_cost_limit_cny >= 1
+        for: 1m
+        labels: {severity: critical}
+      - alert: PiWorkflowFailureRate
+        expr: sum(rate(pi_workflow_runs_total{status="failed"}[10m])) / sum(rate(pi_workflow_runs_total[10m])) > 0.05
+        for: 10m
+        labels: {severity: warning}

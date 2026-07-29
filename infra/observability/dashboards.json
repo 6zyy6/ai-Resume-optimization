@@ -1,0 +1,14 @@
+{
+  "title": "AI Resume Production",
+  "panels": [
+    {"title": "API RPS / p50 / p95 / p99", "metrics": ["http_server_requests_total", "http_server_duration_seconds"]},
+    {"title": "Task queue depth and oldest age", "metrics": ["task_queue_depth", "task_queue_oldest_age_seconds"]},
+    {"title": "Task terminal outcomes and retries", "metrics": ["task_terminal_total", "task_retry_total", "task_lease_expired_total"]},
+    {"title": "Pi workflow latency and failure", "metrics": ["pi_workflow_duration_seconds", "pi_workflow_runs_total"]},
+    {"title": "AI cost guard", "metrics": ["ai_daily_cost_cny", "ai_daily_cost_limit_cny", "ai_admission_state"]},
+    {"title": "Database and Redis saturation", "metrics": ["db_pool_checked_out", "redis_connected_clients"]},
+    {"title": "File cleanup and storage inventory", "metrics": ["storage_objects_total", "storage_expired_objects_total"]}
+  ],
+  "variables": ["environment", "service", "queue", "workflow", "commit_sha"],
+  "traceCorrelation": {"key": "trace_id", "piKeys": ["run_id", "task_id", "workflow_version", "model_route_version"]}
+}

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -175,6 +176,13 @@ def create_app(
     application.add_exception_handler(StarletteHTTPException, framework_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)
     application.get("/v1/health/live")(live)
+
+    @application.get("/v1/version")
+    async def version() -> dict[str, str]:
+        return {
+            "commit_sha": os.getenv("APP_COMMIT_SHA", "development"),
+            "service": "api",
+        }
 
     @application.get("/v1/health/ready")
     async def ready(request: Request) -> dict[str, str]:

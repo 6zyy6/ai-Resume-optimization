@@ -118,6 +118,23 @@ describe("Pi internal API", () => {
     ).toBe(401);
   });
 
+  it("reports an immutable deployment version without authentication", async () => {
+    vi.stubEnv("APP_COMMIT_SHA", "commit-test");
+    const app = buildApp({
+      mode: "fixture",
+      runtime: runtime(),
+      serviceToken: "secret",
+      modelRouter: createModelRouter({ routes: {} }),
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/internal/v1/version",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ commit_sha: "commit-test", service: "ai" });
+  });
+
   it("creates, retrieves and settles an internal run", async () => {
     const app = buildApp({
       mode: "fixture",

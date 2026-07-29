@@ -117,6 +117,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     status: "live",
   }));
 
+  app.get("/internal/v1/version", async () => ({
+    commit_sha: process.env.APP_COMMIT_SHA ?? "development",
+    service: "ai",
+  }));
+
   app.get("/internal/v1/health/ready", async (_request, reply) => {
     const ready =
       options.mode === "fixture" ||
