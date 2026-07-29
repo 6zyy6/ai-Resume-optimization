@@ -10,7 +10,11 @@
       "types": "./src/client.ts",
       "default": "./dist/src/client.js"
     },
-    "./schema": "./generated/schema.ts"
+    "./schema": "./generated/schema.ts",
+    "./workflows": {
+      "types": "./src/workflows.ts",
+      "default": "./dist/src/workflows.js"
+    }
   },
   "scripts": {
     "build": "tsc --project tsconfig.json",

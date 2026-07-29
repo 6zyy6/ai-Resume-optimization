@@ -1,11 +1,40 @@
 "use client";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { components } from "@resume/shared/schema";
+import { waitForTask } from "@resume/shared/workflows";
 import { Page } from "../../../../components/Page";
 import { Button } from "../../../../components/ui/Button";
 import { createWebApiClient } from "../../../../features/api/client";
-const groups = [["已有证据","proved","3"],["表达不足","underexpressed","2"],["需要确认","needs_confirmation","1"],["真实缺口","real_gap","1"]];
 export default function MatchPage() {
   const router = useRouter();
+  const [groups, setGroups] = useState<string[][]>([]);
+  const [ready, setReady] = useState(false);
+  const [message, setMessage] = useState("正在读取匹配任务状态。");
+  useEffect(() => {
+    const analysisId = new URLSearchParams(window.location.search).get("analysis");
+    if (!analysisId) return;
+    const load = async () => {
+      try {
+        const api = createWebApiClient();
+        let analysis = await api.get<components["schemas"]["MatchResponse"]>(`/v1/match-analyses/${analysisId}`);
+        if (analysis.status !== "succeeded") {
+          if (!analysis.task_id) throw new Error("匹配任务未创建");
+          await waitForTask(() => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${analysis.task_id}`), analysis.task_id);
+          analysis = await api.get<components["schemas"]["MatchResponse"]>(`/v1/match-analyses/${analysisId}`);
+        }
+        const counts = new Map<string, number>();
+        for (const item of analysis.items) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+        setGroups([["已有证据", "proved"], ["表达不足", "underexpressed"], ["需要确认", "needs_confirmation"], ["真实缺口", "real_gap"]]
+          .map(([label, key]) => [label, key, String(counts.get(key) ?? 0)]));
+        setReady(true);
+        setMessage("匹配已完成，可逐条查看建议。");
+      } catch {
+        setMessage("匹配尚未完成或已失败；已保存的简历版本不会丢失。");
+      }
+    };
+    void load();
+  }, []);
   async function openSuggestions(){
     const analysisId = new URLSearchParams(window.location.search).get("analysis");
     if (!analysisId) throw new Error("缺少匹配分析");
@@ -15,5 +44,5 @@ export default function MatchPage() {
     if (!suggestionId) throw new Error("没有可处理建议");
     router.push(`/suggestions/${analysisId}?suggestion=${suggestionId}&version=${versionId}`);
   }
-  return <Page actions={<Button onClick={() => void openSuggestions()}>逐条处理建议</Button>} eyebrow="匹配报告 · 不使用 ATS 总分" title="岗位要求与事实证据"><section className="match-grid">{groups.map(([label,key,count])=><article className="match-card" key={key}><span>{key}</span><strong>{count}</strong><h2>{label}</h2><details><summary>查看要求与证据</summary><p>JD 原文：能够独立完成用户访谈与结论整理。</p><p>关联事实：课程产品设计 · 已确认</p><p>下一步：补充具体访谈动作。</p></details></article>)}</section></Page>;
+  return <Page actions={<Button disabled={!ready} onClick={() => void openSuggestions()}>逐条处理建议</Button>} eyebrow="匹配报告 · 不使用 ATS 总分" status={{ label: message, tone: ready ? "success" : "pending" }} title="岗位要求与事实证据"><section className="match-grid">{groups.map(([label,key,count])=><article className="match-card" key={key}><span>{key}</span><strong>{count}</strong><h2>{label}</h2><details><summary>查看要求与证据</summary><p>完成后将展示服务端返回的岗位要求和事实链接。</p></details></article>)}</section></Page>;
 }

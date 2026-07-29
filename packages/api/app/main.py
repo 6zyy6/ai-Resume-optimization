@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -107,6 +108,14 @@ def create_app(
 ) -> FastAPI:
     resolved = settings or get_settings()
     application = FastAPI(title="AI Resume API", version="1")
+    if resolved.cors_allowed_origins:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(resolved.cors_allowed_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
+            allow_headers=["Content-Type", "Idempotency-Key", "X-Trace-Id"],
+        )
     application.add_middleware(
         CsrfProtectionMiddleware,
         trusted_proxy_ips=resolved.trusted_proxy_ips,

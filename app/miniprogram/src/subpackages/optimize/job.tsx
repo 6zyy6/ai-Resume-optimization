@@ -2,8 +2,9 @@ import { Input, Text, Textarea, View } from "@tarojs/components";
 import Taro from "@tarojs/taro";
 import { useState } from "react";
 import type { components } from "@resume/shared/schema";
+import { waitForTask } from "@resume/shared/workflows";
 import { PrimaryAction } from "../../components/ui/PrimaryAction";
-import { newIdempotencyKey, write } from "../../platform/request";
+import { api, newIdempotencyKey, write } from "../../platform/request";
 
 type Job = components["schemas"]["JobResponse"];
 
@@ -17,7 +18,9 @@ export default function JobPage() {
       const job = await write<components["schemas"]["JobCreate"], Job>(
         "post", "/v1/jobs", { title, raw }, newIdempotencyKey("job"),
       );
-      await write("post", `/v1/jobs/${job.id}/parse`, {}, newIdempotencyKey("parse-job"));
+      const parsing = await write<{}, Job>("post", `/v1/jobs/${job.id}/parse`, {}, newIdempotencyKey("parse-job"));
+      if (!parsing.task_id) throw new Error("岗位解析任务未创建");
+      await waitForTask(() => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${parsing.task_id}`), parsing.task_id);
       await Taro.redirectTo({ url: `/subpackages/optimize/match?jobId=${job.id}` });
     } catch {
       setState("error");

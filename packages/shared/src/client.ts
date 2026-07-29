@@ -66,6 +66,7 @@ export function createApiClient({ baseUrl, request }: ApiClientOptions) {
 
     const response = await request(`${root}${path}`, {
       body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "include",
       headers,
       method,
     });

@@ -2,6 +2,7 @@ import { Button, Input, Text, Textarea, View } from "@tarojs/components";
 import Taro, { useDidShow, useLoad } from "@tarojs/taro";
 import { useEffect, useState } from "react";
 import type { components } from "@resume/shared/schema";
+import { claimEvidenceForText } from "@resume/shared/workflows";
 import { PrimaryAction } from "../../components/ui/PrimaryAction";
 import { loadDraft, registerLifecycleHooks, saveDraft, syncDraft, type LocalDraft } from "../../features/draft-store";
 import { api, newIdempotencyKey, write } from "../../platform/request";
@@ -54,10 +55,20 @@ export default function EditorPage() {
             items: [{ id: "experience-1", text: current.experience.trim(), fact_refs: [] }],
           }] : [],
         };
+        const claim_evidence = [];
+        if (current.experience.trim()) {
+          const fact = await write<components["schemas"]["FactCreate"], components["schemas"]["FactResponse"]>(
+            "post",
+            "/v1/facts",
+            { kind: "resume_bullet", value: current.experience.trim(), status: "confirmed", sources: [{ source_type: "user_edit", content: current.experience.trim() }] },
+            newIdempotencyKey(`fact-${resumeId}`),
+          );
+          claim_evidence.push(...claimEvidenceForText("experience-1", current.experience.trim(), fact.id));
+        }
         await write<components["schemas"]["VersionCreate"], Version>(
           "post",
           `/v1/resumes/${resumeId}/versions`,
-          { base_version: resume.version, snapshot, claim_evidence: [] },
+          { base_version: resume.version, snapshot, claim_evidence },
           newIdempotencyKey(`save-version-${resumeId}`),
         );
       });

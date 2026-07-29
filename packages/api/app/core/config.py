@@ -7,6 +7,7 @@ class Settings:
     app_env: str
     database_url: str
     trusted_proxy_ips: tuple[str, ...] = ()
+    cors_allowed_origins: tuple[str, ...] = ()
     storage_backend: str = "memory"
     storage_local_root: str = ".data/objects"
     storage_signing_secret: str = ""
@@ -27,6 +28,11 @@ def get_settings() -> Settings:
             address.strip()
             for address in os.getenv("TRUSTED_PROXY_IPS", "").split(",")
             if address.strip()
+        ),
+        cors_allowed_origins=tuple(
+            origin.strip()
+            for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+            if origin.strip()
         ),
         storage_backend=os.getenv(
             "STORAGE_BACKEND", "memory" if app_env == "test" else "local"

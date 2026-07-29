@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { components } from "@resume/shared/schema";
+import { claimEvidenceForText, waitForTask } from "@resume/shared/workflows";
 import { useRouter } from "next/navigation";
 
 import { Page } from "../../../../components/Page";
@@ -46,10 +47,16 @@ export default function ImportConfirmPage() {
     const imported = await api.post<typeof importBody, components["schemas"]["ImportResponse"]>(
       "/v1/imports", importBody, crypto.randomUUID(),
     );
+    if (!imported.task_id) throw new Error("导入任务未创建");
+    await waitForTask(
+      () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${imported.task_id}`),
+      imported.task_id,
+    );
+    await api.get<components["schemas"]["ImportResponse"]>(`/v1/imports/${imported.id}`);
     const confirmBody: components["schemas"]["ImportConfirm"] = {
       facts: modules.filter(([, state]) => state !== "missing").map(([kind]) => ({ kind, value: `${kind}：待用户确认` })),
     };
-    await api.post(`/v1/imports/${imported.id}/confirm`, confirmBody, crypto.randomUUID());
+    const confirmed = await api.post<typeof confirmBody, components["schemas"]["ImportResponse"]>(`/v1/imports/${imported.id}/confirm`, confirmBody, crypto.randomUUID());
     const resumeBody: components["schemas"]["ResumeCreate"] = { kind: "base", title: file.name };
     const resume = await api.post<typeof resumeBody, components["schemas"]["ResumeResponse"]>("/v1/resumes", resumeBody, crypto.randomUUID());
     const snapshot: components["schemas"]["ResumeSnapshot"] = {
@@ -63,7 +70,12 @@ export default function ImportConfirmPage() {
       target: null,
       title: file.name,
     };
-    const versionBody: components["schemas"]["VersionCreate"] = { base_version: resume.version, claim_evidence: [], snapshot };
+    const claim_evidence = snapshot.sections.flatMap((section, index) => {
+      const item = section.items[0];
+      const factId = confirmed.fact_ids?.[index];
+      return factId ? claimEvidenceForText(item.id, item.text, factId) : [];
+    });
+    const versionBody: components["schemas"]["VersionCreate"] = { base_version: resume.version, claim_evidence, snapshot };
     const version = await api.post<typeof versionBody, components["schemas"]["ResumeVersionResponse"]>(
       `/v1/resumes/${resume.id}/versions`, versionBody, crypto.randomUUID(),
     );

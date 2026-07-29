@@ -9,7 +9,7 @@
     "network": {"ingress": "internal", "egress": "internet"},
     "ports": [{"containerPort": 3101}],
     "envFromSecrets": ["AI_SERVICE_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "AI_MODEL_ROUTES_JSON"],
-    "env": {"AI_RUNTIME_MODE": "production", "APP_COMMIT_SHA": "${COMMIT_SHA}"},
+    "env": {"AI_RUNTIME_MODE": "production", "AI_HOST": "0.0.0.0", "AI_PORT": "3101", "APP_COMMIT_SHA": "${COMMIT_SHA}"},
     "health": {"live": "/internal/v1/health/live", "ready": "/internal/v1/health/ready", "version": "/internal/v1/version"},
     "rollout": {"strategy": "canary", "canaryPercent": 10, "observationMinutes": 30}
   }

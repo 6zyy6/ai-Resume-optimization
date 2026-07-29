@@ -2,8 +2,9 @@ import { Input, Text, View } from "@tarojs/components";
 import Taro, { useLoad } from "@tarojs/taro";
 import { useState } from "react";
 import type { components } from "@resume/shared/schema";
+import { waitForTask } from "@resume/shared/workflows";
 import { PrimaryAction } from "../../components/ui/PrimaryAction";
-import { newIdempotencyKey, write } from "../../platform/request";
+import { api, newIdempotencyKey, write } from "../../platform/request";
 
 type Match = components["schemas"]["MatchResponse"];
 
@@ -19,6 +20,8 @@ export default function MatchPage() {
         { job_id: jobId, resume_version_id: resumeVersionId.trim() },
         newIdempotencyKey("match"),
       );
+      if (!match.task_id) throw new Error("匹配任务未创建");
+      await waitForTask(() => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${match.task_id}`), match.task_id);
       await Taro.redirectTo({ url: `/subpackages/optimize/suggestions?analysisId=${match.id}` });
     } catch {
       setMessage("暂时无法发起匹配，请确认岗位解析完成且版本 ID 正确。");

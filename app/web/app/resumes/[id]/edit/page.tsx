@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { type ChangeEvent, useReducer } from "react";
 import type { components } from "@resume/shared/schema";
+import { claimEvidenceForText } from "@resume/shared/workflows";
 
 import { Page } from "../../../../components/Page";
 import { Button } from "../../../../components/ui/Button";
@@ -36,8 +37,18 @@ export default function EditorPage() {
         target: null,
         title: "产品运营实习",
       };
-      const body: components["schemas"]["VersionCreate"] = { base_version: baseVersion, claim_evidence: [], snapshot };
-      const version = await createWebApiClient().post<typeof body, components["schemas"]["ResumeVersionResponse"]>(
+      const api = createWebApiClient();
+      const claim_evidence = (await Promise.all(snapshot.sections.flatMap((section) => section.items.map(async (item) => {
+        if (!item.text) return [];
+        const fact = await api.post<components["schemas"]["FactCreate"], components["schemas"]["FactResponse"]>(
+          "/v1/facts",
+          { kind: "resume_bullet", value: item.text, status: "confirmed", sources: [{ source_type: "user_edit", content: item.text }] },
+          crypto.randomUUID(),
+        );
+        return claimEvidenceForText(item.id, item.text, fact.id);
+      })))).flat();
+      const body: components["schemas"]["VersionCreate"] = { base_version: baseVersion, claim_evidence, snapshot };
+      const version = await api.post<typeof body, components["schemas"]["ResumeVersionResponse"]>(
         `/v1/resumes/${id}/versions`, body, crypto.randomUUID(),
       );
       return { id: version.id, version: baseVersion + 1 };

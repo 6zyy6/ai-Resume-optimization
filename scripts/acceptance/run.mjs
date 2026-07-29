@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { buildManifest } from "./build-manifest.mjs";
 import { recordCommand } from "./record-command.mjs";
 
@@ -37,15 +36,7 @@ await writeFile(blockerPath, [
   "",
 ].join("\n"));
 
-const evidenceFor = async (name) => {
-  const result = results.find((item) => item.metadata.endsWith(`${name}.json`));
-  const bytes = await readFile(result.raw_log);
-  return { path: relative(releaseDir, result.raw_log), sha256: createHash("sha256").update(bytes).digest("hex") };
-};
 const passEvidence = {};
-if (results.find((item) => item.metadata.endsWith("lint.json"))?.exit_code === 0) passEvidence["ENG-02"] = await evidenceFor("lint");
-if (results.find((item) => item.metadata.endsWith("test.json"))?.exit_code === 0) passEvidence["ENG-03"] = await evidenceFor("test");
-if (results.find((item) => item.metadata.endsWith("miniprogram.json"))?.exit_code === 0) passEvidence["MP-09"] = await evidenceFor("miniprogram");
 
 const sensitive = await recordCommand({
   name: "sensitive-scan",
@@ -55,7 +46,6 @@ const sensitive = await recordCommand({
   outputDir: commandDir,
 });
 results.push(sensitive);
-if (sensitive.exit_code === 0) passEvidence["ENG-09"] = await evidenceFor("sensitive-scan");
 await buildManifest({ releaseDir, releaseId, commitSha, blockerPath, passEvidence });
 if (sensitive.exit_code !== 0 || results.some((result) => result.exit_code !== 0)) process.exitCode = 1;
 console.log(`Acceptance manifest: ${join(releaseDir, "manifest.json")}`);

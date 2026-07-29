@@ -13,9 +13,10 @@ type Manifest = {
     concurrency?: number;
     network?: { ingress: string; egress: string };
     envFromSecrets?: string[];
+    env?: Record<string, string>;
     health?: Record<string, string>;
     rollout?: { canaryPercent: number; observationMinutes: number };
-    groups?: Array<{ name: string; queues: string[]; concurrency: number }>;
+    groups?: Array<{ name: string; queues?: string[]; concurrency?: number; command?: string[]; replicas?: { min: number; max: number } }>;
   };
 };
 
@@ -70,7 +71,7 @@ describe("deployment contract", () => {
   });
 
   it("declares exactly the fixed production queues", () => {
-    const queues = (workers.spec.groups ?? []).flatMap((group) => group.queues).sort();
+    const queues = (workers.spec.groups ?? []).flatMap((group) => group.queues ?? []).sort();
     expect(queues).toEqual(["ai.batch", "ai.interactive", "file.export", "file.parse", "privacy"]);
   });
 
@@ -99,12 +100,35 @@ describe("deployment contract", () => {
 
   it("keeps AI and file workers independently scalable with graceful shutdown", () => {
     const text = read("infra/deployment/cloudbase/workers.yaml");
+    const groups = Object.fromEntries((workers.spec.groups ?? []).map((group) => [group.name, group]));
     expect(text).toContain('"gracefulShutdownSeconds": 45');
     expect(workers.spec.groups?.map((group) => group.name)).toEqual([
       "ai-worker",
       "file-worker",
       "privacy-worker",
+      "outbox-dispatcher",
     ]);
+    expect(groups["outbox-dispatcher"]).toEqual(expect.objectContaining({
+      command: ["python", "-m", "app.workers.dispatcher"],
+      replicas: expect.objectContaining({ min: 1 }),
+    }));
+  });
+
+  it("gives API and workers the same production storage and internal AI route", () => {
+    for (const manifest of [api, workers]) {
+      expect(manifest.spec.env).toEqual(expect.objectContaining({
+        APP_ENV: "production",
+        STORAGE_BACKEND: "cos",
+        COS_REGION: "${COS_REGION}",
+        COS_BUCKET: "${COS_BUCKET}",
+        AI_INTERNAL_URL: "http://resume-ai.internal:3101",
+      }));
+    }
+    expect(api.spec.env).toEqual(expect.objectContaining({ CORS_ALLOWED_ORIGINS: "${PUBLIC_WEB_ORIGIN}" }));
+    expect(ai.spec.env).toEqual(expect.objectContaining({
+      AI_HOST: "0.0.0.0",
+      AI_PORT: "3101",
+    }));
   });
 
   it("defines multi-stage service images without embedding runtime credentials", () => {
