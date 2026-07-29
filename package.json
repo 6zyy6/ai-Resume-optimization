@@ -3,11 +3,13 @@
   "private": true,
   "packageManager": "pnpm@11.9.0",
   "scripts": {
+    "acceptance": "node scripts/acceptance/run.mjs",
     "build": "pnpm -r build && node scripts/run-python.mjs build",
     "dev": "node scripts/dev-supervisor.mjs",
     "generate": "node scripts/run-python.mjs packages/api/scripts/export_openapi.py",
     "lint": "pnpm -r lint && node scripts/run-python.mjs lint",
-    "test": "pnpm -r test && node --test scripts/tests/dev-supervisor.test.mjs && node scripts/run-python.mjs test"
+    "test": "pnpm -r test && node --test scripts/tests/dev-supervisor.test.mjs && node scripts/run-python.mjs test",
+    "test:contract": "vitest run tests/contract"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
