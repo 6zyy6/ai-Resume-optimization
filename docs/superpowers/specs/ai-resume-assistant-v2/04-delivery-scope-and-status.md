@@ -52,7 +52,7 @@
 | 设置与隐私 | `DONE-LOCAL` | `/v1/me`、usage、data export、re-auth deletion、logout |
 | 协议和隐私正文 | `DONE-LOCAL` | 独立用户协议和隐私政策页面 |
 | 真实服务 Web E2E | `PARTIAL` | 已完成本地真实 FastAPI + Next 浏览器冒烟；仍缺规格要求的两流程各 10/10 正式 Playwright 证据 |
-| 响应式截图证据 | `DONE-LOCAL` | 同 build 的 7 视口 × 8 页面共 56 张截图，另有 6 张核心流程截图和 SHA-256 manifest |
+| 响应式截图证据 | `DONE-LOCAL` | 同 build 的 7 视口 × 8 页面共 56 张截图，另有 7 张核心流程截图和 SHA-256 manifest |
 | 完整多状态证据矩阵 | `PARTIAL` | 仍缺 42 个主矩阵状态、16 个异常矩阵状态的逐项 API/DB/trace 证据 |
 | Safari/Edge/staging | `BLOCKED` | 真实浏览器与 staging 环境 |
 | 30 名学生验证 | `BLOCKED` | 每路径 ≥15 人及原始记录 |

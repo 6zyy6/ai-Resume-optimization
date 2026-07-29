@@ -16,6 +16,7 @@ const routes = {
   home: "/home",
   import: "/imports/new/confirm",
   job: "/jobs/new",
+  landing: "/",
   login: "/login",
   privacy: "/legal/privacy-policy",
   settings: "/settings",
@@ -40,13 +41,27 @@ const screenshots = await Promise.all((await pngFiles(evidenceDir)).map(async (p
     || name.includes(`-${candidate}.png`)
     || name.startsWith(`${candidate}-`)
   ));
+  const responsiveWidth = path.includes("/responsive/")
+    ? Number.parseInt(name.split("-")[0], 10)
+    : null;
+  const viewport = responsiveWidth
+    ? { width: responsiveWidth, height: responsiveWidth <= 414 ? 844 : 900 }
+    : name === "landing-viewport-1280x800.png"
+      ? { width: 1280, height: 800 }
+      : name === "create-390.png"
+        ? { width: 390, height: 844 }
+        : name === "create-after-skip-1024.png"
+          ? { width: 1024, height: 900 }
+          : { width: 1440, height: 900 };
   return {
     captured_at: file.mtime.toISOString(),
+    capture_mode: name.includes("-viewport-") ? "viewport" : "full-page",
     kind: path.includes("/responsive/") ? "responsive-smoke" : "core-flow",
     height: bytes.readUInt32BE(20),
     path: relative(evidenceDir, path),
     route: scenario ? routes[scenario] : "unknown",
     sha256: createHash("sha256").update(bytes).digest("hex"),
+    viewport,
     width: bytes.readUInt32BE(16),
   };
 }));
