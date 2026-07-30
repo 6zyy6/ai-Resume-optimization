@@ -22,7 +22,7 @@
 | FastAPI 核心资源路由 | `PARTIAL` | Facts、Resumes、Imports、Jobs、Matching、Suggestions、Tasks、Exports、Usage、Privacy | 保留；补 intake 和 `/v1/me` |
 | 不可变简历版本与事实检查 | `PARTIAL` | 数据模型、迁移、服务和后端测试 | 保留；修正 Web 使用方式 |
 | Task/Outbox/Worker | `PARTIAL` | 队列、claim/lease、events、取消实现 | 保留；补真实 Web 状态和外部证据 |
-| Pi 工作流 | `PARTIAL` | next_question、extract、match、suggestion 等 schema/workflow | 保留；接入公开业务链 |
+| Pi 工作流 | `PARTIAL` | 八类 schema/workflow 中只有 parse_jd、match_resume_to_jd 进入业务调用链 | 按已批准的 [AI 业务编排 V2.1](./PRD-AI-业务编排V2.1.md) 收敛为五个模型工作流、两个确定性策略和稳定 run 恢复链 |
 | 本地五服务启动 | `DONE-LOCAL` | Web、API、Pi、Dispatcher、Celery | 作为 real-service E2E 基线 |
 | 编辑器本地操作 | `PARTIAL` | 20 步撤销、拆分/合并/增删/排序 reducer | 与服务端 snapshot 初始化和保存合并 |
 | 自动保存 hook | `PARTIAL` | 800 ms、15 s、offline/error/conflict 状态 | 补真实恢复、冲突决策和离线草稿 |
@@ -35,17 +35,17 @@
 | --- | --- | --- |
 | 受保护路由和会话恢复 | `DONE-LOCAL` | 未登录跳登录；登录后安全返回；拒绝站外 returnTo |
 | 工作台真实数据 | `DONE-LOCAL` | Resumes/Tasks/Usage 三组 API 和局部失败 |
-| 经历梳理会话 | `DONE-LOCAL` | 可恢复 session、动态问题、去重、回答版本 |
+| 经历梳理会话 | `PARTIAL` | 可恢复 session、确定性问题、去重、回答版本已完成；Pi 动态分析和 FactCandidate 未接入 |
 | 从回答到事实 | `DONE-LOCAL` | 跳过不建事实；确认、来源、冲突完整 |
-| 初稿生成 | `DONE-LOCAL` | task 原子创建 Resume + Version + evidence |
+| 初稿生成 | `PARTIAL` | task 可原子创建 Resume + Version + evidence，但 bullet 仍直接复制 fact value，未调用 compose workflow |
 | 上传与导入确认拆分 | `DONE-LOCAL` | 真实 draft_facts、编辑确认、删除和粘贴兜底 |
 | 简历列表 | `DONE-LOCAL` | 真实列表、空/错/载入 |
 | 编辑器读取链 | `DONE-LOCAL` | 读取 Resume/Version；不使用固定业务内容 |
 | 编辑器完整保存 | `DONE-LOCAL` | 全字段 snapshot、base version、可见冲突合并和离线恢复 |
 | 版本历史 | `DONE-LOCAL` | 真实列表、查看和恢复 |
 | JD 确认 | `DONE-LOCAL` | 真实 requirements 读取、编辑、确认 |
-| 匹配明细 | `DONE-LOCAL` | 真实 requirement、fact、位置和下一步 |
-| 建议页 | `DONE-LOCAL` | 真实 suggestion、来源、编辑文本和版本结果 |
+| 匹配明细 | `PARTIAL` | 真实 requirement/fact 资源和可选 AI match 已接入；规则降级与模型 provenance 尚未区分 |
+| 建议页 | `PARTIAL` | 真实 suggestion 资源、来源、编辑和版本结果已接入；建议内容仍由匹配服务拼接，未调用 suggestion workflow |
 | 事实库 | `DONE-LOCAL` | 真实列表、筛选、来源和状态操作 |
 | 任务中心 | `DONE-LOCAL` | 真实列表、events、取消和资源恢复 |
 | 预览导出 | `DONE-LOCAL` | 导出任务恢复、签名下载、失败重试和幂等键处理 |

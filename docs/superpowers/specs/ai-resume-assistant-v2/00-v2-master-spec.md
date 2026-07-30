@@ -2,7 +2,7 @@
 
 > 状态：`READY FOR IMPLEMENTATION`  
 > 版本范围：Web V2 工程闭环；公开发布仍受小程序对等与外部证据门禁约束  
-> 基线 commit：`ab89b8b5ac19e7fc657eb5cf7f1a831dccb38762`，另含当前工作区未提交修改  
+> 基线 commit：`4434b7f`，另含当前工作区未提交的 V2.1 规格修改
 > 最后更新：2026-07-30
 
 ## 1. 结论
@@ -206,6 +206,7 @@ V2 本轮交付：
 - [交付范围与完成状态](./04-delivery-scope-and-status.md)
 - [验收与证据标准](./05-acceptance-and-evidence.md)
 - [当前基线证据](./06-current-baseline-evidence.md)
+- [AI 业务编排 V2.1](./PRD-AI-业务编排V2.1.md)
 
 ## 12. 发布判定
 
