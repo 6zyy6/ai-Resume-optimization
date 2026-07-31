@@ -18,6 +18,7 @@ import { MemoryRunStore } from "./memory-run-store.js";
 import {
   isTerminalStatus,
   RUN_LEASE_MS,
+  terminalReceipt,
   type RunStore,
 } from "./run-store.js";
 
@@ -89,6 +90,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const abortLocalRun = (aiRunId: string) => {
     controllers.get(aiRunId)?.abort();
   };
+  const runSummary = (run: { ai_run_id: string; status: string; error_code?: string }) => ({
+    ai_run_id: run.ai_run_id,
+    status: run.status,
+    error_code: run.error_code ?? null,
+  });
 
   const checkCancellationRequests = async () => {
     if (checkingCancellations || controllers.size === 0) {
@@ -213,16 +219,28 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     },
     async (request, reply) => {
       const aiRunId = request.body.ai_run_id;
+      const startedAt = new Date().toISOString();
+      const context = {
+        ai_run_id: aiRunId,
+        workflow_type: request.body.input.workflow_type,
+        workflow_version: request.body.input.workflow_version,
+        prompt_template_version: request.body.input.prompt_template_version,
+        trace_id: request.body.input.trace_id,
+        task_id: request.body.input.task_id,
+        input_hash: request.body.input.input_hash,
+        started_at: startedAt,
+      };
       const controller = new AbortController();
       let createResult;
       try {
-        createResult = await runStore.createOrReplay({
+        createResult = await runStore.createOrGet({
           ai_run_id: aiRunId,
           input_hash: request.body.input.input_hash,
           status: "queued",
           owner_instance_id: instanceId,
           cancel_requested: false,
           lease_expires_at: Date.now() + RUN_LEASE_MS,
+          context,
         });
       } catch {
         return reply.status(503).send({
@@ -239,8 +257,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       if (createResult.kind === "existing") {
         return reply.status(202).send({
           request_id: requestId(),
-          ai_run_id: aiRunId,
-          status: createResult.run.status,
+          ...(isTerminalStatus(createResult.run.status)
+            ? { receipt: createResult.run.receipt }
+            : { run: runSummary(createResult.run) }),
         });
       }
       controllers.set(aiRunId, controller);
@@ -262,14 +281,18 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
             aiRunId,
             receipt.run.status,
             receipt,
-            receipt.run.error_code,
+            receipt.run.error_code ?? undefined,
           );
         } catch (error) {
           try {
             await runStore.complete(
               aiRunId,
               controller.signal.aborted ? "cancelled" : "failed",
-              undefined,
+              terminalReceipt(
+                context,
+                controller.signal.aborted ? "cancelled" : "failed",
+                controller.signal.aborted ? null : safeErrorCode(error),
+              ),
               safeErrorCode(error),
             );
           } catch {
@@ -281,8 +304,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       });
       return reply.status(202).send({
         request_id: requestId(),
-        ai_run_id: aiRunId,
-        status: "queued",
+        run: runSummary({ ai_run_id: aiRunId, status: "queued" }),
       });
     },
   );
@@ -324,11 +346,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       }
       return {
         request_id: requestId(),
-        run: {
-          ai_run_id: request.params.ai_run_id,
-          status: stored.status,
-          error_code: stored.error_code,
-        },
+        run: runSummary(stored),
       };
     },
   );

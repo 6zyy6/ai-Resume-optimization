@@ -7,12 +7,54 @@ import {
   type RunRecord,
   type RunStatus,
   type RunStore,
+  isTerminalStatus,
+  terminalReceipt,
 } from "./run-store.js";
 import { RUN_LEASE_MS } from "./run-store.js";
 
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
 const KEY_PREFIX = "pi:run:";
 const CANCEL_CHANNEL_PREFIX = "pi:cancel:";
+const OWNER_LOST_RECEIPT_LUA = `
+local context = cjson.decode(redis.call("HGET", KEYS[1], "context_json"))
+local event = {
+  ai_run_id = context.ai_run_id,
+  trace_id = context.trace_id,
+  task_id = context.task_id,
+  event_seq = 1,
+  event_type = "run_failed",
+  occurred_at = context.started_at,
+  details = { error_code = "owner_instance_lost" }
+}
+local run = {
+  ai_run_id = context.ai_run_id,
+  trace_id = context.trace_id,
+  task_id = context.task_id,
+  workflow_type = context.workflow_type,
+  workflow_version = context.workflow_version,
+  prompt_template_version = context.prompt_template_version,
+  status = "failed",
+  error_code = "owner_instance_lost",
+  provider = cjson.null,
+  requested_model = cjson.null,
+  response_model = cjson.null,
+  started_at = context.started_at,
+  first_token_at = cjson.null,
+  finished_at = context.started_at,
+  usage = { input = 0, output = 0, cache_read = 0, cache_write = 0, reasoning = 0, total_tokens = 0, cost_usd = 0 },
+  events = { event },
+  turn_count = 0,
+  tool_call_count = 0,
+  retry_count = 0,
+  fallback_count = 0,
+  schema_valid = false,
+  facts_valid = false,
+  input_hash = context.input_hash,
+  exportable = false,
+  risk_flags = {}
+}
+redis.call("HSET", KEYS[1], "receipt_json", cjson.encode({ run = run }))
+`;
 
 const CREATE_SCRIPT = `
 if redis.call("EXISTS", KEYS[1]) == 1 then
@@ -29,8 +71,9 @@ redis.call("HSET", KEYS[1],
   "cancel_requested", ARGV[5],
   "lease_expires_at", ARGV[6],
   "receipt_json", ARGV[7],
-  "error_code", ARGV[8])
-redis.call("EXPIRE", KEYS[1], ARGV[9])
+  "error_code", ARGV[8],
+  "context_json", ARGV[9])
+redis.call("EXPIRE", KEYS[1], ARGV[10])
 return "created"
 `;
 
@@ -46,6 +89,7 @@ if status ~= "succeeded" and status ~= "failed" and status ~= "cancelled" then
       "status", "failed",
       "error_code", "owner_instance_lost",
       "receipt_json", "")
+    ${OWNER_LOST_RECEIPT_LUA}
   else
     redis.call("HSET", KEYS[1],
       "status", "running",
@@ -67,6 +111,7 @@ if (status == "queued" or status == "running") and lease <= tonumber(ARGV[1]) th
     "status", "failed",
     "error_code", "owner_instance_lost",
     "receipt_json", "")
+  ${OWNER_LOST_RECEIPT_LUA}
   redis.call("EXPIRE", KEYS[1], ARGV[2])
 end
 return 1
@@ -87,6 +132,7 @@ if lease <= tonumber(ARGV[2]) then
     "status", "failed",
     "error_code", "owner_instance_lost",
     "receipt_json", "")
+  ${OWNER_LOST_RECEIPT_LUA}
   redis.call("EXPIRE", KEYS[1], ARGV[4])
   return 0
 end
@@ -123,8 +169,8 @@ if cancel_requested == "1" and final_status == "succeeded" then
 end
 redis.call("HSET", KEYS[1],
   "status", final_status,
-  "receipt_json", final_status == ARGV[1] and ARGV[2] or "",
-  "error_code", ARGV[3])
+  "receipt_json", final_status == ARGV[1] and ARGV[2] or ARGV[5],
+  "error_code", final_status == ARGV[1] and ARGV[3] or "")
 redis.call("EXPIRE", KEYS[1], ARGV[4])
 return final_status
 `;
@@ -177,7 +223,7 @@ export class RedisRunStore implements RunStore {
     }
   }
 
-  async createOrReplay(record: RunRecord): Promise<CreateRunResult> {
+  async createOrGet(record: RunRecord): Promise<CreateRunResult> {
     const key = this.key(record.ai_run_id);
     const created = await this.client.eval(CREATE_SCRIPT, {
       keys: [key],
@@ -190,6 +236,7 @@ export class RedisRunStore implements RunStore {
         String(record.lease_expires_at),
         record.receipt ? JSON.stringify(record.receipt) : "",
         record.error_code ?? "",
+        JSON.stringify(record.context),
         String(this.ttlSeconds),
       ],
     });
@@ -247,9 +294,17 @@ export class RedisRunStore implements RunStore {
   async complete(
     aiRunId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
-    receipt?: AiExecutionReceipt,
+    receipt: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
+    const stored = await this.get(aiRunId);
+    if (!stored || isTerminalStatus(stored.status)) return stored;
+    const cancelledReceipt = terminalReceipt(
+      stored.context,
+      "cancelled",
+      null,
+      receipt,
+    );
     await this.client.eval(COMPLETE_SCRIPT, {
       keys: [this.key(aiRunId)],
       arguments: [
@@ -257,6 +312,7 @@ export class RedisRunStore implements RunStore {
         receipt ? JSON.stringify(receipt) : "",
         errorCode ?? "",
         String(this.ttlSeconds),
+        JSON.stringify(cancelledReceipt),
       ],
     });
     return this.get(aiRunId);
@@ -325,6 +381,7 @@ export class RedisRunStore implements RunStore {
       owner_instance_id: values.owner_instance_id,
       cancel_requested: values.cancel_requested === "1",
       lease_expires_at: Number(values.lease_expires_at),
+      context: JSON.parse(values.context_json),
       receipt: values.receipt_json
         ? JSON.parse(values.receipt_json) as AiExecutionReceipt
         : undefined,

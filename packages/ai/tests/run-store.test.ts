@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import { MemoryRunStore } from "../src/server/memory-run-store.js";
+import { terminalReceipt } from "../src/server/run-store.js";
+
+function runContext(aiRunId: string, inputHash: string) {
+  return {
+    ai_run_id: aiRunId,
+    workflow_type: "parse_jd" as const,
+    workflow_version: "2",
+    prompt_template_version: "jd-parse@2",
+    trace_id: "trace_1",
+    task_id: "task_1",
+    input_hash: inputHash,
+    started_at: "2026-01-01T00:00:00.000Z",
+  };
+}
 
 describe("RunStore state fencing", () => {
   it("atomically replays a matching input hash and rejects a reused run ID", async () => {
@@ -12,23 +26,63 @@ describe("RunStore state fencing", () => {
       owner_instance_id: "pi-a",
       cancel_requested: false,
       lease_expires_at: Date.now() + 15_000,
+      context: runContext("run_idempotent", "hash_a"),
     };
 
-    expect(await store.createOrReplay(record)).toMatchObject({ kind: "created" });
-    expect(await store.createOrReplay(record)).toMatchObject({ kind: "existing" });
-    expect(await store.createOrReplay({ ...record, input_hash: "hash_b" }))
+    expect(await store.createOrGet(record)).toMatchObject({ kind: "created" });
+    expect(await store.createOrGet(record)).toMatchObject({ kind: "existing" });
+    expect(await store.createOrGet({ ...record, input_hash: "hash_b" }))
       .toMatchObject({ kind: "conflict" });
+  });
+
+  it("creates a complete owner-lost receipt when a lease expires", async () => {
+    let now = 1_000;
+    const store = new MemoryRunStore({ now: () => now, leaseMs: 100 });
+    await store.createOrGet({
+      ai_run_id: "run_lost_receipt",
+      input_hash: "hash_lost",
+      status: "queued",
+      owner_instance_id: "pi-owner",
+      cancel_requested: false,
+      lease_expires_at: 1_100,
+      context: {
+        ai_run_id: "run_lost_receipt",
+        workflow_type: "parse_jd",
+        workflow_version: "2",
+        prompt_template_version: "jd-parse@2",
+        trace_id: "trace_lost",
+        task_id: "task_lost",
+        input_hash: "hash_lost",
+        started_at: "1970-01-01T00:00:01.000Z",
+      },
+    });
+    now = 1_101;
+
+    expect(await store.get("run_lost_receipt")).toMatchObject({
+      status: "failed",
+      receipt: {
+        run: {
+          status: "failed",
+          error_code: "owner_instance_lost",
+          provider: null,
+          requested_model: null,
+          response_model: null,
+          first_token_at: null,
+        },
+      },
+    });
   });
 
   it("lets a cancellation request win over a late successful completion", async () => {
     const store = new MemoryRunStore();
-    await store.createOrReplay({
+    await store.createOrGet({
       ai_run_id: "run_1",
       input_hash: "hash_1",
       status: "queued",
       owner_instance_id: "pi-a",
       cancel_requested: false,
       lease_expires_at: Date.now() + 15_000,
+      context: runContext("run_1", "hash_1"),
     });
     await store.markRunning("run_1");
 
@@ -36,10 +90,15 @@ describe("RunStore state fencing", () => {
       outcome: "accepted",
       owner_instance_id: "pi-a",
     });
-    const completed = await store.complete("run_1", "succeeded");
+    const completed = await store.complete(
+      "run_1",
+      "succeeded",
+      terminalReceipt(runContext("run_1", "hash_1"), "succeeded", null),
+    );
 
     expect(completed?.status).toBe("cancelled");
-    expect(completed?.receipt).toBeUndefined();
+    expect(completed?.receipt?.run.status).toBe("cancelled");
+    expect(completed?.receipt?.run.events.at(-1)?.event_type).toBe("run_cancelled");
   });
 
   it("fails a run when its owner instance stops renewing the lease", async () => {
@@ -48,13 +107,14 @@ describe("RunStore state fencing", () => {
       now: () => now,
       leaseMs: 100,
     });
-    await store.createOrReplay({
+    await store.createOrGet({
       ai_run_id: "run_owner_lost",
       input_hash: "hash_owner_lost",
       status: "queued",
       owner_instance_id: "pi-owner",
       cancel_requested: false,
       lease_expires_at: 1_100,
+      context: runContext("run_owner_lost", "hash_owner_lost"),
     });
     await store.markRunning("run_owner_lost");
     now = 1_101;

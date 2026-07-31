@@ -154,28 +154,71 @@ describe("runWorkflow", () => {
   });
 
   it("returns a complete failed receipt instead of discarding workflow evidence", async () => {
-    const run = await runWorkflow(input("parse_jd"), makeRuntime(async () => ({
-      status: "failure",
-      failure_kind: "route",
-      error_code: "route_missing",
-      events: [usageEvent(17)],
-    })));
+    const run = await runWorkflow(
+      input("parse_jd"),
+      makeRuntime(async () => ({
+        status: "failure",
+        failure_kind: "route",
+        error_code: "route_missing",
+        events: [usageEvent(17)],
+      })),
+      { aiRunId: "run_failed_receipt", now: () => 1_000 },
+    );
 
-    expect(run).toMatchObject({
-      result: undefined,
-      run: {
-        status: "failed",
-        error_code: "model_route_unavailable",
-        usage: { total_tokens: 17 },
-        schema_valid: false,
-        facts_valid: false,
-        input_hash: "input_hash",
-        prompt_template_version: "jd-parse@2",
-      },
+    expect(Object.keys(run.run).sort()).toEqual([
+      "ai_run_id", "error_code", "events", "exportable", "facts_valid",
+      "fallback_count", "finished_at", "first_token_at", "input_hash",
+      "prompt_template_version", "provider", "requested_model", "response_model",
+      "retry_count", "risk_flags", "schema_valid", "started_at", "status",
+      "task_id", "tool_call_count", "trace_id", "turn_count", "usage",
+      "workflow_type", "workflow_version",
+    ]);
+    expect(run).not.toHaveProperty("result");
+    expect(run.run).toMatchObject({
+      ai_run_id: "run_failed_receipt",
+      workflow_type: "parse_jd",
+      workflow_version: "2",
+      prompt_template_version: "jd-parse@2",
+      trace_id: "trace_1",
+      task_id: "task_1",
+      status: "failed",
+      error_code: "model_route_unavailable",
+      provider: "faux",
+      requested_model: "faux-1",
+      response_model: null,
+      started_at: "1970-01-01T00:00:01.000Z",
+      first_token_at: null,
+      finished_at: "1970-01-01T00:00:01.000Z",
+      usage: { input: 17, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, total_tokens: 17, cost_usd: 0 },
+      turn_count: 0,
+      tool_call_count: 0,
+      retry_count: 0,
+      fallback_count: 0,
+      schema_valid: false,
+      facts_valid: false,
+      input_hash: "input_hash",
+      exportable: false,
+      risk_flags: [],
     });
-    expect(run.run.started_at).toEqual(expect.any(String));
-    expect(run.run.finished_at).toEqual(expect.any(String));
     expect(run.run.events.at(-1)).toMatchObject({ event_type: "run_failed" });
+  });
+
+  it("returns a failed receipt when the prompt version is unavailable", async () => {
+    const unavailable = {
+      ...input("parse_jd"),
+      prompt_template_version: "missing@2",
+    } as WorkflowInput;
+
+    await expect(runWorkflow(unavailable, createFixtureRuntime({}))).resolves
+      .toMatchObject({
+        run: {
+          status: "failed",
+          error_code: "prompt_version_unavailable",
+          events: expect.arrayContaining([
+            expect.objectContaining({ event_type: "run_failed" }),
+          ]),
+        },
+      });
   });
 
   it("enforces the 30 second deadline without waiting in real time", async () => {

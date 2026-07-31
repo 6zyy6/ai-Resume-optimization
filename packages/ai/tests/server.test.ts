@@ -82,12 +82,15 @@ afterEach(async () => {
 describe("Pi internal API", () => {
   it("replays a matching ai_run_id once and rejects a different input hash", async () => {
     let runtimeCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
     const app = buildApp({
       mode: "fixture",
       serviceToken: "service-token",
       modelRouter: createModelRouter({ routes: {} }),
       runtime: runtime(async () => {
         runtimeCalls += 1;
+        await gate;
         return { status: "success", output: { requirements: [] }, events: [] };
       }),
     });
@@ -119,11 +122,42 @@ describe("Pi internal API", () => {
 
     expect(created.statusCode).toBe(202);
     expect(replay.statusCode).toBe(202);
-    expect(replay.json()).toMatchObject({ ai_run_id: aiRunId });
+    expect(replay.json()).toEqual({
+      request_id: expect.stringMatching(/^req_/),
+      run: { ai_run_id: aiRunId, status: "running", error_code: null },
+    });
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json().error.code).toBe("AI_RUN_ID_REUSED");
+    release();
     await waitForTerminal(app, aiRunId);
     expect(runtimeCalls).toBe(1);
+  });
+
+  it("returns the existing terminal receipt when a terminal run is replayed", async () => {
+    const app = buildApp({
+      mode: "fixture",
+      serviceToken: "service-token",
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(),
+    });
+    apps.push(app);
+    const headers = { authorization: "Bearer service-token" };
+    const request = { ai_run_id: "run_terminal_replay", input: input() };
+    await app.inject({ method: "POST", url: "/internal/v1/runs", headers, payload: request });
+    await waitForTerminal(app, request.ai_run_id);
+
+    const replay = await app.inject({
+      method: "POST", url: "/internal/v1/runs", headers, payload: request,
+    });
+
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual({
+      request_id: expect.stringMatching(/^req_/),
+      receipt: expect.objectContaining({
+        run: expect.objectContaining({ status: "succeeded" }),
+        result: { requirements: [] },
+      }),
+    });
   });
 
   it("persists a complete failed receipt for controlled workflow failures", async () => {
@@ -229,7 +263,7 @@ describe("Pi internal API", () => {
         payload: runRequest(),
       });
     expect(created.statusCode).toBe(202);
-    const runId = created.json().ai_run_id;
+    const runId = created.json().run.ai_run_id;
     expect(
       (await app.inject({
         method: "GET",
@@ -282,12 +316,16 @@ describe("Pi internal API", () => {
       payload: runRequest(),
     });
     const createdBody = created.json();
-    const run = await waitForTerminal(app, createdBody.ai_run_id);
+    const run = await waitForTerminal(app, createdBody.run.ai_run_id);
 
     expect(created.statusCode).toBe(202);
     expect(createdBody.request_id).toMatch(/^req_/);
     expect(run.status).toBe("succeeded");
-    expect(run.output).toEqual({ requirements: [] });
+    expect((await app.inject({
+      method: "GET",
+      url: `/internal/v1/runs/${createdBody.run.ai_run_id}`,
+      headers: { authorization: "Bearer service-token" },
+    })).json().receipt.result).toEqual({ requirements: [] });
   });
 
   it("propagates cancel to the active runtime AbortSignal", async () => {
@@ -318,7 +356,7 @@ describe("Pi internal API", () => {
       headers: { authorization: "Bearer service-token" },
       payload: runRequest(),
     });
-    const runId = created.json().ai_run_id;
+    const runId = created.json().run.ai_run_id;
     const cancelled = await app.inject({
       method: "POST",
       url: `/internal/v1/runs/${runId}/cancel`,
@@ -370,7 +408,7 @@ describe("Pi internal API", () => {
       headers: { authorization: "Bearer service-token" },
       payload: runRequest(),
     });
-    const runId = created.json().ai_run_id;
+    const runId = created.json().run.ai_run_id;
     const visibleFromSecond = await second.inject({
       method: "GET",
       url: `/internal/v1/runs/${runId}`,
@@ -436,7 +474,7 @@ describe("Pi internal API", () => {
         })
       ),
     );
-    const runIds = created.map((response) => response.json().ai_run_id);
+    const runIds = created.map((response) => response.json().run.ai_run_id);
 
     const startedAt = Date.now();
     const cancelled = await Promise.all(
@@ -472,7 +510,7 @@ describe("Pi internal API", () => {
       headers: { authorization: "Bearer service-token" },
       payload: runRequest(),
     });
-    const runId = created.json().ai_run_id;
+    const runId = created.json().run.ai_run_id;
     await waitForTerminal(app, runId);
 
     const cancelled = await app.inject({

@@ -3,6 +3,20 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { RedisRunStore } from "../src/server/redis-run-store.js";
+import { terminalReceipt } from "../src/server/run-store.js";
+
+function context(aiRunId: string, inputHash: string) {
+  return {
+    ai_run_id: aiRunId,
+    workflow_type: "parse_jd" as const,
+    workflow_version: "2",
+    prompt_template_version: "jd-parse@2",
+    trace_id: "trace_redis",
+    task_id: "task_redis",
+    input_hash: inputHash,
+    started_at: new Date().toISOString(),
+  };
+}
 
 const redisUrl = process.env.TEST_REDIS_URL;
 
@@ -32,27 +46,33 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
           owner_instance_id: "pi-redis-owner",
           cancel_requested: false,
           lease_expires_at: Date.now() + 50,
+          context: context(aiRunId, `hash_${index}`),
         } as const;
-        expect((await first.createOrReplay(record)).kind).toBe("created");
-        expect((await second.createOrReplay(record)).kind).toBe("existing");
-        expect((await second.createOrReplay({ ...record, input_hash: "other" })).kind)
+        expect((await first.createOrGet(record)).kind).toBe("created");
+        expect((await second.createOrGet(record)).kind).toBe("existing");
+        expect((await second.createOrGet({ ...record, input_hash: "other" })).kind)
           .toBe("conflict");
         await first.markRunning(aiRunId);
         expect((await second.get(aiRunId))?.status).toBe("running");
         expect((await second.requestCancel(aiRunId)).outcome).toBe("accepted");
-        await first.complete(aiRunId, "cancelled");
+        await first.complete(
+          aiRunId,
+          "cancelled",
+          terminalReceipt(record.context, "cancelled", null),
+        );
         expect((await second.get(aiRunId))?.status).toBe("cancelled");
       }
       await expect.poll(() => received.size).toBe(100);
 
       const lostRunId = `run_test_${randomUUID()}`;
-      await first.createOrReplay({
+      await first.createOrGet({
         ai_run_id: lostRunId,
         input_hash: "lost_hash",
         status: "queued",
         owner_instance_id: "pi-lost-owner",
         cancel_requested: false,
         lease_expires_at: Date.now() + 25,
+        context: context(lostRunId, "lost_hash"),
       });
       await first.markRunning(lostRunId);
       await new Promise((resolve) => setTimeout(resolve, 75));

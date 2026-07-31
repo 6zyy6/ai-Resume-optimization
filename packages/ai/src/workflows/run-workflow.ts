@@ -65,8 +65,6 @@ export async function runWorkflow(
   if (!Value.Check(WorkflowInputSchema, input)) {
     throw new WorkflowError("input_schema_invalid");
   }
-  resolvePrompt(input);
-
   const now = options.now ?? Date.now;
   const startedAt = now();
   const deadlineController = new AbortController();
@@ -102,14 +100,11 @@ export async function runWorkflow(
       tool_call_count: snapshot.tools,
     };
   };
-  const receipt = (run: WorkflowRun): AiExecutionReceipt => ({
-    run,
-    result: run.status === "succeeded" ? run.output : undefined,
-  });
+  const receipt = (run: WorkflowRun, result?: unknown): AiExecutionReceipt =>
+    run.status === "succeeded" ? { run, result } : { run };
   const metadata = (
     status: WorkflowRun["status"],
-    errorCode?: string,
-    output?: unknown,
+    errorCode: string | null,
     schemaValid = false,
     factsValid = false,
   ): WorkflowRun => {
@@ -128,17 +123,16 @@ export async function runWorkflow(
       error_code: errorCode,
       provider: typeof modelEvent?.details?.provider === "string"
         ? modelEvent.details.provider
-        : undefined,
+        : null,
       requested_model: typeof modelEvent?.details?.model === "string"
         ? modelEvent.details.model
-        : undefined,
+        : null,
       response_model: typeof modelEvent?.details?.response_model === "string"
         ? modelEvent.details.response_model
-        : undefined,
+        : null,
       started_at: new Date(startedAt).toISOString(),
-      first_token_at: firstToken?.occurred_at,
+      first_token_at: firstToken?.occurred_at ?? null,
       finished_at: new Date(now()).toISOString(),
-      output,
       usage: { ...ledger.usage },
       events: [...ledger.events],
       ...counts(),
@@ -155,7 +149,7 @@ export async function runWorkflow(
     if (ledger.events.at(-1)?.event_type !== "run_cancelled") {
       append("run_cancelled");
     }
-    return receipt(metadata("cancelled"));
+    return receipt(metadata("cancelled", null));
   };
   const checkSignal = () => {
     if (deadlineController.signal.aborted && !options.signal?.aborted) {
@@ -186,6 +180,7 @@ export async function runWorkflow(
   let retryOpen = false;
 
   try {
+    resolvePrompt(input);
     while (true) {
       if (!checkSignal()) {
         return cancelledRun();
@@ -319,10 +314,10 @@ export async function runWorkflow(
       append("agent_end");
       append("agent_settled");
       append("run_succeeded");
-      const run = metadata("succeeded", undefined, enforced.output, true, true);
+      const run = metadata("succeeded", null, true, true);
       run.exportable = enforced.exportable;
       run.risk_flags = enforced.risk_flags;
-      return receipt(run);
+      return receipt(run, enforced.output);
     }
   } catch (error) {
     if (isAbort(error, signal)) {

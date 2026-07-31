@@ -5,6 +5,7 @@ import {
   type RunRecord,
   type RunStore,
   type RunStatus,
+  terminalReceipt,
 } from "./run-store.js";
 import { RUN_LEASE_MS } from "./run-store.js";
 import type { AiExecutionReceipt } from "../contracts.js";
@@ -30,7 +31,7 @@ export class MemoryRunStore implements RunStore {
     return true;
   }
 
-  async createOrReplay(record: RunRecord): Promise<CreateRunResult> {
+  async createOrGet(record: RunRecord): Promise<CreateRunResult> {
     const existing = this.runs.get(record.ai_run_id);
     if (existing) {
       return {
@@ -77,7 +78,7 @@ export class MemoryRunStore implements RunStore {
   async complete(
     aiRunId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
-    receipt?: AiExecutionReceipt,
+    receipt: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
     const record = this.runs.get(aiRunId);
@@ -89,8 +90,14 @@ export class MemoryRunStore implements RunStore {
         ? "cancelled"
         : status;
     record.status = finalStatus;
-    record.receipt = finalStatus === status ? receipt : undefined;
-    record.error_code = errorCode;
+    record.receipt = terminalReceipt(
+      record.context,
+      finalStatus,
+      finalStatus === "failed" ? errorCode ?? receipt.run.error_code : null,
+      receipt,
+      new Date(this.now()).toISOString(),
+    );
+    record.error_code = record.receipt.run.error_code ?? undefined;
     return this.clone(record);
   }
 
@@ -139,7 +146,13 @@ export class MemoryRunStore implements RunStore {
     ) {
       record.status = "failed";
       record.error_code = "owner_instance_lost";
-      record.receipt = undefined;
+      record.receipt = terminalReceipt(
+        record.context,
+        "failed",
+        "owner_instance_lost",
+        record.receipt,
+        new Date(this.now()).toISOString(),
+      );
     }
   }
 }
