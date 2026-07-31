@@ -91,13 +91,27 @@ function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] 
     }
     case "generate_suggestions_batch": {
       const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      const requirementIds = new Set(
+        input.payload.confirmed_requirements.map(({ id }) => id),
+      );
+      input.payload.matches.forEach((match, index) => {
+        if (!requirementIds.has(match.requirement_ref)) {
+          failures.push(
+            unknownReference(`$.payload.matches[${index}].requirement_ref`),
+          );
+        }
+      });
       const sources = new Map(input.payload.matches.map((match) => [
         `${match.requirement_ref}:${match.target_path}:${match.original_hash}`,
         match,
       ]));
       output.suggestions.forEach((suggestion: any, index: number) => {
         const source = sources.get(`${suggestion.requirement_ref}:${suggestion.target_path}:${suggestion.original_hash}`);
-        if (!source || !["transferable", "needs_evidence"].includes(source.category)) {
+        if (
+          !requirementIds.has(suggestion.requirement_ref) ||
+          !source ||
+          !["transferable", "needs_evidence"].includes(source.category)
+        ) {
           failures.push(unknownReference(`$.suggestions[${index}]`));
         }
         suggestion.atomic_claims.forEach((claim: any, claimIndex: number) =>

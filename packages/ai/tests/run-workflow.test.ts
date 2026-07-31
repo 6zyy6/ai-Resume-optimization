@@ -105,6 +105,21 @@ describe("runWorkflow", () => {
     expect(validateRuntimeOutput(input("generate_suggestions_batch"), suggestion)[0]).toMatchObject({ type: "unknown_reference" });
   });
 
+  it("rejects suggestion sources and outputs that share an unknown requirement ref", () => {
+    const suggestionInput = input("generate_suggestions_batch") as any;
+    suggestionInput.payload.matches[0].requirement_ref = "unknown_requirement";
+    const suggestion = output("generate_suggestions_batch") as any;
+    suggestion.suggestions[0].requirement_ref = "unknown_requirement";
+
+    expect(validateRuntimeOutput(suggestionInput, suggestion)).toEqual([
+      {
+        path: "$.payload.matches[0].requirement_ref",
+        type: "unknown_reference",
+      },
+      { path: "$.suggestions[0]", type: "unknown_reference" },
+    ]);
+  });
+
   it("keeps fixture runs deterministic", async () => {
     const runtime = createFixtureRuntime({ parse_jd: output("parse_jd") });
     await expect(runWorkflow(input("parse_jd"), runtime)).resolves.toMatchObject({ output: output("parse_jd") });
