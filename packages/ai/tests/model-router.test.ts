@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { WORKFLOW_TYPES } from "../src/contracts.js";
+import { MODEL_WORKFLOW_TYPES } from "../src/contracts.js";
 import { createModelRouterFromEnv } from "../src/model-router.js";
 
 describe("model routing from environment", () => {
@@ -15,7 +15,7 @@ describe("model routing from environment", () => {
     expect(router.isReady({
       DEEPSEEK_API_KEY: "test-key",
     })).toBe(true);
-    for (const workflowType of WORKFLOW_TYPES) {
+    for (const workflowType of MODEL_WORKFLOW_TYPES) {
       expect(router.getRoute(workflowType)?.primary).toEqual({
         provider: "deepseek",
         model: "deepseek-v4-flash",
@@ -26,6 +26,7 @@ describe("model routing from environment", () => {
         model: "deepseek-v4-pro",
         approved_data_policy: true,
       });
+      expect(router.getRoute(workflowType)?.enabled).toBe(true);
     }
   });
 

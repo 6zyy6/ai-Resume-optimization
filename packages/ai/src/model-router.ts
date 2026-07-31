@@ -2,7 +2,7 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 import {
-  WORKFLOW_TYPES,
+  MODEL_WORKFLOW_TYPES,
   type WorkflowRoute,
   type WorkflowType,
 } from "./contracts.js";
@@ -18,6 +18,7 @@ const ProviderModelRouteSchema = Type.Object(
 
 const WorkflowRouteSchema = Type.Object(
   {
+    enabled: Type.Boolean(),
     primary: ProviderModelRouteSchema,
     fallback: ProviderModelRouteSchema,
     max_tokens: Type.Integer({ minimum: 1, maximum: 12_000 }),
@@ -40,7 +41,7 @@ const WorkflowRouteSchema = Type.Object(
 const RoutesSchema = Type.Partial(
   Type.Object(
     Object.fromEntries(
-      WORKFLOW_TYPES.map((workflowType) => [
+      MODEL_WORKFLOW_TYPES.map((workflowType) => [
         workflowType,
         WorkflowRouteSchema,
       ]),
@@ -59,28 +60,33 @@ const PROVIDER_KEY_ENV: Record<string, string[]> = {
 
 const DEFAULT_ROUTE_SETTINGS: Record<
   WorkflowType,
-  Pick<WorkflowRoute, "max_tokens" | "thinking" | "max_cost_usd">
+  Pick<WorkflowRoute, "enabled" | "max_tokens" | "thinking" | "max_cost_usd">
 > = {
-  extract_facts: { max_tokens: 1_200, thinking: "off", max_cost_usd: 0.1 },
-  next_question: { max_tokens: 1_200, thinking: "low", max_cost_usd: 0.1 },
-  write_experience_bullet: {
+  analyze_intake_answer: {
+    enabled: true,
+    max_tokens: 1_200,
+    thinking: "low",
+    max_cost_usd: 0.1,
+  },
+  compose_resume_draft: {
+    enabled: true,
     max_tokens: 1_800,
     thinking: "low",
     max_cost_usd: 0.2,
   },
-  parse_jd: { max_tokens: 1_800, thinking: "off", max_cost_usd: 0.15 },
+  parse_jd: { enabled: true, max_tokens: 1_800, thinking: "off", max_cost_usd: 0.15 },
   match_resume_to_jd: {
+    enabled: true,
     max_tokens: 1_800,
     thinking: "low",
     max_cost_usd: 0.2,
   },
-  generate_suggestion: {
+  generate_suggestions_batch: {
+    enabled: true,
     max_tokens: 1_800,
     thinking: "low",
     max_cost_usd: 0.2,
   },
-  fact_check: { max_tokens: 1_800, thinking: "low", max_cost_usd: 0.2 },
-  style_check: { max_tokens: 1_200, thinking: "off", max_cost_usd: 0.1 },
 };
 
 export interface ModelRouter {
@@ -112,10 +118,11 @@ export function createModelRouter({
       return route?.[attempt === 0 ? "primary" : "fallback"];
     },
     isReady(env = process.env) {
-      return WORKFLOW_TYPES.every((workflowType) => {
+      return MODEL_WORKFLOW_TYPES.every((workflowType) => {
         const route = routes[workflowType];
         if (
-          !route?.primary.approved_data_policy ||
+          !route?.enabled ||
+          !route.primary.approved_data_policy ||
           !route.fallback.approved_data_policy
         ) {
           return false;
@@ -142,7 +149,7 @@ export function createModelRouterFromEnv(
     const fallbackModel = env.AI_TEXT_FALLBACK_MODEL ?? primaryModel;
     return createModelRouter({
       routes: Object.fromEntries(
-        WORKFLOW_TYPES.map((workflowType) => [
+        MODEL_WORKFLOW_TYPES.map((workflowType) => [
           workflowType,
           {
             primary: {

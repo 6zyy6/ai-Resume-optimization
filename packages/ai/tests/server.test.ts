@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { MODEL_WORKFLOW_TYPES } from "../src/contracts.js";
 import type {
   PiRuntime,
   RuntimeCall,
@@ -13,22 +14,26 @@ const apps: Array<ReturnType<typeof buildApp>> = [];
 
 function input(): WorkflowInput {
   return {
-    workflow_type: "style_check",
-    workflow_version: "1",
+    workflow_type: "parse_jd",
+    workflow_version: "2",
+    prompt_template_version: "jd-parse@2",
     trace_id: "trace_1",
     task_id: "task_1",
+    owner_scope_hash: "owner_hash",
     locale: "zh-CN",
-    target: "web",
-    confirmed_facts: [],
-    jd_requirements: [],
-    current_object: { text: "负责产品整体战略" },
+    input_version: 1,
+    input_hash: "input_hash",
+    payload: {
+      jd_text: "负责产品整体战略",
+      allowed_categories: ["responsibility"],
+    },
   };
 }
 
 function runtime(call?: RuntimeCall): PiRuntime {
   const execute: RuntimeCall = call ?? (async () => ({
     status: "success",
-    output: { issues: [], passed: true },
+    output: { requirements: [] },
     events: [],
   }));
   return {
@@ -157,7 +162,7 @@ describe("Pi internal API", () => {
     expect(created.statusCode).toBe(202);
     expect(createdBody.request_id).toMatch(/^req_/);
     expect(run.status).toBe("succeeded");
-    expect(run.output).toEqual({ issues: [], passed: true });
+    expect(run.output).toEqual({ requirements: [] });
   });
 
   it("propagates cancel to the active runtime AbortSignal", async () => {
@@ -175,7 +180,7 @@ describe("Pi internal API", () => {
         });
         return {
           status: "success",
-          output: { issues: [], passed: true },
+          output: { requirements: [] },
           events: [],
         };
       }),
@@ -219,7 +224,7 @@ describe("Pi internal API", () => {
         });
         return {
           status: "success",
-          output: { issues: [], passed: true },
+          output: { requirements: [] },
           events: [],
         };
       }),
@@ -277,7 +282,7 @@ describe("Pi internal API", () => {
         });
         return {
           status: "success",
-          output: { issues: [], passed: true },
+          output: { requirements: [] },
           events: [],
         };
       }),
@@ -373,7 +378,10 @@ describe("Pi internal API", () => {
       },
       payload: JSON.stringify({
         ...input(),
-        current_object: { text: "x".repeat(512 * 1024) },
+        payload: {
+          ...input().payload,
+          jd_text: "x".repeat(512 * 1024),
+        },
       }),
     });
 
@@ -422,6 +430,7 @@ describe("Pi internal API", () => {
   it("uses the production runtime model and credential readiness check", async () => {
     vi.stubEnv("OPENAI_API_KEY", "configured-for-check-only");
     const modelRoute = {
+      enabled: true,
       primary: {
         provider: "openai",
         model: "missing-model",
@@ -449,16 +458,7 @@ describe("Pi internal API", () => {
       serviceToken: "service-token",
       modelRouter: createModelRouter({
         routes: Object.fromEntries(
-          [
-            "extract_facts",
-            "next_question",
-            "write_experience_bullet",
-            "parse_jd",
-            "match_resume_to_jd",
-            "generate_suggestion",
-            "fact_check",
-            "style_check",
-          ].map((workflowType) => [workflowType, modelRoute]),
+          MODEL_WORKFLOW_TYPES.map((workflowType) => [workflowType, modelRoute]),
         ),
       }),
     });

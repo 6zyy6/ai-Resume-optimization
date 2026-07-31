@@ -155,10 +155,7 @@ export async function runWorkflow(
       }
       budget.preflightAttempt();
 
-      const call =
-        input.workflow_type === "next_question"
-          ? runtime.runAgent
-          : runtime.runStructured;
+      const call = runtime.runStructured;
       let result: RuntimeResult;
       try {
         result = await call({
@@ -281,13 +278,6 @@ export async function runWorkflow(
       }
 
       const enforced = enforceEvidence(input, result.output);
-      if (enforced.failure_path) {
-        append("fact_validation_failed", {
-          schema_path: enforced.failure_path,
-          risk_flags: enforced.risk_flags,
-          error_code: "UNSUPPORTED_CLAIM",
-        });
-      }
 
       append("agent_end");
       append("agent_settled");

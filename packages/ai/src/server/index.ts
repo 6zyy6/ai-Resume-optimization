@@ -11,34 +11,11 @@ import { MemoryRunStore } from "./memory-run-store.js";
 import { RedisRunStore } from "./redis-run-store.js";
 
 const fixtureOutputs: Partial<Record<WorkflowType, unknown>> = {
-  extract_facts: { facts: [] },
-  next_question: {
-    question: {
-      question_id: "fixture_question",
-      text: "请补充当前经历中尚未确认的信息。",
-      fact_refs: [],
-    },
-  },
-  write_experience_bullet: {
-    suggestion_text: "待用户确认",
-    atomic_claims: [],
-    jd_requirement_refs: [],
-    reason: "fixture",
-    risk_flags: [],
-    requires_user_confirmation: true,
-  },
+  analyze_intake_answer: { fact_candidates: [], missing_slots: [], question_candidate: null },
+  compose_resume_draft: { sections: [] },
   parse_jd: { requirements: [] },
   match_resume_to_jd: { matches: [] },
-  generate_suggestion: {
-    suggestion_text: "待用户确认",
-    atomic_claims: [],
-    jd_requirement_refs: [],
-    reason: "fixture",
-    risk_flags: [],
-    requires_user_confirmation: true,
-  },
-  fact_check: { claims: [], exportable: false, risk_flags: [] },
-  style_check: { issues: [], passed: true },
+  generate_suggestions_batch: { suggestions: [] },
 };
 
 const mode = process.env.AI_RUNTIME_MODE === "fixture"

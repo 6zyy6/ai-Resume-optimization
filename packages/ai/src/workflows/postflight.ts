@@ -3,185 +3,117 @@ import { Value } from "typebox/value";
 import {
   WORKFLOW_OUTPUT_SCHEMAS,
   type SchemaFeedback,
-  type SuggestionOutput,
   type WorkflowInput,
 } from "../contracts.js";
-import { factCheck } from "./fact-check.js";
-import { WorkflowError } from "./workflow-error.js";
 
 function normalizePath(path: string): string {
-  if (!path || path === "/") {
-    return "$";
-  }
-  if (path.startsWith("$")) {
-    return path.slice(0, 512);
-  }
-  return `$${path.replaceAll("/", ".")}`.slice(0, 512);
+  if (!path || path === "/") return "$";
+  return (path.startsWith("$") ? path : `$${path.replaceAll("/", ".")}`).slice(0, 512);
 }
 
 function shapeFeedback(input: WorkflowInput, output: unknown): SchemaFeedback[] {
-  const schema = WORKFLOW_OUTPUT_SCHEMAS[input.workflow_type];
-  return [...Value.Errors(schema, output)].slice(0, 20).map((error) => {
-    const details = error as unknown as Record<string, unknown>;
-    const path =
-      typeof details.instancePath === "string"
-        ? details.instancePath
-        : typeof details.path === "string"
-          ? details.path
-          : "";
-    return { path: normalizePath(path), type: "schema" };
-  }).sort((left, right) => right.path.length - left.path.length);
+  return [...Value.Errors(WORKFLOW_OUTPUT_SCHEMAS[input.workflow_type], output)]
+    .slice(0, 20)
+    .map((error) => {
+      const details = error as unknown as Record<string, unknown>;
+      return {
+        path: normalizePath(
+          typeof details.instancePath === "string"
+            ? details.instancePath
+            : typeof details.path === "string" ? details.path : "",
+        ),
+        type: "schema",
+      };
+    });
 }
 
-function referenceFeedback(
-  input: WorkflowInput,
-  output: unknown,
-): SchemaFeedback[] {
-  const record = output as Record<string, unknown>;
-  const factIds = new Set(input.confirmed_facts.map(({ id }) => id));
-  const requirementIds = new Set(input.jd_requirements.map(({ id }) => id));
-  const failures: SchemaFeedback[] = [];
-  const check = (
-    refs: unknown,
-    ids: Set<string>,
-    path: string,
-  ) => {
-    if (!Array.isArray(refs)) {
-      return;
-    }
-    refs.forEach((ref, index) => {
-      if (typeof ref === "string" && !ids.has(ref)) {
-        failures.push({
-          path: `${path}[${index}]`.slice(0, 512),
-          type: "unknown_reference",
-        });
-      }
-    });
-  };
+function unknownReference(path: string): SchemaFeedback {
+  return { path, type: "unknown_reference" };
+}
 
-  if (input.workflow_type === "next_question") {
-    check(
-      (record.question as Record<string, unknown>)?.fact_refs,
-      factIds,
-      "$.question.fact_refs",
-    );
-  } else if (
-    input.workflow_type === "write_experience_bullet" ||
-    input.workflow_type === "generate_suggestion"
-  ) {
-    const claims = record.atomic_claims;
-    if (Array.isArray(claims)) {
-      claims.forEach((claim, index) => check(
-        (claim as Record<string, unknown>).fact_refs,
-        factIds,
-        `$.atomic_claims[${index}].fact_refs`,
-      ));
-    }
-    check(
-      record.jd_requirement_refs,
-      requirementIds,
-      "$.jd_requirement_refs",
-    );
-  } else if (input.workflow_type === "fact_check") {
-    const claims = record.claims;
-    if (Array.isArray(claims)) {
-      claims.forEach((claim, index) => check(
-        (claim as Record<string, unknown>).fact_refs,
-        factIds,
-        `$.claims[${index}].fact_refs`,
-      ));
-    }
-  } else if (input.workflow_type === "match_resume_to_jd") {
-    const matches = record.matches;
-    if (Array.isArray(matches)) {
-      matches.forEach((match, index) => {
-        const item = match as Record<string, unknown>;
-        check(item.fact_refs, factIds, `$.matches[${index}].fact_refs`);
-        check(
-          item.requirement_refs,
-          requirementIds,
-          `$.matches[${index}].requirement_refs`,
-        );
+function checkRefs(
+  refs: string[],
+  allowed: Set<string>,
+  path: string,
+  failures: SchemaFeedback[],
+) {
+  refs.forEach((ref, index) => {
+    if (!allowed.has(ref)) failures.push(unknownReference(`${path}[${index}]`));
+  });
+}
+
+function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] {
+  const failures: SchemaFeedback[] = [];
+  switch (input.workflow_type) {
+    case "analyze_intake_answer": {
+      const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      output.fact_candidates.forEach((candidate: any, index: number) => {
+        if (candidate.source_answer_id !== input.payload.answer_id) {
+          failures.push(unknownReference(`$.fact_candidates[${index}].source_answer_id`));
+        }
       });
+      if (output.question_candidate) {
+        checkRefs(output.question_candidate.related_fact_refs, factIds, "$.question_candidate.related_fact_refs", failures);
+      }
+      break;
     }
-  } else if (input.workflow_type === "extract_facts") {
-    const allowedSources = new Set([
-      "current_object",
-      ...input.confirmed_facts.map(({ id }) => id),
-    ]);
-    const facts = record.facts;
-    if (Array.isArray(facts)) {
-      facts.forEach((fact, index) => check(
-        (fact as Record<string, unknown>).source_refs,
-        allowedSources,
-        `$.facts[${index}].source_refs`,
-      ));
+    case "compose_resume_draft": {
+      const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      output.sections.forEach((section: any, sectionIndex: number) => {
+        section.bullets.forEach((bullet: any, bulletIndex: number) => {
+          bullet.atomic_claims.forEach((claim: any, claimIndex: number) =>
+            checkRefs(claim.fact_refs, factIds, `$.sections[${sectionIndex}].bullets[${bulletIndex}].atomic_claims[${claimIndex}].fact_refs`, failures));
+        });
+      });
+      break;
+    }
+    case "parse_jd":
+      output.requirements.forEach((requirement: any, index: number) => {
+        const { start, end } = requirement.source_range;
+        if (start >= end || end > input.payload.jd_text.length) {
+          failures.push({ path: `$.requirements[${index}].source_range`, type: "range_invalid" });
+        }
+      });
+      break;
+    case "match_resume_to_jd": {
+      const requirementIds = input.payload.confirmed_requirements.map(({ id }) => id);
+      const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      const seen = new Set<string>();
+      output.matches.forEach((match: any, index: number) => {
+        if (!requirementIds.includes(match.requirement_ref) || seen.has(match.requirement_ref)) {
+          failures.push(unknownReference(`$.matches[${index}].requirement_ref`));
+        }
+        seen.add(match.requirement_ref);
+        checkRefs(match.fact_refs, factIds, `$.matches[${index}].fact_refs`, failures);
+      });
+      if (seen.size !== requirementIds.length) failures.push({ path: "$.matches", type: "requirement_coverage_invalid" });
+      break;
+    }
+    case "generate_suggestions_batch": {
+      const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      const sources = new Map(input.payload.matches.map((match) => [
+        `${match.requirement_ref}:${match.target_path}:${match.original_hash}`,
+        match,
+      ]));
+      output.suggestions.forEach((suggestion: any, index: number) => {
+        const source = sources.get(`${suggestion.requirement_ref}:${suggestion.target_path}:${suggestion.original_hash}`);
+        if (!source || !["transferable", "needs_evidence"].includes(source.category)) {
+          failures.push(unknownReference(`$.suggestions[${index}]`));
+        }
+        suggestion.atomic_claims.forEach((claim: any, claimIndex: number) =>
+          checkRefs(claim.fact_refs, factIds, `$.suggestions[${index}].atomic_claims[${claimIndex}].fact_refs`, failures));
+      });
+      break;
     }
   }
   return failures.slice(0, 20);
 }
 
-export function validateRuntimeOutput(
-  input: WorkflowInput,
-  output: unknown,
-): SchemaFeedback[] {
+export function validateRuntimeOutput(input: WorkflowInput, output: unknown): SchemaFeedback[] {
   const shapeFailures = shapeFeedback(input, output);
-  return shapeFailures.length > 0
-    ? shapeFailures
-    : referenceFeedback(input, output);
+  return shapeFailures.length > 0 ? shapeFailures : referenceFeedback(input, output as any);
 }
 
-export function enforceEvidence(
-  input: WorkflowInput,
-  modelOutput: unknown,
-): {
-  output: unknown;
-  exportable: boolean;
-  risk_flags: string[];
-  failure_path?: string;
-} {
-  if (
-    input.workflow_type === "write_experience_bullet" ||
-    input.workflow_type === "generate_suggestion"
-  ) {
-    const suggestion = modelOutput as SuggestionOutput;
-    const checked = factCheck(
-      suggestion.suggestion_text,
-      input.confirmed_facts,
-    );
-    const output: SuggestionOutput = {
-      ...suggestion,
-      atomic_claims: checked.claims,
-      risk_flags: checked.risk_flags,
-      requires_user_confirmation: !checked.exportable,
-      exportable: checked.exportable,
-    };
-    if (!Value.Check(WORKFLOW_OUTPUT_SCHEMAS[input.workflow_type], output)) {
-      throw new WorkflowError("output_schema_invalid");
-    }
-    return {
-      output,
-      exportable: checked.exportable,
-      risk_flags: checked.risk_flags,
-      failure_path: checked.exportable ? undefined : "$.atomic_claims",
-    };
-  }
-  if (input.workflow_type === "fact_check") {
-    const text = input.current_object.text;
-    const checked = factCheck(
-      typeof text === "string" ? text : "",
-      input.confirmed_facts,
-    );
-    return {
-      output: checked,
-      exportable: checked.exportable,
-      risk_flags: checked.risk_flags,
-      failure_path: checked.exportable ? undefined : "$.claims",
-    };
-  }
-  return {
-    output: modelOutput,
-    exportable: false,
-    risk_flags: [],
-  };
+export function enforceEvidence(_input: WorkflowInput, output: unknown) {
+  return { output, exportable: false, risk_flags: [] as string[] };
 }

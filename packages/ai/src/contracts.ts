@@ -1,128 +1,300 @@
 import { Type, type Static, type TSchema } from "typebox";
 
-export const WORKFLOW_TYPES = [
-  "extract_facts",
-  "next_question",
-  "write_experience_bullet",
+export const MODEL_WORKFLOW_TYPES = [
+  "analyze_intake_answer",
+  "compose_resume_draft",
   "parse_jd",
   "match_resume_to_jd",
-  "generate_suggestion",
-  "fact_check",
-  "style_check",
+  "generate_suggestions_batch",
 ] as const;
 
-export type WorkflowType = (typeof WORKFLOW_TYPES)[number];
+export type WorkflowType = (typeof MODEL_WORKFLOW_TYPES)[number];
 
-export const WorkflowTypeSchema = Type.Union([
-  Type.Literal("extract_facts"),
-  Type.Literal("next_question"),
-  Type.Literal("write_experience_bullet"),
-  Type.Literal("parse_jd"),
-  Type.Literal("match_resume_to_jd"),
-  Type.Literal("generate_suggestion"),
-  Type.Literal("fact_check"),
-  Type.Literal("style_check"),
-]);
+export const WorkflowTypeSchema = Type.Union(
+  MODEL_WORKFLOW_TYPES.map((workflowType) => Type.Literal(workflowType)),
+);
+
+const IdSchema = Type.String({ minLength: 1, maxLength: 128 });
+const TextSchema = Type.String({ minLength: 1, maxLength: 20_000 });
+const HashSchema = Type.String({ minLength: 1, maxLength: 128 });
+const StringListSchema = Type.Array(IdSchema, { maxItems: 1_000 });
 
 export const ConfirmedFactSchema = Type.Object(
   {
-    id: Type.String({ minLength: 1, maxLength: 128 }),
+    id: IdSchema,
     kind: Type.String({ minLength: 1, maxLength: 64 }),
-    value: Type.String({ minLength: 1, maxLength: 20_000 }),
+    value: TextSchema,
     status: Type.Literal("confirmed"),
   },
   { additionalProperties: false },
 );
-
 export type ConfirmedFact = Static<typeof ConfirmedFactSchema>;
+
+const FactProjectionSchema = Type.Object(
+  {
+    id: IdSchema,
+    kind: Type.String({ minLength: 1, maxLength: 64 }),
+    value: TextSchema,
+  },
+  { additionalProperties: false },
+);
 
 export const JdRequirementSchema = Type.Object(
   {
-    id: Type.String({ minLength: 1, maxLength: 128 }),
-    category: Type.String({ minLength: 1, maxLength: 64 }),
-    value: Type.String({ minLength: 1, maxLength: 20_000 }),
+    id: IdSchema,
+    category: Type.Union([
+      Type.Literal("responsibility"),
+      Type.Literal("must_have"),
+      Type.Literal("nice_to_have"),
+      Type.Literal("implicit_capability"),
+    ]),
+    value: TextSchema,
   },
   { additionalProperties: false },
 );
-
 export type JdRequirement = Static<typeof JdRequirementSchema>;
 
-export const WorkflowInputSchema = Type.Object(
+const SourceRangeSchema = Type.Object(
   {
-    workflow_type: WorkflowTypeSchema,
-    workflow_version: Type.String({ minLength: 1, maxLength: 32 }),
-    trace_id: Type.String({ minLength: 1, maxLength: 128 }),
-    task_id: Type.String({ minLength: 1, maxLength: 128 }),
-    locale: Type.String({ minLength: 2, maxLength: 32 }),
-    target: Type.String({ minLength: 1, maxLength: 64 }),
-    confirmed_facts: Type.Array(ConfirmedFactSchema, { maxItems: 1_000 }),
-    jd_requirements: Type.Array(JdRequirementSchema, { maxItems: 1_000 }),
-    current_object: Type.Record(Type.String(), Type.Unknown()),
+    start: Type.Integer({ minimum: 0 }),
+    end: Type.Integer({ minimum: 0 }),
   },
   { additionalProperties: false },
 );
 
+const CommonEnvelope = {
+  workflow_version: Type.Literal("2"),
+  prompt_template_version: Type.String({ minLength: 1, maxLength: 128 }),
+  trace_id: IdSchema,
+  task_id: IdSchema,
+  owner_scope_hash: HashSchema,
+  locale: Type.Literal("zh-CN"),
+  input_version: Type.Integer({ minimum: 1 }),
+  input_hash: HashSchema,
+};
+
+export const AnalyzeIntakePayloadSchema = Type.Object(
+  {
+    session_id_hash: HashSchema,
+    answer_id: IdSchema,
+    question_id: IdSchema,
+    question_reason: Type.String({ minLength: 1, maxLength: 4_000 }),
+    answer_text: TextSchema,
+    answer_state: Type.String({ minLength: 1, maxLength: 64 }),
+    confirmed_facts: Type.Array(FactProjectionSchema, { maxItems: 1_000 }),
+    covered_slots: StringListSchema,
+    missing_slots: StringListSchema,
+    asked_question_ids: StringListSchema,
+  },
+  { additionalProperties: false },
+);
+
+const ComposeFactSchema = Type.Object(
+  {
+    id: IdSchema,
+    kind: Type.String({ minLength: 1, maxLength: 64 }),
+    value: TextSchema,
+    source_hashes: Type.Array(HashSchema, { minItems: 1, maxItems: 1_000 }),
+  },
+  { additionalProperties: false },
+);
+
+export const ComposeResumeDraftPayloadSchema = Type.Object(
+  {
+    resume_title: Type.String({ minLength: 1, maxLength: 512 }),
+    experience_groups: Type.Array(
+      Type.Object(
+        {
+          title: Type.String({ minLength: 1, maxLength: 512 }),
+          fact_refs: StringListSchema,
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 1_000 },
+    ),
+    confirmed_facts: Type.Array(ComposeFactSchema, { maxItems: 1_000 }),
+    allowed_section_types: Type.Array(
+      Type.String({ minLength: 1, maxLength: 64 }),
+      { minItems: 1, maxItems: 64 },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const RequirementCategorySchema = Type.Union([
+  Type.Literal("responsibility"),
+  Type.Literal("must_have"),
+  Type.Literal("nice_to_have"),
+  Type.Literal("implicit_capability"),
+]);
+
+export const ParseJdPayloadSchema = Type.Object(
+  {
+    jd_text: TextSchema,
+    job_title: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+    allowed_categories: Type.Array(RequirementCategorySchema, {
+      minItems: 1,
+      maxItems: 4,
+    }),
+  },
+  { additionalProperties: false },
+);
+
+export const MatchResumeToJdPayloadSchema = Type.Object(
+  {
+    resume_version_id: IdSchema,
+    resume_snapshot_hash: HashSchema,
+    confirmed_facts: Type.Array(FactProjectionSchema, { maxItems: 1_000 }),
+    confirmed_requirements: Type.Array(JdRequirementSchema, { maxItems: 1_000 }),
+  },
+  { additionalProperties: false },
+);
+
+const SuggestionSourceSchema = Type.Object(
+  {
+    requirement_ref: IdSchema,
+    category: Type.Union([
+      Type.Literal("transferable"),
+      Type.Literal("needs_evidence"),
+    ]),
+    fact_refs: StringListSchema,
+    target_path: Type.String({ minLength: 1, maxLength: 512 }),
+    original_hash: HashSchema,
+    original_text: TextSchema,
+  },
+  { additionalProperties: false },
+);
+
+export const GenerateSuggestionsBatchPayloadSchema = Type.Object(
+  {
+    matches: Type.Array(SuggestionSourceSchema, { minItems: 1, maxItems: 1_000 }),
+    confirmed_facts: Type.Array(FactProjectionSchema, { maxItems: 1_000 }),
+    confirmed_requirements: Type.Array(JdRequirementSchema, { maxItems: 1_000 }),
+  },
+  { additionalProperties: false },
+);
+
+export const WorkflowInputSchema = Type.Union([
+  Type.Object(
+    {
+      workflow_type: Type.Literal("analyze_intake_answer"),
+      ...CommonEnvelope,
+      payload: AnalyzeIntakePayloadSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      workflow_type: Type.Literal("compose_resume_draft"),
+      ...CommonEnvelope,
+      payload: ComposeResumeDraftPayloadSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      workflow_type: Type.Literal("parse_jd"),
+      ...CommonEnvelope,
+      payload: ParseJdPayloadSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      workflow_type: Type.Literal("match_resume_to_jd"),
+      ...CommonEnvelope,
+      payload: MatchResumeToJdPayloadSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      workflow_type: Type.Literal("generate_suggestions_batch"),
+      ...CommonEnvelope,
+      payload: GenerateSuggestionsBatchPayloadSchema,
+    },
+    { additionalProperties: false },
+  ),
+]);
 export type WorkflowInput = Static<typeof WorkflowInputSchema>;
 
 export const AtomicClaimSchema = Type.Object(
   {
-    text: Type.String({ minLength: 1, maxLength: 20_000 }),
-    fact_refs: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
-      maxItems: 1_000,
-    }),
-    status: Type.Union([
-      Type.Literal("supported"),
-      Type.Literal("needs_confirmation"),
-      Type.Literal("unsupported"),
+    text: TextSchema,
+    fact_refs: StringListSchema,
+    claim_order: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+export const QuestionSchema = Type.Object(
+  {
+    question_id: IdSchema,
+    text: Type.String({ minLength: 1, maxLength: 4_000 }),
+    fact_refs: StringListSchema,
+  },
+  { additionalProperties: false },
+);
+
+export interface FactCheckOutput {
+  claims: Array<{
+    text: string;
+    fact_refs: string[];
+    status: "supported" | "needs_confirmation" | "unsupported";
+  }>;
+  exportable: boolean;
+  risk_flags: string[];
+}
+
+const AnalyzeIntakeAnswerOutputSchema = Type.Object(
+  {
+    fact_candidates: Type.Array(
+      Type.Object(
+        {
+          kind: Type.String({ minLength: 1, maxLength: 64 }),
+          value: TextSchema,
+          source_answer_id: IdSchema,
+          source_range: SourceRangeSchema,
+          risk_flags: Type.Array(IdSchema, { maxItems: 100 }),
+        },
+        { additionalProperties: false },
+      ),
+      { maxItems: 1_000 },
+    ),
+    missing_slots: StringListSchema,
+    question_candidate: Type.Union([
+      Type.Object(
+        {
+          reason: Type.String({ minLength: 1, maxLength: 4_000 }),
+          slot: Type.String({ minLength: 1, maxLength: 128 }),
+          text: Type.String({ minLength: 1, maxLength: 4_000 }),
+          related_fact_refs: StringListSchema,
+        },
+        { additionalProperties: false },
+      ),
+      Type.Null(),
     ]),
   },
   { additionalProperties: false },
 );
 
-export const FactCheckOutputSchema = Type.Object(
+const ComposeResumeDraftOutputSchema = Type.Object(
   {
-    claims: Type.Array(AtomicClaimSchema, { maxItems: 1_000 }),
-    exportable: Type.Boolean(),
-    risk_flags: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
-      maxItems: 100,
-    }),
-  },
-  { additionalProperties: false },
-);
-
-export type FactCheckOutput = Static<typeof FactCheckOutputSchema>;
-
-export const SuggestionOutputSchema = Type.Object(
-  {
-    suggestion_text: Type.String({ minLength: 1, maxLength: 20_000 }),
-    atomic_claims: Type.Array(AtomicClaimSchema, { maxItems: 1_000 }),
-    jd_requirement_refs: Type.Array(
-      Type.String({ minLength: 1, maxLength: 128 }),
-      { maxItems: 1_000 },
-    ),
-    reason: Type.String({ minLength: 1, maxLength: 4_000 }),
-    risk_flags: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
-      maxItems: 100,
-    }),
-    requires_user_confirmation: Type.Boolean(),
-    exportable: Type.Boolean(),
-  },
-  { additionalProperties: false },
-);
-
-export type SuggestionOutput = Static<typeof SuggestionOutputSchema>;
-
-const ExtractFactsOutputSchema = Type.Object(
-  {
-    facts: Type.Array(
+    sections: Type.Array(
       Type.Object(
         {
-          id: Type.String({ minLength: 1, maxLength: 128 }),
-          kind: Type.String({ minLength: 1, maxLength: 64 }),
-          value: Type.String({ minLength: 1, maxLength: 20_000 }),
-          source_refs: Type.Array(
-            Type.String({ minLength: 1, maxLength: 128 }),
-            { minItems: 1, maxItems: 1_000 },
+          type: Type.String({ minLength: 1, maxLength: 64 }),
+          title: Type.String({ minLength: 1, maxLength: 512 }),
+          bullets: Type.Array(
+            Type.Object(
+              {
+                text: TextSchema,
+                atomic_claims: Type.Array(AtomicClaimSchema, { maxItems: 1_000 }),
+                risk_flags: Type.Array(IdSchema, { maxItems: 100 }),
+              },
+              { additionalProperties: false },
+            ),
+            { maxItems: 1_000 },
           ),
         },
         { additionalProperties: false },
@@ -130,22 +302,6 @@ const ExtractFactsOutputSchema = Type.Object(
       { maxItems: 1_000 },
     ),
   },
-  { additionalProperties: false },
-);
-
-export const QuestionSchema = Type.Object(
-  {
-    question_id: Type.String({ minLength: 1, maxLength: 128 }),
-    text: Type.String({ minLength: 1, maxLength: 4_000 }),
-    fact_refs: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
-      maxItems: 1_000,
-    }),
-  },
-  { additionalProperties: false },
-);
-
-const NextQuestionOutputSchema = Type.Object(
-  { question: QuestionSchema },
   { additionalProperties: false },
 );
 
@@ -154,14 +310,16 @@ const ParseJdOutputSchema = Type.Object(
     requirements: Type.Array(
       Type.Object(
         {
-          id: Type.String({ minLength: 1, maxLength: 128 }),
-          category: Type.Union([
-            Type.Literal("responsibility"),
-            Type.Literal("must_have"),
-            Type.Literal("nice_to_have"),
-            Type.Literal("implicit_capability"),
+          category: RequirementCategorySchema,
+          priority: Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3)]),
+          value: TextSchema,
+          source_range: SourceRangeSchema,
+          explicitness: Type.Union([Type.Literal("explicit"), Type.Literal("implicit")]),
+          confidence_band: Type.Union([
+            Type.Literal("high"),
+            Type.Literal("medium"),
+            Type.Literal("low"),
           ]),
-          value: Type.String({ minLength: 1, maxLength: 20_000 }),
         },
         { additionalProperties: false },
       ),
@@ -171,25 +329,24 @@ const ParseJdOutputSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const MatchOutputSchema = Type.Object(
+const MatchResumeToJdOutputSchema = Type.Object(
   {
     matches: Type.Array(
       Type.Object(
         {
+          requirement_ref: IdSchema,
           category: Type.Union([
             Type.Literal("direct"),
             Type.Literal("transferable"),
-            Type.Literal("gap"),
             Type.Literal("needs_evidence"),
+            Type.Literal("gap"),
           ]),
-          fact_refs: Type.Array(
-            Type.String({ minLength: 1, maxLength: 128 }),
+          fact_refs: StringListSchema,
+          resume_target_paths: Type.Array(
+            Type.String({ minLength: 1, maxLength: 512 }),
             { maxItems: 1_000 },
           ),
-          requirement_refs: Type.Array(
-            Type.String({ minLength: 1, maxLength: 128 }),
-            { maxItems: 1_000 },
-          ),
+          reason_code: Type.String({ minLength: 1, maxLength: 128 }),
         },
         { additionalProperties: false },
       ),
@@ -199,37 +356,42 @@ const MatchOutputSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const StyleCheckOutputSchema = Type.Object(
+const GenerateSuggestionsBatchOutputSchema = Type.Object(
   {
-    issues: Type.Array(
+    suggestions: Type.Array(
       Type.Object(
         {
-          code: Type.String({ minLength: 1, maxLength: 128 }),
-          severity: Type.Union([
-            Type.Literal("info"),
-            Type.Literal("warning"),
-            Type.Literal("error"),
-          ]),
-          schema_path: Type.String({ minLength: 1, maxLength: 512 }),
+          target_path: Type.String({ minLength: 1, maxLength: 512 }),
+          original_hash: HashSchema,
+          suggested_text: TextSchema,
+          atomic_claims: Type.Array(AtomicClaimSchema, { maxItems: 1_000 }),
+          requirement_ref: IdSchema,
+          reason: Type.String({ minLength: 1, maxLength: 4_000 }),
+          risk_flags: Type.Array(IdSchema, { maxItems: 100 }),
+          proposed_status: Type.Union([Type.Literal("pending"), Type.Literal("blocked")]),
         },
         { additionalProperties: false },
       ),
       { maxItems: 1_000 },
     ),
-    passed: Type.Boolean(),
   },
   { additionalProperties: false },
 );
 
+export interface WorkflowResultMap {
+  analyze_intake_answer: Static<typeof AnalyzeIntakeAnswerOutputSchema>;
+  compose_resume_draft: Static<typeof ComposeResumeDraftOutputSchema>;
+  parse_jd: Static<typeof ParseJdOutputSchema>;
+  match_resume_to_jd: Static<typeof MatchResumeToJdOutputSchema>;
+  generate_suggestions_batch: Static<typeof GenerateSuggestionsBatchOutputSchema>;
+}
+
 export const WORKFLOW_OUTPUT_SCHEMAS: Record<WorkflowType, TSchema> = {
-  extract_facts: ExtractFactsOutputSchema,
-  next_question: NextQuestionOutputSchema,
-  write_experience_bullet: SuggestionOutputSchema,
+  analyze_intake_answer: AnalyzeIntakeAnswerOutputSchema,
+  compose_resume_draft: ComposeResumeDraftOutputSchema,
   parse_jd: ParseJdOutputSchema,
-  match_resume_to_jd: MatchOutputSchema,
-  generate_suggestion: SuggestionOutputSchema,
-  fact_check: FactCheckOutputSchema,
-  style_check: StyleCheckOutputSchema,
+  match_resume_to_jd: MatchResumeToJdOutputSchema,
+  generate_suggestions_batch: GenerateSuggestionsBatchOutputSchema,
 };
 
 export interface ProviderModelRoute {
@@ -239,6 +401,7 @@ export interface ProviderModelRoute {
 }
 
 export interface WorkflowRoute {
+  enabled: boolean;
   primary: ProviderModelRoute;
   fallback: ProviderModelRoute;
   max_tokens: number;
@@ -318,9 +481,7 @@ export interface ModelBudgetRates {
   };
 }
 
-export type RuntimeCall = (
-  call: RuntimeCallInput,
-) => Promise<RuntimeResult>;
+export type RuntimeCall = (call: RuntimeCallInput) => Promise<RuntimeResult>;
 
 export interface PiRuntime {
   mode: "fixture" | "production";
