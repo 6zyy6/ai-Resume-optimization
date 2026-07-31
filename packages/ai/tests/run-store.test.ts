@@ -92,6 +92,7 @@ describe("RunStore state fencing", () => {
     });
     const completed = await store.complete(
       "run_1",
+      "pi-a",
       "succeeded",
       terminalReceipt(runContext("run_1", "hash_1"), "succeeded", null),
     );
@@ -126,5 +127,24 @@ describe("RunStore state fencing", () => {
     expect(
       await store.heartbeat("run_owner_lost", "pi-owner"),
     ).toBe(false);
+  });
+
+  it("fences an expired owner from completing successfully", async () => {
+    let now = 1_000;
+    const store = new MemoryRunStore({ now: () => now, leaseMs: 100 });
+    const context = runContext("run_fenced", "hash_fenced");
+    await store.createOrGet({
+      ai_run_id: "run_fenced", input_hash: "hash_fenced", status: "queued",
+      owner_instance_id: "pi-a", cancel_requested: false, lease_expires_at: 1_100, context,
+    });
+    now = 1_101;
+    const completed = await store.complete(
+      "run_fenced", "pi-a", "succeeded", terminalReceipt(context, "succeeded", null),
+    );
+
+    expect(completed).toMatchObject({
+      status: "failed", error_code: "owner_instance_lost",
+      receipt: { run: { status: "failed", error_code: "owner_instance_lost" } },
+    });
   });
 });

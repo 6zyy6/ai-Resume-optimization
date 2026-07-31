@@ -77,12 +77,17 @@ export class MemoryRunStore implements RunStore {
 
   async complete(
     aiRunId: string,
+    instanceId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
     receipt: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
     const record = this.runs.get(aiRunId);
+    this.expireOwnerLease(record);
     if (!record || isTerminalStatus(record.status)) {
+      return this.clone(record);
+    }
+    if (record.owner_instance_id !== instanceId || record.lease_expires_at <= this.now()) {
       return this.clone(record);
     }
     const finalStatus =
@@ -90,13 +95,9 @@ export class MemoryRunStore implements RunStore {
         ? "cancelled"
         : status;
     record.status = finalStatus;
-    record.receipt = terminalReceipt(
-      record.context,
-      finalStatus,
-      finalStatus === "failed" ? errorCode ?? receipt.run.error_code : null,
-      receipt,
-      new Date(this.now()).toISOString(),
-    );
+    record.receipt = finalStatus === status
+      ? structuredClone(receipt)
+      : terminalReceipt(record.context, "cancelled", null, receipt, new Date(this.now()).toISOString());
     record.error_code = record.receipt.run.error_code ?? undefined;
     return this.clone(record);
   }

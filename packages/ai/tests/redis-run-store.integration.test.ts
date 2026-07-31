@@ -57,12 +57,26 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
         expect((await second.requestCancel(aiRunId)).outcome).toBe("accepted");
         await first.complete(
           aiRunId,
+          "pi-redis-owner",
           "cancelled",
           terminalReceipt(record.context, "cancelled", null),
         );
         expect((await second.get(aiRunId))?.status).toBe("cancelled");
       }
       await expect.poll(() => received.size).toBe(100);
+
+      const mismatchedRunId = `run_test_${randomUUID()}`;
+      const mismatchedContext = context(mismatchedRunId, "mismatch_hash");
+      await first.createOrGet({
+        ai_run_id: mismatchedRunId, input_hash: "mismatch_hash", status: "queued",
+        owner_instance_id: "pi-owner-a", cancel_requested: false,
+        lease_expires_at: Date.now() + 5_000, context: mismatchedContext,
+      });
+      await first.complete(
+        mismatchedRunId, "pi-owner-b", "succeeded",
+        terminalReceipt(mismatchedContext, "succeeded", null),
+      );
+      expect((await second.get(mismatchedRunId))?.status).toBe("queued");
 
       const lostRunId = `run_test_${randomUUID()}`;
       await first.createOrGet({

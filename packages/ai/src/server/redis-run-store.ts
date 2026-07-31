@@ -7,7 +7,6 @@ import {
   type RunRecord,
   type RunStatus,
   type RunStore,
-  isTerminalStatus,
   terminalReceipt,
 } from "./run-store.js";
 import { RUN_LEASE_MS } from "./run-store.js";
@@ -163,6 +162,14 @@ end
 if status == "succeeded" or status == "failed" or status == "cancelled" then
   return status
 end
+if redis.call("HGET", KEYS[1], "owner_instance_id") ~= ARGV[6] then
+  return "owner_mismatch"
+end
+if tonumber(redis.call("HGET", KEYS[1], "lease_expires_at") or "0") <= tonumber(ARGV[7]) then
+  redis.call("HSET", KEYS[1], "status", "failed", "error_code", "owner_instance_lost", "receipt_json", ARGV[8])
+  redis.call("EXPIRE", KEYS[1], ARGV[4])
+  return "owner_instance_lost"
+end
 local final_status = ARGV[1]
 local cancel_requested = redis.call("HGET", KEYS[1], "cancel_requested")
 if cancel_requested == "1" and final_status == "succeeded" then
@@ -300,18 +307,29 @@ export class RedisRunStore implements RunStore {
 
   async complete(
     aiRunId: string,
+    instanceId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
     receipt: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
-    const stored = await this.get(aiRunId);
-    if (!stored || isTerminalStatus(stored.status)) return stored;
+    const run = receipt.run;
+    const context = {
+      ai_run_id: run.ai_run_id,
+      workflow_type: run.workflow_type,
+      workflow_version: run.workflow_version,
+      prompt_template_version: run.prompt_template_version,
+      trace_id: run.trace_id,
+      task_id: run.task_id,
+      input_hash: run.input_hash,
+      started_at: run.started_at,
+    };
     const cancelledReceipt = terminalReceipt(
-      stored.context,
+      context,
       "cancelled",
       null,
       receipt,
     );
+    const ownerLostReceipt = terminalReceipt(context, "failed", "owner_instance_lost", receipt);
     await this.client.eval(COMPLETE_SCRIPT, {
       keys: [this.key(aiRunId)],
       arguments: [
@@ -320,6 +338,9 @@ export class RedisRunStore implements RunStore {
         errorCode ?? "",
         String(this.ttlSeconds),
         JSON.stringify(cancelledReceipt),
+        instanceId,
+        String(Date.now()),
+        JSON.stringify(ownerLostReceipt),
       ],
     });
     return this.get(aiRunId);

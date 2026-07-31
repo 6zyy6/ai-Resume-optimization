@@ -270,6 +270,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
             controller.abort();
             return;
           }
+          if (isTerminalStatus(stored.status)) {
+            controller.abort();
+            return;
+          }
           if (stored.cancel_requested) {
             controller.abort();
           }
@@ -277,9 +281,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
             signal: controller.signal,
             aiRunId,
           });
-          await runStore.complete(
-            aiRunId,
-            receipt.run.status,
+            await runStore.complete(
+              aiRunId,
+              instanceId,
+              receipt.run.status,
             receipt,
             receipt.run.error_code ?? undefined,
           );
@@ -287,6 +292,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           try {
             await runStore.complete(
               aiRunId,
+              instanceId,
               controller.signal.aborted ? "cancelled" : "failed",
               terminalReceipt(
                 context,

@@ -56,6 +56,7 @@ export interface RunStore {
   heartbeat(aiRunId: string, instanceId: string): Promise<boolean>;
   complete(
     aiRunId: string,
+    instanceId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
     receipt: AiExecutionReceipt,
     errorCode?: string,
