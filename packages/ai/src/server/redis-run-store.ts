@@ -17,13 +17,14 @@ const KEY_PREFIX = "pi:run:";
 const CANCEL_CHANNEL_PREFIX = "pi:cancel:";
 const OWNER_LOST_RECEIPT_LUA = `
 local context = cjson.decode(redis.call("HGET", KEYS[1], "context_json"))
+local occurred_at = ARGV[#ARGV]
 local event = {
   ai_run_id = context.ai_run_id,
   trace_id = context.trace_id,
   task_id = context.task_id,
   event_seq = 1,
   event_type = "run_failed",
-  occurred_at = context.started_at,
+  occurred_at = occurred_at,
   details = { error_code = "owner_instance_lost" }
 }
 local run = {
@@ -40,7 +41,7 @@ local run = {
   response_model = cjson.null,
   started_at = context.started_at,
   first_token_at = cjson.null,
-  finished_at = context.started_at,
+  finished_at = occurred_at,
   usage = { input = 0, output = 0, cache_read = 0, cache_write = 0, reasoning = 0, total_tokens = 0, cost_usd = 0 },
   events = { event },
   turn_count = 0,
@@ -51,7 +52,7 @@ local run = {
   facts_valid = false,
   input_hash = context.input_hash,
   exportable = false,
-  risk_flags = {}
+  risk_flags = cjson.decode("[]")
 }
 redis.call("HSET", KEYS[1], "receipt_json", cjson.encode({ run = run }))
 `;
@@ -253,7 +254,11 @@ export class RedisRunStore implements RunStore {
     const key = this.key(aiRunId);
     await this.client.eval(EXPIRE_OWNER_SCRIPT, {
       keys: [key],
-      arguments: [String(Date.now()), String(this.ttlSeconds)],
+      arguments: [
+        String(Date.now()),
+        String(this.ttlSeconds),
+        new Date().toISOString(),
+      ],
     });
     const values = await this.client.hGetAll(key);
     if (!values.ai_run_id) {
@@ -270,6 +275,7 @@ export class RedisRunStore implements RunStore {
         String(Date.now()),
         String(Date.now() + this.leaseMs),
         String(this.ttlSeconds),
+        new Date().toISOString(),
       ],
     });
     if (Number(exists) !== 1) {
@@ -286,6 +292,7 @@ export class RedisRunStore implements RunStore {
         String(Date.now()),
         String(Date.now() + this.leaseMs),
         String(this.ttlSeconds),
+        new Date().toISOString(),
       ],
     });
     return Number(result) === 1;

@@ -79,6 +79,29 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
       const lost = await second.get(lostRunId);
       expect(lost?.status).toBe("failed");
       expect(lost?.error_code).toBe("owner_instance_lost");
+      expect(lost?.receipt).not.toHaveProperty("result");
+      expect(Object.keys(lost?.receipt?.run ?? {}).sort()).toEqual([
+        "ai_run_id", "error_code", "events", "exportable", "facts_valid",
+        "fallback_count", "finished_at", "first_token_at", "input_hash",
+        "prompt_template_version", "provider", "requested_model", "response_model",
+        "retry_count", "risk_flags", "schema_valid", "started_at", "status",
+        "task_id", "tool_call_count", "trace_id", "turn_count", "usage",
+        "workflow_type", "workflow_version",
+      ]);
+      expect(lost?.receipt?.run).toMatchObject({
+        ai_run_id: lostRunId,
+        status: "failed",
+        error_code: "owner_instance_lost",
+      });
+      expect(Array.isArray(lost?.receipt?.run.risk_flags)).toBe(true);
+      expect(lost?.receipt?.run.risk_flags).toEqual([]);
+      expect(Date.parse(lost!.receipt!.run.finished_at)).toBeGreaterThan(
+        Date.parse(lost!.receipt!.run.started_at),
+      );
+      expect(lost?.receipt?.run.events.at(-1)).toMatchObject({
+        event_type: "run_failed",
+        occurred_at: lost?.receipt?.run.finished_at,
+      });
     } finally {
       await unsubscribe();
       await first.close();
