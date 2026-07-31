@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { PiRuntime, WorkflowInput } from "../src/contracts.js";
+import type {
+  PiRuntime,
+  RuntimeCall,
+  RuntimeResult,
+  TraceEvent,
+  WorkflowInput,
+} from "../src/contracts.js";
 import { validateRuntimeOutput } from "../src/workflows/postflight.js";
 import { createFixtureRuntime, runWorkflow } from "../src/workflows/run-workflow.js";
 
@@ -39,6 +45,56 @@ function output(workflowType: WorkflowInput["workflow_type"]): unknown {
   }
 }
 
+type FixtureCall = (
+  call: Parameters<RuntimeCall>[0],
+) => Promise<Record<string, unknown>>;
+
+function makeRuntime(call: FixtureCall): PiRuntime {
+  const normalized: RuntimeCall = async (runtimeInput) => {
+    const result = await call(runtimeInput);
+    return (
+      "status" in result
+        ? result
+        : { ...result, status: "success" }
+    ) as RuntimeResult;
+  };
+  return {
+    mode: "fixture",
+    runStructured: normalized,
+    runAgent: normalized,
+  };
+}
+
+function usageEvent(
+  totalTokens: number,
+  costUsd = 0,
+): Record<string, unknown> {
+  return {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      provider: "faux",
+      model: "faux-1",
+      stopReason: "error",
+      usage: {
+        input: totalTokens,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens,
+        cost: {
+          input: costUsd,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: costUsd,
+        },
+      },
+    },
+  };
+}
+
 describe("runWorkflow", () => {
   it.each([
     "analyze_intake_answer",
@@ -50,35 +106,276 @@ describe("runWorkflow", () => {
     let structuredCalls = 0;
     const runtime: PiRuntime = {
       mode: "fixture",
-      runStructured: async () => ({ status: "success", output: output(workflowType), events: [] }),
+      runStructured: async () => {
+        structuredCalls += 1;
+        return { status: "success", output: output(workflowType), events: [] };
+      },
       runAgent: async () => { throw new Error("agent runtime must not be selected"); },
       getRetryCount: () => 0,
     };
 
     const run = await runWorkflow(input(workflowType), runtime);
 
-    structuredCalls += 1;
     expect(run.status).toBe("succeeded");
     expect(structuredCalls).toBe(1);
   });
 
-  it("rejects invalid output once, then sends schema feedback for correction", async () => {
-    let calls = 0;
-    const runtime: PiRuntime = {
-      mode: "fixture",
-      runAgent: async () => { throw new Error("not used"); },
-      runStructured: async ({ schema_feedback }) => {
-        calls += 1;
-        return {
-          status: "success",
-          output: calls === 1 ? { requirements: [{ category: "must_have" }] } : output("parse_jd"),
-          events: [],
-        };
+  it("allows one schema correction with typed feedback and no fallback", async () => {
+    const calls: Array<Parameters<RuntimeCall>[0]> = [];
+    const runtime = makeRuntime(async (call) => {
+      calls.push(call);
+      return {
+        output: calls.length === 1
+          ? { requirements: "not-an-array" }
+          : output("parse_jd"),
+        events: [],
+      };
+    });
+
+    const run = await runWorkflow(input("parse_jd"), runtime);
+
+    expect(calls.map(({ phase }) => phase)).toEqual(["initial", "correction"]);
+    expect(calls[1]?.schema_feedback).toEqual([
+      { path: "$.requirements", type: "schema" },
+    ]);
+    expect(run.fallback_count).toBe(0);
+    expect(run.events.some(({ event_type }) => event_type === "model_fallback"))
+      .toBe(false);
+  });
+
+  it("fails after the single schema correction is still invalid", async () => {
+    const runtime = makeRuntime(async () => ({
+      output: { requirements: "still-not-an-array" },
+      events: [],
+    }));
+
+    await expect(runWorkflow(input("parse_jd"), runtime)).rejects
+      .toMatchObject({ code: "output_schema_invalid" });
+  });
+
+  it("enforces the 30 second deadline without waiting in real time", async () => {
+    let now = 0;
+    const runtime = makeRuntime(async () => ({
+      output: output("parse_jd"),
+      events: [{ type: "message_start" }, { type: "message_end" }],
+    }));
+
+    await expect(runWorkflow(input("parse_jd"), runtime, {
+      now: () => {
+        now += 15_001;
+        return now;
       },
+    })).rejects.toMatchObject({ code: "timeout_exceeded" });
+  });
+
+  it("preserves JSON failure usage and sends invalid-json correction feedback", async () => {
+    const calls: Array<Parameters<RuntimeCall>[0]> = [];
+    const runtime = makeRuntime(async (call) => {
+      calls.push(call);
+      return calls.length === 1
+        ? {
+            status: "failure",
+            failure_kind: "json",
+            error_code: "invalid_json",
+            events: [usageEvent(17)],
+          }
+        : { output: output("parse_jd"), events: [] };
+    });
+
+    const run = await runWorkflow(input("parse_jd"), runtime);
+
+    expect(run.usage.total_tokens).toBe(17);
+    expect(calls.map(({ phase }) => phase)).toEqual(["initial", "correction"]);
+    expect(calls[1]?.schema_feedback).toEqual([
+      { path: "$", type: "invalid_json" },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "turn",
+      events: Array.from({ length: 4 }, () => ({ type: "turn_start" })),
+      code: "turn_limit_exceeded",
+    },
+    {
+      name: "tool",
+      events: Array.from({ length: 6 }, () => ({
+        type: "tool_execution_start",
+        toolName: "get_confirmed_facts",
+      })),
+      code: "tool_limit_exceeded",
+    },
+    {
+      name: "token",
+      events: [usageEvent(12_000)],
+      code: "token_limit_exceeded",
+    },
+  ])(
+    "does not enter schema correction after the $name budget is exhausted",
+    async ({ events, code }) => {
+      const calls: Array<Parameters<RuntimeCall>[0]> = [];
+      const traceEvents: TraceEvent[] = [];
+      const runtime = makeRuntime(async (call) => {
+        calls.push(call);
+        return {
+          output: { requirements: "invalid" },
+          events,
+        };
+      });
+
+      await expect(runWorkflow(input("parse_jd"), runtime, {
+        onEvent: (event) => traceEvents.push(event),
+      })).rejects.toMatchObject({ code });
+      expect(calls.map(({ phase }) => phase)).toEqual(["initial"]);
+      expect(traceEvents.at(-1)).toMatchObject({
+        event_type: "run_failed",
+        details: { error_code: code },
+      });
+    },
+  );
+
+  it("applies the runtime cost gate before schema correction", async () => {
+    const calls: Array<Parameters<RuntimeCall>[0]> = [];
+    const runtime = makeRuntime(async (call) => {
+      calls.push(call);
+      return {
+        output: { requirements: "invalid" },
+        events: [usageEvent(10, 0.06)],
+        max_cost_usd: 0.05,
+      };
+    });
+
+    await expect(runWorkflow(input("parse_jd"), runtime)).rejects
+      .toMatchObject({ code: "cost_limit_exceeded" });
+    expect(calls.map(({ phase }) => phase)).toEqual(["initial"]);
+  });
+
+  it("preserves provider failure usage through an audited retry", async () => {
+    const calls: Array<Parameters<RuntimeCall>[0]> = [];
+    const runtime = {
+      ...makeRuntime(async (call) => {
+        calls.push(call);
+        return calls.length === 1
+          ? {
+              status: "failure",
+              failure_kind: "provider",
+              error_code: "provider_429",
+              events: [usageEvent(23)],
+            }
+          : { output: output("parse_jd"), events: [] };
+      }),
+      getRetryCount: () => 1,
     };
 
-    await expect(runWorkflow(input("parse_jd"), runtime)).resolves.toMatchObject({ status: "succeeded" });
-    expect(calls).toBe(2);
+    const run = await runWorkflow(input("parse_jd"), runtime);
+
+    expect(calls.map(({ phase }) => phase)).toEqual(["initial", "retry"]);
+    expect(run.usage.total_tokens).toBe(23);
+    expect(run.fallback_count).toBe(0);
+    expect(run.events.map(({ event_type }) => event_type)).toEqual(
+      expect.arrayContaining(["auto_retry_start", "auto_retry_end"]),
+    );
+  });
+
+  it("uses fallback only after the audited provider retry is exhausted", async () => {
+    const calls: Array<Parameters<RuntimeCall>[0]> = [];
+    const runtime = {
+      ...makeRuntime(async (call) => {
+        calls.push(call);
+        if (calls.length < 3) {
+          return {
+            status: "failure",
+            failure_kind: "provider",
+            error_code: "provider_unavailable",
+            events: [],
+          };
+        }
+        return { output: output("parse_jd"), events: [] };
+      }),
+      getRetryCount: () => 1,
+    };
+
+    const run = await runWorkflow(input("parse_jd"), runtime);
+
+    expect(calls.map(({ phase }) => phase)).toEqual([
+      "initial",
+      "retry",
+      "fallback",
+    ]);
+    expect(run.fallback_count).toBe(1);
+    expect(run.events.find(({ event_type }) => event_type === "model_fallback")
+      ?.details?.fallback_reason).toBe("provider_unavailable");
+  });
+
+  it("maps unknown runtime events and preserves exact usage", async () => {
+    const runtime = makeRuntime(async () => ({
+      output: output("parse_jd"),
+      events: [
+        { type: "future_event", payload: "private" },
+        {
+          ...usageEvent(23, 0.03),
+          message: {
+            ...(usageEvent(23, 0.03).message as object),
+            usage: {
+              input: 11,
+              output: 7,
+              cacheRead: 2,
+              cacheWrite: 3,
+              reasoning: 5,
+              totalTokens: 23,
+              cost: {
+                input: 0.011,
+                output: 0.014,
+                cacheRead: 0.002,
+                cacheWrite: 0.003,
+                total: 0.03,
+              },
+            },
+          },
+        },
+      ],
+    }));
+
+    const run = await runWorkflow(input("parse_jd"), runtime);
+
+    expect(run.events.some(({ event_type }) => event_type === "unknown"))
+      .toBe(true);
+    expect(run.usage).toEqual({
+      input: 11,
+      output: 7,
+      cache_read: 2,
+      cache_write: 3,
+      reasoning: 5,
+      total_tokens: 23,
+      cost_usd: 0.03,
+    });
+    expect(run.events.map(({ event_seq }) => event_seq)).toEqual(
+      Array.from({ length: run.events.length }, (_, index) => index + 1),
+    );
+  });
+
+  it("propagates runtime cancellation without appending later events", async () => {
+    const controller = new AbortController();
+    const runtime = makeRuntime(async () => ({
+      output: output("parse_jd"),
+      events: [
+        { type: "message_start" },
+        { type: "first_token" },
+        { type: "message_end" },
+      ],
+    }));
+
+    const run = await runWorkflow(input("parse_jd"), runtime, {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (event.event_type === "message_start") controller.abort();
+      },
+    });
+
+    expect(run.status).toBe("cancelled");
+    expect(run.events.some(({ event_type }) => event_type === "first_token"))
+      .toBe(false);
+    expect(run.events.at(-1)?.event_type).toBe("run_cancelled");
   });
 
   it("validates workflow-specific evidence references and ranges", () => {
@@ -93,6 +390,54 @@ describe("runWorkflow", () => {
     const parsed = output("parse_jd") as any;
     parsed.requirements[0].source_range.end = 99;
     expect(validateRuntimeOutput(input("parse_jd"), parsed)[0]).toMatchObject({ type: "range_invalid" });
+  });
+
+  it("validates intake answer ranges against Unicode code point length", () => {
+    const analyzeInput = input("analyze_intake_answer") as any;
+    analyzeInput.payload.answer_text = "😀中";
+    const valid = output("analyze_intake_answer") as any;
+    valid.fact_candidates[0].source_range = { start: 1, end: 2 };
+    const outOfBounds = structuredClone(valid);
+    outOfBounds.fact_candidates[0].source_range.end = 3;
+
+    expect(validateRuntimeOutput(analyzeInput, valid)).toEqual([]);
+    expect(validateRuntimeOutput(analyzeInput, outOfBounds)[0]).toEqual({
+      path: "$.fact_candidates[0].source_range",
+      type: "range_invalid",
+    });
+  });
+
+  it("validates JD ranges against Unicode code point length", () => {
+    const parseInput = input("parse_jd") as any;
+    parseInput.payload.jd_text = "😀中";
+    const valid = output("parse_jd") as any;
+    valid.requirements[0].source_range = { start: 0, end: 2 };
+    const outOfBounds = structuredClone(valid);
+    outOfBounds.requirements[0].source_range.end = 3;
+
+    expect(validateRuntimeOutput(parseInput, valid)).toEqual([]);
+    expect(validateRuntimeOutput(parseInput, outOfBounds)[0]).toEqual({
+      path: "$.requirements[0].source_range",
+      type: "range_invalid",
+    });
+  });
+
+  it("rejects draft section types outside the caller allowlist", () => {
+    const draft = output("compose_resume_draft") as any;
+    draft.sections[0].type = "education";
+
+    expect(validateRuntimeOutput(input("compose_resume_draft"), draft)[0])
+      .toEqual({ path: "$.sections[0].type", type: "not_allowed" });
+  });
+
+  it("rejects JD requirement categories outside the caller allowlist", () => {
+    const parsed = output("parse_jd") as any;
+    parsed.requirements[0].category = "nice_to_have";
+
+    expect(validateRuntimeOutput(input("parse_jd"), parsed)[0]).toEqual({
+      path: "$.requirements[0].category",
+      type: "not_allowed",
+    });
   });
 
   it("requires complete unique matches and sourced suggestions", () => {
@@ -118,6 +463,35 @@ describe("runWorkflow", () => {
       },
       { path: "$.suggestions[0]", type: "unknown_reference" },
     ]);
+  });
+
+  it("rejects unknown fact refs in suggestion match inputs", () => {
+    const suggestionInput = input("generate_suggestions_batch") as any;
+    suggestionInput.payload.matches[0].fact_refs = ["unknown_fact"];
+
+    expect(
+      validateRuntimeOutput(
+        suggestionInput,
+        output("generate_suggestions_batch"),
+      )[0],
+    ).toEqual({
+      path: "$.payload.matches[0].fact_refs[0]",
+      type: "unknown_reference",
+    });
+  });
+
+  it("does not treat colon-delimited suggestion source fields as a tuple", () => {
+    const suggestionInput = input("generate_suggestions_batch") as any;
+    suggestionInput.payload.matches[0].target_path = "sections:0";
+    suggestionInput.payload.matches[0].original_hash = "bullet_hash";
+    const suggestion = output("generate_suggestions_batch") as any;
+    suggestion.suggestions[0].target_path = "sections";
+    suggestion.suggestions[0].original_hash = "0:bullet_hash";
+
+    expect(validateRuntimeOutput(suggestionInput, suggestion)[0]).toEqual({
+      path: "$.suggestions[0]",
+      type: "unknown_reference",
+    });
   });
 
   it("keeps fixture runs deterministic", async () => {

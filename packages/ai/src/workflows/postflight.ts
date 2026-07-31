@@ -31,6 +31,17 @@ function unknownReference(path: string): SchemaFeedback {
   return { path, type: "unknown_reference" };
 }
 
+function isValidSourceRange(
+  range: { start: number; end: number },
+  source: string,
+): boolean {
+  return (
+    range.start >= 0 &&
+    range.start < range.end &&
+    range.end <= Array.from(source).length
+  );
+}
+
 function checkRefs(
   refs: string[],
   allowed: Set<string>,
@@ -42,6 +53,14 @@ function checkRefs(
   });
 }
 
+function suggestionSourceKey(
+  requirementRef: string,
+  targetPath: string,
+  originalHash: string,
+): string {
+  return JSON.stringify([requirementRef, targetPath, originalHash]);
+}
+
 function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] {
   const failures: SchemaFeedback[] = [];
   switch (input.workflow_type) {
@@ -51,6 +70,12 @@ function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] 
         if (candidate.source_answer_id !== input.payload.answer_id) {
           failures.push(unknownReference(`$.fact_candidates[${index}].source_answer_id`));
         }
+        if (!isValidSourceRange(candidate.source_range, input.payload.answer_text)) {
+          failures.push({
+            path: `$.fact_candidates[${index}].source_range`,
+            type: "range_invalid",
+          });
+        }
       });
       if (output.question_candidate) {
         checkRefs(output.question_candidate.related_fact_refs, factIds, "$.question_candidate.related_fact_refs", failures);
@@ -59,7 +84,14 @@ function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] 
     }
     case "compose_resume_draft": {
       const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
+      const allowedSectionTypes = new Set(input.payload.allowed_section_types);
       output.sections.forEach((section: any, sectionIndex: number) => {
+        if (!allowedSectionTypes.has(section.type)) {
+          failures.push({
+            path: `$.sections[${sectionIndex}].type`,
+            type: "not_allowed",
+          });
+        }
         section.bullets.forEach((bullet: any, bulletIndex: number) => {
           bullet.atomic_claims.forEach((claim: any, claimIndex: number) =>
             checkRefs(claim.fact_refs, factIds, `$.sections[${sectionIndex}].bullets[${bulletIndex}].atomic_claims[${claimIndex}].fact_refs`, failures));
@@ -67,14 +99,21 @@ function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] 
       });
       break;
     }
-    case "parse_jd":
+    case "parse_jd": {
+      const allowedCategories = new Set(input.payload.allowed_categories);
       output.requirements.forEach((requirement: any, index: number) => {
-        const { start, end } = requirement.source_range;
-        if (start >= end || end > input.payload.jd_text.length) {
+        if (!allowedCategories.has(requirement.category)) {
+          failures.push({
+            path: `$.requirements[${index}].category`,
+            type: "not_allowed",
+          });
+        }
+        if (!isValidSourceRange(requirement.source_range, input.payload.jd_text)) {
           failures.push({ path: `$.requirements[${index}].source_range`, type: "range_invalid" });
         }
       });
       break;
+    }
     case "match_resume_to_jd": {
       const requirementIds = input.payload.confirmed_requirements.map(({ id }) => id);
       const factIds = new Set(input.payload.confirmed_facts.map(({ id }) => id));
@@ -100,13 +139,27 @@ function referenceFeedback(input: WorkflowInput, output: any): SchemaFeedback[] 
             unknownReference(`$.payload.matches[${index}].requirement_ref`),
           );
         }
+        checkRefs(
+          match.fact_refs,
+          factIds,
+          `$.payload.matches[${index}].fact_refs`,
+          failures,
+        );
       });
       const sources = new Map(input.payload.matches.map((match) => [
-        `${match.requirement_ref}:${match.target_path}:${match.original_hash}`,
+        suggestionSourceKey(
+          match.requirement_ref,
+          match.target_path,
+          match.original_hash,
+        ),
         match,
       ]));
       output.suggestions.forEach((suggestion: any, index: number) => {
-        const source = sources.get(`${suggestion.requirement_ref}:${suggestion.target_path}:${suggestion.original_hash}`);
+        const source = sources.get(suggestionSourceKey(
+          suggestion.requirement_ref,
+          suggestion.target_path,
+          suggestion.original_hash,
+        ));
         if (
           !requirementIds.has(suggestion.requirement_ref) ||
           !source ||
