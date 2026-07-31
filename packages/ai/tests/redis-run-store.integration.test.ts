@@ -25,13 +25,18 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
     try {
       for (let index = 0; index < 100; index += 1) {
         const aiRunId = `run_test_${randomUUID()}`;
-        await first.create({
+        const record = {
           ai_run_id: aiRunId,
+          input_hash: `hash_${index}`,
           status: "queued",
           owner_instance_id: "pi-redis-owner",
           cancel_requested: false,
           lease_expires_at: Date.now() + 50,
-        });
+        } as const;
+        expect((await first.createOrReplay(record)).kind).toBe("created");
+        expect((await second.createOrReplay(record)).kind).toBe("existing");
+        expect((await second.createOrReplay({ ...record, input_hash: "other" })).kind)
+          .toBe("conflict");
         await first.markRunning(aiRunId);
         expect((await second.get(aiRunId))?.status).toBe("running");
         expect((await second.requestCancel(aiRunId)).outcome).toBe("accepted");
@@ -41,8 +46,9 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
       await expect.poll(() => received.size).toBe(100);
 
       const lostRunId = `run_test_${randomUUID()}`;
-      await first.create({
+      await first.createOrReplay({
         ai_run_id: lostRunId,
+        input_hash: "lost_hash",
         status: "queued",
         owner_instance_id: "pi-lost-owner",
         cancel_requested: false,

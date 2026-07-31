@@ -116,7 +116,7 @@ describe("runWorkflow", () => {
 
     const run = await runWorkflow(input(workflowType), runtime);
 
-    expect(run.status).toBe("succeeded");
+    expect(run.run.status).toBe("succeeded");
     expect(structuredCalls).toBe(1);
   });
 
@@ -138,8 +138,8 @@ describe("runWorkflow", () => {
     expect(calls[1]?.schema_feedback).toEqual([
       { path: "$.requirements", type: "schema" },
     ]);
-    expect(run.fallback_count).toBe(0);
-    expect(run.events.some(({ event_type }) => event_type === "model_fallback"))
+    expect(run.run.fallback_count).toBe(0);
+    expect(run.run.events.some(({ event_type }) => event_type === "model_fallback"))
       .toBe(false);
   });
 
@@ -149,8 +149,33 @@ describe("runWorkflow", () => {
       events: [],
     }));
 
-    await expect(runWorkflow(input("parse_jd"), runtime)).rejects
-      .toMatchObject({ code: "output_schema_invalid" });
+    await expect(runWorkflow(input("parse_jd"), runtime)).resolves
+      .toMatchObject({ run: { error_code: "output_schema_invalid", status: "failed" } });
+  });
+
+  it("returns a complete failed receipt instead of discarding workflow evidence", async () => {
+    const run = await runWorkflow(input("parse_jd"), makeRuntime(async () => ({
+      status: "failure",
+      failure_kind: "route",
+      error_code: "route_missing",
+      events: [usageEvent(17)],
+    })));
+
+    expect(run).toMatchObject({
+      result: undefined,
+      run: {
+        status: "failed",
+        error_code: "model_route_unavailable",
+        usage: { total_tokens: 17 },
+        schema_valid: false,
+        facts_valid: false,
+        input_hash: "input_hash",
+        prompt_template_version: "jd-parse@2",
+      },
+    });
+    expect(run.run.started_at).toEqual(expect.any(String));
+    expect(run.run.finished_at).toEqual(expect.any(String));
+    expect(run.run.events.at(-1)).toMatchObject({ event_type: "run_failed" });
   });
 
   it("enforces the 30 second deadline without waiting in real time", async () => {
@@ -165,7 +190,7 @@ describe("runWorkflow", () => {
         now += 15_001;
         return now;
       },
-    })).rejects.toMatchObject({ code: "timeout_exceeded" });
+    })).resolves.toMatchObject({ run: { error_code: "timeout_exceeded", status: "failed" } });
   });
 
   it("preserves JSON failure usage and sends invalid-json correction feedback", async () => {
@@ -184,7 +209,7 @@ describe("runWorkflow", () => {
 
     const run = await runWorkflow(input("parse_jd"), runtime);
 
-    expect(run.usage.total_tokens).toBe(17);
+    expect(run.run.usage.total_tokens).toBe(17);
     expect(calls.map(({ phase }) => phase)).toEqual(["initial", "correction"]);
     expect(calls[1]?.schema_feedback).toEqual([
       { path: "$", type: "invalid_json" },
@@ -225,7 +250,7 @@ describe("runWorkflow", () => {
 
       await expect(runWorkflow(input("parse_jd"), runtime, {
         onEvent: (event) => traceEvents.push(event),
-      })).rejects.toMatchObject({ code });
+      })).resolves.toMatchObject({ run: { error_code: code, status: "failed" } });
       expect(calls.map(({ phase }) => phase)).toEqual(["initial"]);
       expect(traceEvents.at(-1)).toMatchObject({
         event_type: "run_failed",
@@ -245,8 +270,8 @@ describe("runWorkflow", () => {
       };
     });
 
-    await expect(runWorkflow(input("parse_jd"), runtime)).rejects
-      .toMatchObject({ code: "cost_limit_exceeded" });
+    await expect(runWorkflow(input("parse_jd"), runtime)).resolves
+      .toMatchObject({ run: { error_code: "cost_limit_exceeded", status: "failed" } });
     expect(calls.map(({ phase }) => phase)).toEqual(["initial"]);
   });
 
@@ -270,9 +295,9 @@ describe("runWorkflow", () => {
     const run = await runWorkflow(input("parse_jd"), runtime);
 
     expect(calls.map(({ phase }) => phase)).toEqual(["initial", "retry"]);
-    expect(run.usage.total_tokens).toBe(23);
-    expect(run.fallback_count).toBe(0);
-    expect(run.events.map(({ event_type }) => event_type)).toEqual(
+    expect(run.run.usage.total_tokens).toBe(23);
+    expect(run.run.fallback_count).toBe(0);
+    expect(run.run.events.map(({ event_type }) => event_type)).toEqual(
       expect.arrayContaining(["auto_retry_start", "auto_retry_end"]),
     );
   });
@@ -302,8 +327,8 @@ describe("runWorkflow", () => {
       "retry",
       "fallback",
     ]);
-    expect(run.fallback_count).toBe(1);
-    expect(run.events.find(({ event_type }) => event_type === "model_fallback")
+    expect(run.run.fallback_count).toBe(1);
+    expect(run.run.events.find(({ event_type }) => event_type === "model_fallback")
       ?.details?.fallback_reason).toBe("provider_unavailable");
   });
 
@@ -338,9 +363,9 @@ describe("runWorkflow", () => {
 
     const run = await runWorkflow(input("parse_jd"), runtime);
 
-    expect(run.events.some(({ event_type }) => event_type === "unknown"))
+    expect(run.run.events.some(({ event_type }) => event_type === "unknown"))
       .toBe(true);
-    expect(run.usage).toEqual({
+    expect(run.run.usage).toEqual({
       input: 11,
       output: 7,
       cache_read: 2,
@@ -349,8 +374,8 @@ describe("runWorkflow", () => {
       total_tokens: 23,
       cost_usd: 0.03,
     });
-    expect(run.events.map(({ event_seq }) => event_seq)).toEqual(
-      Array.from({ length: run.events.length }, (_, index) => index + 1),
+    expect(run.run.events.map(({ event_seq }) => event_seq)).toEqual(
+      Array.from({ length: run.run.events.length }, (_, index) => index + 1),
     );
   });
 
@@ -372,10 +397,10 @@ describe("runWorkflow", () => {
       },
     });
 
-    expect(run.status).toBe("cancelled");
-    expect(run.events.some(({ event_type }) => event_type === "first_token"))
+    expect(run.run.status).toBe("cancelled");
+    expect(run.run.events.some(({ event_type }) => event_type === "first_token"))
       .toBe(false);
-    expect(run.events.at(-1)?.event_type).toBe("run_cancelled");
+    expect(run.run.events.at(-1)?.event_type).toBe("run_cancelled");
   });
 
   it("validates workflow-specific evidence references and ranges", () => {
@@ -496,6 +521,6 @@ describe("runWorkflow", () => {
 
   it("keeps fixture runs deterministic", async () => {
     const runtime = createFixtureRuntime({ parse_jd: output("parse_jd") });
-    await expect(runWorkflow(input("parse_jd"), runtime)).resolves.toMatchObject({ output: output("parse_jd") });
+    await expect(runWorkflow(input("parse_jd"), runtime)).resolves.toMatchObject({ result: output("parse_jd") });
   });
 });

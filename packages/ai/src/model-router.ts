@@ -118,10 +118,11 @@ export function createModelRouter({
       return route?.[attempt === 0 ? "primary" : "fallback"];
     },
     isReady(env = process.env) {
-      return MODEL_WORKFLOW_TYPES.every((workflowType) => {
-        const route = routes[workflowType];
+      const enabledRoutes = MODEL_WORKFLOW_TYPES
+        .map((workflowType) => routes[workflowType])
+        .filter((route): route is WorkflowRoute => Boolean(route?.enabled));
+      return enabledRoutes.length > 0 && enabledRoutes.every((route) => {
         if (
-          !route?.enabled ||
           !route.primary.approved_data_policy ||
           !route.fallback.approved_data_policy
         ) {

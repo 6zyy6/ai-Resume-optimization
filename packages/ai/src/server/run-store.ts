@@ -1,4 +1,4 @@
-import type { WorkflowRun } from "../contracts.js";
+import type { AiExecutionReceipt } from "../contracts.js";
 
 export type RunStatus =
   | "queued"
@@ -11,13 +11,19 @@ export const RUN_LEASE_MS = 15_000;
 
 export interface RunRecord {
   ai_run_id: string;
+  input_hash: string;
   status: RunStatus;
   owner_instance_id: string;
   cancel_requested: boolean;
   lease_expires_at: number;
-  result?: WorkflowRun;
+  receipt?: AiExecutionReceipt;
   error_code?: string;
 }
+
+export type CreateRunResult =
+  | { kind: "created"; run: RunRecord }
+  | { kind: "existing"; run: RunRecord }
+  | { kind: "conflict"; run: RunRecord };
 
 export type CancelRequestResult =
   | { outcome: "not_found" }
@@ -26,14 +32,14 @@ export type CancelRequestResult =
 
 export interface RunStore {
   isReady(): Promise<boolean>;
-  create(record: RunRecord): Promise<void>;
+  createOrReplay(record: RunRecord): Promise<CreateRunResult>;
   get(aiRunId: string): Promise<RunRecord | undefined>;
   markRunning(aiRunId: string): Promise<RunRecord | undefined>;
   heartbeat(aiRunId: string, instanceId: string): Promise<boolean>;
   complete(
     aiRunId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
-    result?: WorkflowRun,
+    receipt?: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined>;
   requestCancel(aiRunId: string): Promise<CancelRequestResult>;

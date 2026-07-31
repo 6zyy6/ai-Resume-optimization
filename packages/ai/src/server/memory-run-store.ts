@@ -1,12 +1,13 @@
 import {
   isTerminalStatus,
   type CancelRequestResult,
+  type CreateRunResult,
   type RunRecord,
   type RunStore,
   type RunStatus,
 } from "./run-store.js";
 import { RUN_LEASE_MS } from "./run-store.js";
-import type { WorkflowRun } from "../contracts.js";
+import type { AiExecutionReceipt } from "../contracts.js";
 
 export class MemoryRunStore implements RunStore {
   private readonly runs = new Map<string, RunRecord>();
@@ -29,11 +30,17 @@ export class MemoryRunStore implements RunStore {
     return true;
   }
 
-  async create(record: RunRecord): Promise<void> {
-    if (this.runs.has(record.ai_run_id)) {
-      throw new Error("run_already_exists");
+  async createOrReplay(record: RunRecord): Promise<CreateRunResult> {
+    const existing = this.runs.get(record.ai_run_id);
+    if (existing) {
+      return {
+        kind: existing.input_hash === record.input_hash ? "existing" : "conflict",
+        run: structuredClone(existing),
+      };
     }
-    this.runs.set(record.ai_run_id, structuredClone(record));
+    const run = structuredClone(record);
+    this.runs.set(record.ai_run_id, run);
+    return { kind: "created", run: structuredClone(run) };
   }
 
   async get(aiRunId: string): Promise<RunRecord | undefined> {
@@ -70,7 +77,7 @@ export class MemoryRunStore implements RunStore {
   async complete(
     aiRunId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
-    result?: WorkflowRun,
+    receipt?: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
     const record = this.runs.get(aiRunId);
@@ -82,7 +89,7 @@ export class MemoryRunStore implements RunStore {
         ? "cancelled"
         : status;
     record.status = finalStatus;
-    record.result = finalStatus === status ? result : undefined;
+    record.receipt = finalStatus === status ? receipt : undefined;
     record.error_code = errorCode;
     return this.clone(record);
   }
@@ -132,7 +139,7 @@ export class MemoryRunStore implements RunStore {
     ) {
       record.status = "failed";
       record.error_code = "owner_instance_lost";
-      record.result = undefined;
+      record.receipt = undefined;
     }
   }
 }

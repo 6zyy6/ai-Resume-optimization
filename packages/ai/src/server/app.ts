@@ -24,6 +24,14 @@ import {
 const BODY_LIMIT = 512 * 1024;
 const CANCEL_POLL_INTERVAL_MS = 250;
 const RUN_HEARTBEAT_INTERVAL_MS = 5_000;
+const AiRunIdSchema = Type.String({ minLength: 1, maxLength: 128 });
+const RunRequestSchema = Type.Object(
+  {
+    ai_run_id: AiRunIdSchema,
+    input: WorkflowInputSchema,
+  },
+  { additionalProperties: false },
+);
 
 interface BuildAppOptions {
   mode: "fixture" | "production";
@@ -180,6 +188,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.get("/internal/v1/version", async () => ({
     commit_sha: process.env.APP_COMMIT_SHA ?? "development",
     service: "ai",
+    runtime_mode: options.mode,
   }));
 
   app.get("/internal/v1/health/ready", async (_request, reply) => {
@@ -192,21 +201,24 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return reply.status(ready ? 200 : 503).send({
       request_id: requestId(),
       status: ready ? "ready" : "not_ready",
+      runtime_mode: options.mode,
     });
   });
 
-  app.post<{ Body: WorkflowInput }>(
+  app.post<{ Body: { ai_run_id: string; input: WorkflowInput } }>(
     "/internal/v1/runs",
     {
       preHandler: requireAuth,
-      schema: { body: WorkflowInputSchema },
+      schema: { body: RunRequestSchema },
     },
     async (request, reply) => {
-      const aiRunId = `run_${randomUUID()}`;
+      const aiRunId = request.body.ai_run_id;
       const controller = new AbortController();
+      let createResult;
       try {
-        await runStore.create({
+        createResult = await runStore.createOrReplay({
           ai_run_id: aiRunId,
+          input_hash: request.body.input.input_hash,
           status: "queued",
           owner_instance_id: instanceId,
           cancel_requested: false,
@@ -216,6 +228,19 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
         return reply.status(503).send({
           request_id: requestId(),
           error: { code: "run_store_unavailable" },
+        });
+      }
+      if (createResult.kind === "conflict") {
+        return reply.status(409).send({
+          request_id: requestId(),
+          error: { code: "AI_RUN_ID_REUSED" },
+        });
+      }
+      if (createResult.kind === "existing") {
+        return reply.status(202).send({
+          request_id: requestId(),
+          ai_run_id: aiRunId,
+          status: createResult.run.status,
         });
       }
       controllers.set(aiRunId, controller);
@@ -229,15 +254,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           if (stored.cancel_requested) {
             controller.abort();
           }
-          const result = await runWorkflow(request.body, options.runtime, {
+          const receipt = await runWorkflow(request.body.input, options.runtime, {
             signal: controller.signal,
             aiRunId,
           });
           await runStore.complete(
             aiRunId,
-            result.status,
-            result,
-            result.status === "failed" ? "workflow_failed" : undefined,
+            receipt.run.status,
+            receipt,
+            receipt.run.error_code,
           );
         } catch (error) {
           try {
@@ -264,7 +289,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   const RunParamsSchema = Type.Object(
     {
-      ai_run_id: Type.String({ minLength: 1, maxLength: 128 }),
+      ai_run_id: AiRunIdSchema,
     },
     { additionalProperties: false },
   );
@@ -291,9 +316,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
           error: { code: "run_not_found" },
         });
       }
+      if (isTerminalStatus(stored.status)) {
+        return {
+          request_id: requestId(),
+          receipt: stored.receipt,
+        };
+      }
       return {
         request_id: requestId(),
-        run: stored.result ?? {
+        run: {
           ai_run_id: request.params.ai_run_id,
           status: stored.status,
           error_code: stored.error_code,

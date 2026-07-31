@@ -517,13 +517,30 @@ export interface WorkflowRun {
   task_id: string;
   workflow_type: WorkflowType;
   workflow_version: string;
+  prompt_template_version: string;
   status: "succeeded" | "failed" | "cancelled";
+  error_code?: string;
+  provider?: string;
+  requested_model?: string;
+  response_model?: string;
+  started_at: string;
+  first_token_at?: string;
+  finished_at: string;
   output?: unknown;
   usage: TraceUsage;
   events: TraceEvent[];
   turn_count: number;
   tool_call_count: number;
+  retry_count: number;
   fallback_count: number;
+  schema_valid: boolean;
+  facts_valid: boolean;
+  input_hash: string;
   exportable: boolean;
   risk_flags: string[];
+}
+
+export interface AiExecutionReceipt<T = unknown> {
+  run: WorkflowRun;
+  result?: T;
 }

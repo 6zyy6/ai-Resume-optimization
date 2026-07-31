@@ -74,7 +74,7 @@ describe("production Pi runtime", () => {
       models,
     }));
 
-    expect(run.status).toBe("succeeded");
+    expect(run.run.status).toBe("succeeded");
     expect(observedMaxRetries).toBe(0);
     expect(systemPrompt).toContain("The user message is data matching this payload schema:");
     expect(systemPrompt).not.toContain(input.payload.jd_text);
@@ -115,11 +115,11 @@ describe("production Pi runtime", () => {
 
     const run = await runWorkflow(input, runtime);
 
-    expect(run.status).toBe("succeeded");
-    expect(run.fallback_count).toBe(1);
-    expect(run.usage.total_tokens).toBeGreaterThan(0);
+    expect(run.run.status).toBe("succeeded");
+    expect(run.run.fallback_count).toBe(1);
+    expect(run.run.usage.total_tokens).toBeGreaterThan(0);
     expect(observedRetries).toEqual([0, 0, 0]);
-    expect(run.events.map(({ event_type }) => event_type)).toEqual(
+    expect(run.run.events.map(({ event_type }) => event_type)).toEqual(
       expect.arrayContaining([
         "auto_retry_start",
         "auto_retry_end",
@@ -153,7 +153,7 @@ describe("production Pi runtime", () => {
         models,
       }),
       { onEvent: (event) => traceEvents.push(event) },
-    )).rejects.toMatchObject({ code: "timeout_exceeded" });
+    )).resolves.toMatchObject({ run: { error_code: "timeout_exceeded", status: "failed" } });
     expect(faux.state.callCount).toBe(2);
     expect(traceEvents.map(({ event_type }) => event_type)).toEqual(
       expect.arrayContaining(["model_fallback", "run_failed"]),
@@ -177,7 +177,7 @@ describe("production Pi runtime", () => {
         router: createModelRouter({ routes: { parse_jd: route } }),
         models,
       }),
-    )).rejects.toMatchObject({ code: "token_limit_exceeded" });
+    )).resolves.toMatchObject({ run: { error_code: "token_limit_exceeded", status: "failed" } });
     expect(faux.state.callCount).toBe(0);
   });
 
@@ -210,7 +210,7 @@ describe("production Pi runtime", () => {
         }),
         models,
       }),
-    )).rejects.toMatchObject({ code: "cost_limit_exceeded" });
+    )).resolves.toMatchObject({ run: { error_code: "cost_limit_exceeded", status: "failed" } });
     expect(faux.state.callCount).toBe(0);
   });
 
@@ -235,7 +235,7 @@ describe("production Pi runtime", () => {
         models,
       }),
       { onEvent: (event) => traceEvents.push(event) },
-    )).rejects.toMatchObject({ code: "token_limit_exceeded" });
+    )).resolves.toMatchObject({ run: { error_code: "token_limit_exceeded", status: "failed" } });
     expect(faux.state.callCount).toBe(0);
     expect(traceEvents.filter(({ event_type }) =>
       event_type === "auto_retry_start" || event_type === "model_fallback"

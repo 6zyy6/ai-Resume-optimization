@@ -1,8 +1,9 @@
 import { createClient, type RedisClientType } from "redis";
 
-import type { WorkflowRun } from "../contracts.js";
+import type { AiExecutionReceipt } from "../contracts.js";
 import {
   type CancelRequestResult,
+  type CreateRunResult,
   type RunRecord,
   type RunStatus,
   type RunStore,
@@ -15,18 +16,22 @@ const CANCEL_CHANNEL_PREFIX = "pi:cancel:";
 
 const CREATE_SCRIPT = `
 if redis.call("EXISTS", KEYS[1]) == 1 then
-  return 0
+  if redis.call("HGET", KEYS[1], "input_hash") == ARGV[2] then
+    return "existing"
+  end
+  return "conflict"
 end
 redis.call("HSET", KEYS[1],
   "ai_run_id", ARGV[1],
-  "status", ARGV[2],
-  "owner_instance_id", ARGV[3],
-  "cancel_requested", ARGV[4],
-  "lease_expires_at", ARGV[5],
-  "result_json", ARGV[6],
-  "error_code", ARGV[7])
-redis.call("EXPIRE", KEYS[1], ARGV[8])
-return 1
+  "input_hash", ARGV[2],
+  "status", ARGV[3],
+  "owner_instance_id", ARGV[4],
+  "cancel_requested", ARGV[5],
+  "lease_expires_at", ARGV[6],
+  "receipt_json", ARGV[7],
+  "error_code", ARGV[8])
+redis.call("EXPIRE", KEYS[1], ARGV[9])
+return "created"
 `;
 
 const MARK_RUNNING_SCRIPT = `
@@ -40,7 +45,7 @@ if status ~= "succeeded" and status ~= "failed" and status ~= "cancelled" then
     redis.call("HSET", KEYS[1],
       "status", "failed",
       "error_code", "owner_instance_lost",
-      "result_json", "")
+      "receipt_json", "")
   else
     redis.call("HSET", KEYS[1],
       "status", "running",
@@ -61,7 +66,7 @@ if (status == "queued" or status == "running") and lease <= tonumber(ARGV[1]) th
   redis.call("HSET", KEYS[1],
     "status", "failed",
     "error_code", "owner_instance_lost",
-    "result_json", "")
+    "receipt_json", "")
   redis.call("EXPIRE", KEYS[1], ARGV[2])
 end
 return 1
@@ -81,7 +86,7 @@ if lease <= tonumber(ARGV[2]) then
   redis.call("HSET", KEYS[1],
     "status", "failed",
     "error_code", "owner_instance_lost",
-    "result_json", "")
+    "receipt_json", "")
   redis.call("EXPIRE", KEYS[1], ARGV[4])
   return 0
 end
@@ -118,7 +123,7 @@ if cancel_requested == "1" and final_status == "succeeded" then
 end
 redis.call("HSET", KEYS[1],
   "status", final_status,
-  "result_json", final_status == ARGV[1] and ARGV[2] or "",
+  "receipt_json", final_status == ARGV[1] and ARGV[2] or "",
   "error_code", ARGV[3])
 redis.call("EXPIRE", KEYS[1], ARGV[4])
 return final_status
@@ -172,24 +177,29 @@ export class RedisRunStore implements RunStore {
     }
   }
 
-  async create(record: RunRecord): Promise<void> {
+  async createOrReplay(record: RunRecord): Promise<CreateRunResult> {
     const key = this.key(record.ai_run_id);
     const created = await this.client.eval(CREATE_SCRIPT, {
       keys: [key],
       arguments: [
         record.ai_run_id,
+        record.input_hash,
         record.status,
         record.owner_instance_id,
         record.cancel_requested ? "1" : "0",
         String(record.lease_expires_at),
-        record.result ? JSON.stringify(record.result) : "",
+        record.receipt ? JSON.stringify(record.receipt) : "",
         record.error_code ?? "",
         String(this.ttlSeconds),
       ],
     });
-    if (Number(created) !== 1) {
-      throw new Error("run_already_exists");
+    const kind = String(created);
+    if (!["created", "existing", "conflict"].includes(kind)) {
+      throw new Error("invalid_create_response");
     }
+    const run = await this.get(record.ai_run_id);
+    if (!run) throw new Error("run_not_found_after_create");
+    return { kind: kind as CreateRunResult["kind"], run } as CreateRunResult;
   }
 
   async get(aiRunId: string): Promise<RunRecord | undefined> {
@@ -237,14 +247,14 @@ export class RedisRunStore implements RunStore {
   async complete(
     aiRunId: string,
     status: Extract<RunStatus, "succeeded" | "failed" | "cancelled">,
-    result?: WorkflowRun,
+    receipt?: AiExecutionReceipt,
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
     await this.client.eval(COMPLETE_SCRIPT, {
       keys: [this.key(aiRunId)],
       arguments: [
         status,
-        result ? JSON.stringify(result) : "",
+        receipt ? JSON.stringify(receipt) : "",
         errorCode ?? "",
         String(this.ttlSeconds),
       ],
@@ -310,12 +320,13 @@ export class RedisRunStore implements RunStore {
   private deserialize(values: Record<string, string>): RunRecord {
     return {
       ai_run_id: values.ai_run_id,
+      input_hash: values.input_hash,
       status: values.status as RunStatus,
       owner_instance_id: values.owner_instance_id,
       cancel_requested: values.cancel_requested === "1",
       lease_expires_at: Number(values.lease_expires_at),
-      result: values.result_json
-        ? JSON.parse(values.result_json) as WorkflowRun
+      receipt: values.receipt_json
+        ? JSON.parse(values.receipt_json) as AiExecutionReceipt
         : undefined,
       error_code: values.error_code || undefined,
     };

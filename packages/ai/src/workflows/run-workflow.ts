@@ -11,6 +11,7 @@ import {
   type TraceEvent,
   type WorkflowInput,
   type WorkflowRun,
+  type AiExecutionReceipt,
   type WorkflowType,
 } from "../contracts.js";
 import { createEventLedger } from "../tracing/event-ledger.js";
@@ -60,7 +61,7 @@ export async function runWorkflow(
   input: WorkflowInput,
   runtime: PiRuntime,
   options: RunWorkflowOptions = {},
-): Promise<WorkflowRun> {
+): Promise<AiExecutionReceipt> {
   if (!Value.Check(WorkflowInputSchema, input)) {
     throw new WorkflowError("input_schema_invalid");
   }
@@ -101,24 +102,60 @@ export async function runWorkflow(
       tool_call_count: snapshot.tools,
     };
   };
-  const cancelledRun = (): WorkflowRun => {
-    if (ledger.events.at(-1)?.event_type !== "run_cancelled") {
-      append("run_cancelled");
-    }
+  const receipt = (run: WorkflowRun): AiExecutionReceipt => ({
+    run,
+    result: run.status === "succeeded" ? run.output : undefined,
+  });
+  const metadata = (
+    status: WorkflowRun["status"],
+    errorCode?: string,
+    output?: unknown,
+    schemaValid = false,
+    factsValid = false,
+  ): WorkflowRun => {
+    const modelEvent = [...ledger.events].reverse().find((event) =>
+      event.details?.provider || event.details?.model || event.details?.response_model
+    );
+    const firstToken = ledger.events.find((event) => event.event_type === "first_token");
     return {
       ai_run_id: aiRunId,
       trace_id: input.trace_id,
       task_id: input.task_id,
       workflow_type: input.workflow_type,
       workflow_version: input.workflow_version,
-      status: "cancelled",
+      prompt_template_version: input.prompt_template_version,
+      status,
+      error_code: errorCode,
+      provider: typeof modelEvent?.details?.provider === "string"
+        ? modelEvent.details.provider
+        : undefined,
+      requested_model: typeof modelEvent?.details?.model === "string"
+        ? modelEvent.details.model
+        : undefined,
+      response_model: typeof modelEvent?.details?.response_model === "string"
+        ? modelEvent.details.response_model
+        : undefined,
+      started_at: new Date(startedAt).toISOString(),
+      first_token_at: firstToken?.occurred_at,
+      finished_at: new Date(now()).toISOString(),
+      output,
       usage: { ...ledger.usage },
       events: [...ledger.events],
       ...counts(),
+      retry_count: providerRetries,
       fallback_count: fallbackCount,
+      schema_valid: schemaValid,
+      facts_valid: factsValid,
+      input_hash: input.input_hash,
       exportable: false,
       risk_flags: [],
     };
+  };
+  const cancelledRun = (): AiExecutionReceipt => {
+    if (ledger.events.at(-1)?.event_type !== "run_cancelled") {
+      append("run_cancelled");
+    }
+    return receipt(metadata("cancelled"));
   };
   const checkSignal = () => {
     if (deadlineController.signal.aborted && !options.signal?.aborted) {
@@ -282,31 +319,20 @@ export async function runWorkflow(
       append("agent_end");
       append("agent_settled");
       append("run_succeeded");
-      return {
-        ai_run_id: aiRunId,
-        trace_id: input.trace_id,
-        task_id: input.task_id,
-        workflow_type: input.workflow_type,
-        workflow_version: input.workflow_version,
-        status: "succeeded",
-        output: enforced.output,
-        usage: { ...ledger.usage },
-        events: [...ledger.events],
-        ...counts(),
-        fallback_count: fallbackCount,
-        exportable: enforced.exportable,
-        risk_flags: enforced.risk_flags,
-      };
+      const run = metadata("succeeded", undefined, enforced.output, true, true);
+      run.exportable = enforced.exportable;
+      run.risk_flags = enforced.risk_flags;
+      return receipt(run);
     }
   } catch (error) {
     if (isAbort(error, signal)) {
       return cancelledRun();
     }
-    append("run_failed", {
-      error_code:
-        error instanceof WorkflowError ? error.code : "RUNTIME_FAILED",
-    });
-    throw error;
+    if (!(error instanceof WorkflowError)) {
+      throw error;
+    }
+    append("run_failed", { error_code: error.code });
+    return receipt(metadata("failed", error.code));
   } finally {
     clearTimeout(deadlineTimer);
   }
