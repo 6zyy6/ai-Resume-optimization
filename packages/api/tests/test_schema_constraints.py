@@ -51,12 +51,22 @@ from app.db.memory import (
     InMemoryResumeRepository,
     InMemorySuggestionRepository,
     InMemoryTaskRepository,
+    InMemoryUsageRepository as GenericInMemoryUsageRepository,
 )
-from app.db.ports import UsageEntry
+from app.db.ports import ImmutableUsageError, UsageEntry
 from app.db.repositories import (
     SqlAlchemyFactRepository,
     SqlAlchemyResumeRepository,
     SqlAlchemyUsageRepository,
+)
+
+
+INVALID_USAGE_COSTS = (
+    pytest.param(Decimal("NaN"), id="nan"),
+    pytest.param(Decimal("Infinity"), id="positive-infinity"),
+    pytest.param(Decimal("-Infinity"), id="negative-infinity"),
+    pytest.param(Decimal("-5.00"), id="negative"),
+    pytest.param(0, id="non-decimal"),
 )
 
 
@@ -978,6 +988,90 @@ def test_historical_usage_rows_cannot_be_updated_through_sql():
                     .where(UsageLedger.id == "usage_1")
                     .values(quantity=2)
                 )
+        await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_in_memory_usage_repository_accepts_finite_decimal_cost():
+    async def run():
+        repository = GenericInMemoryUsageRepository()
+
+        entry = await repository.append(
+            {
+                "id": "usage_valid",
+                "owner_user_id": "user_a",
+                "usage_type": "ai_task",
+                "quantity": 1,
+                "cost_cny": Decimal("0.25"),
+                "trace_id": "tr_valid",
+            }
+        )
+
+        assert entry.cost_cny == Decimal("0.25")
+        assert repository.rows == [entry]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid_cost", INVALID_USAGE_COSTS)
+def test_in_memory_usage_repository_rejects_invalid_cost_without_rows(
+    invalid_cost,
+):
+    async def run():
+        repository = GenericInMemoryUsageRepository()
+
+        with pytest.raises(
+            ImmutableUsageError,
+            match="usage cost must be a finite non-negative Decimal",
+        ):
+            await repository.append(
+                {
+                    "id": "usage_invalid",
+                    "owner_user_id": "user_a",
+                    "usage_type": "ai_task",
+                    "quantity": 1,
+                    "cost_cny": invalid_cost,
+                    "trace_id": "tr_invalid",
+                }
+            )
+
+        assert repository.rows == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("invalid_cost", INVALID_USAGE_COSTS)
+def test_sql_usage_repository_rejects_invalid_cost_without_flush(
+    invalid_cost,
+):
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite://")
+        session_factory = async_sessionmaker(engine)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(User(id="user_a"))
+            await session.flush()
+            repository = SqlAlchemyUsageRepository(session)
+
+            with pytest.raises(
+                ImmutableUsageError,
+                match="usage cost must be a finite non-negative Decimal",
+            ):
+                await repository.append(
+                    {
+                        "id": "usage_invalid",
+                        "owner_user_id": "user_a",
+                        "usage_type": "ai_task",
+                        "quantity": 1,
+                        "cost_cny": invalid_cost,
+                        "trace_id": "tr_invalid",
+                    }
+                )
+
+            assert not any(isinstance(row, UsageLedger) for row in session.new)
+            assert await session.scalar(select(func.count()).select_from(UsageLedger)) == 0
         await engine.dispose()
 
     asyncio.run(run())

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from app.db.ports import UsageEntry
+from app.db.ports import ImmutableUsageError, UsageEntry, is_valid_cost_cny
 
 
 class InMemoryRepository:
@@ -95,12 +95,17 @@ class InMemoryUsageRepository:
         self.rows: list[UsageEntry] = []
 
     async def append(self, values: dict[str, Any]) -> UsageEntry:
+        cost_cny = values.get("cost_cny", Decimal("0"))
+        if not is_valid_cost_cny(cost_cny):
+            raise ImmutableUsageError(
+                "usage cost must be a finite non-negative Decimal"
+            )
         entry = UsageEntry(
             id=values["id"],
             owner_user_id=values["owner_user_id"],
             usage_type=values["usage_type"],
             quantity=values["quantity"],
-            cost_cny=Decimal(values.get("cost_cny", 0)),
+            cost_cny=cost_cny,
             trace_id=values["trace_id"],
             created_at=values.get("created_at", datetime.now(timezone.utc)),
         )

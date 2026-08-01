@@ -20,6 +20,7 @@ from app.db.models import (
     UserIdentity,
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
+from app.db.ports import is_valid_cost_cny
 from app.modules.auth.service import SessionRecord
 from app.modules.privacy.service import PrivacyExportArtifact, PrivacyTask
 from app.modules.usage.service import (
@@ -28,7 +29,6 @@ from app.modules.usage.service import (
     UsageDecision,
     UsageRecord,
     evaluate_admission_usage,
-    is_valid_cost_cny,
 )
 from app.modules.users.service import (
     ConsentRecord,
@@ -410,6 +410,16 @@ class SqlUsageRepository:
                 select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
                     UsageLedger.state == "consumed",
                     UsageLedger.created_at >= since
+                )
+            )
+            return Decimal(value or 0)
+
+    async def admission_cost(self, since: datetime) -> Decimal:
+        async with self.sessions() as session:
+            value = await session.scalar(
+                select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
+                    UsageLedger.state.in_(("reserved", "consumed")),
+                    UsageLedger.created_at >= since,
                 )
             )
             return Decimal(value or 0)

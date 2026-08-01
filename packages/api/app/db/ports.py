@@ -11,6 +11,14 @@ class ImmutableUsageError(ValueError):
     pass
 
 
+def is_valid_cost_cny(cost_cny: object) -> bool:
+    return (
+        isinstance(cost_cny, Decimal)
+        and cost_cny.is_finite()
+        and cost_cny >= 0
+    )
+
+
 class OwnerScopedRepository(Protocol[RecordT]):
     async def record(self, values: dict[str, Any]) -> RecordT: ...
     async def get(self, identifier: str, owner_user_id: str) -> RecordT | None: ...

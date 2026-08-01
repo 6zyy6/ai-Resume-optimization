@@ -1,5 +1,6 @@
 import hashlib
 from datetime import timezone
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -23,6 +24,7 @@ from app.db.ownership import authorized_owner_ids
 from app.db.ports import (
     FactRepository,
     IdempotencyRepository,
+    ImmutableUsageError,
     JobRepository,
     OutboxRepository,
     ResumeRepository,
@@ -33,6 +35,7 @@ from app.db.ports import (
     UsageEntry,
     UsageRepository,
     UserRepository,
+    is_valid_cost_cny,
 )
 
 __all__ = [
@@ -243,6 +246,11 @@ class SqlAlchemyUsageRepository:
         self.session = session
 
     async def append(self, values: dict[str, Any]) -> UsageEntry:
+        cost_cny = values.get("cost_cny", Decimal("0"))
+        if not is_valid_cost_cny(cost_cny):
+            raise ImmutableUsageError(
+                "usage cost must be a finite non-negative Decimal"
+            )
         row = UsageRow(**values)
         self.session.add(row)
         await self.session.flush()

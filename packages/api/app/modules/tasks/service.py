@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.ids import new_id
 from app.db.models import Outbox, Task, TaskEvent, UsageLedger
 from app.db.ownership import authorized_owner_ids, canonical_user_id
+from app.db.ports import is_valid_cost_cny
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.state import TERMINAL_STATUSES, TaskStateError, require_transition
 from app.modules.usage.service import (
     GLOBAL_AI_COST_ADVISORY_LOCK_ID,
     evaluate_admission_usage,
-    is_valid_cost_cny,
 )
 from app.workers.execution import QUEUE_NAMES
 

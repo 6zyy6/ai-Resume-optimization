@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from app.core.ids import new_id
+from app.db.ports import is_valid_cost_cny
 
 
 AI_TASKS_PER_DAY = 20
@@ -15,14 +16,6 @@ GLOBAL_COST_ALERT_CNY = Decimal("70.00")
 GLOBAL_COST_DEGRADED_CNY = Decimal("90.00")
 GLOBAL_COST_LIMIT_CNY = Decimal("100.00")
 GLOBAL_AI_COST_ADVISORY_LOCK_ID = 73467231
-
-
-def is_valid_cost_cny(cost_cny: object) -> bool:
-    return (
-        isinstance(cost_cny, Decimal)
-        and cost_cny.is_finite()
-        and cost_cny >= 0
-    )
 
 
 class Clock(Protocol):
@@ -57,6 +50,7 @@ class UsageRepository(Protocol):
     async def count_consumed_ai_tasks(self, owner_user_id: str, since: datetime) -> int: ...
     async def running_ai_tasks(self, owner_user_id: str) -> int: ...
     async def daily_cost(self, since: datetime) -> Decimal: ...
+    async def admission_cost(self, since: datetime) -> Decimal: ...
     async def admit_ai_task(
         self,
         owner_user_id: str,
@@ -161,7 +155,7 @@ class InMemoryUsageRepository:
             start=Decimal("0"),
         )
 
-    async def _admission_cost(self, since: datetime) -> Decimal:
+    async def admission_cost(self, since: datetime) -> Decimal:
         reserved = sum(
             (
                 row.cost_cny
@@ -210,7 +204,7 @@ class InMemoryUsageRepository:
                     )
                 return decision
             decision = evaluate_admission_usage(
-                await self._admission_cost(day_start),
+                await self.admission_cost(day_start),
                 cost_cny,
                 await self.count_ai_tasks(owner_user_id, day_start),
                 await self.running_ai_tasks(owner_user_id),
@@ -354,7 +348,7 @@ class UsageService:
         is_retry: bool = False,
     ) -> UsageDecision:
         day_start = self._day_start()
-        cost = await self.repository.daily_cost(day_start)
+        cost = await self.repository.admission_cost(day_start)
         return evaluate_usage(
             cost,
             await self.repository.count_ai_tasks(owner_user_id, day_start),

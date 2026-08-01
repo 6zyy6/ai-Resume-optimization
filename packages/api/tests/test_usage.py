@@ -381,6 +381,27 @@ async def test_in_memory_admission_adds_reserved_cost_to_override_baseline(
 
 
 @pytest.mark.anyio
+async def test_in_memory_decision_counts_reserved_cost_but_summary_hides_it(
+    usage_harness,
+):
+    service, _ = usage_harness
+    reserved = await service.admit_ai_task(
+        "usr_reserved_cost_a",
+        "tr_reserved_cost_a",
+        "reserved-cost-a",
+        cost_cny=Decimal("100.00"),
+    )
+
+    decision = await service.decide_ai_task("usr_reserved_cost_b")
+    summary = await service.summary("usr_reserved_cost_b")
+
+    assert reserved.allowed is True
+    assert decision.allowed is False
+    assert decision.reason == "AI_LIMIT_REACHED"
+    assert summary.global_cost_cny == Decimal("0")
+
+
+@pytest.mark.anyio
 async def test_atomic_admission_replays_same_key_with_same_semantic_input(
     usage_harness,
 ):
@@ -493,6 +514,33 @@ async def test_sql_usage_summary_hides_reserved_quantity_and_cost(
     assert reserved.status == "queued"
     assert summary.ai_tasks_used == 1
     assert summary.global_cost_cny == Decimal("1.25")
+
+
+@pytest.mark.anyio
+async def test_sql_decision_counts_reserved_cost_but_summary_hides_it(
+    sql_session_factory,
+):
+    clock = FakeClock()
+    async with sql_session_factory.begin() as session:
+        session.add_all(
+            [User(id="usr_sql_reserved_a"), User(id="usr_sql_reserved_b")]
+        )
+    await TaskService(sql_session_factory, clock=clock).create_task(
+        "usr_sql_reserved_a",
+        task_type="parse_jd",
+        queue="ai.interactive",
+        trace_id="tr_sql_reserved_cost",
+        idempotency_key="sql-reserved-cost",
+        admission=TaskAdmission.ai(Decimal("100.00")),
+    )
+    service = UsageService(SqlUsageRepository(sql_session_factory), clock)
+
+    decision = await service.decide_ai_task("usr_sql_reserved_b")
+    summary = await service.summary("usr_sql_reserved_b")
+
+    assert decision.allowed is False
+    assert decision.reason == "AI_LIMIT_REACHED"
+    assert summary.global_cost_cny == Decimal("0")
 
 
 async def _seed_global_cost_boundary(
