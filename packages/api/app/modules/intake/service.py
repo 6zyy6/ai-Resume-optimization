@@ -156,7 +156,7 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
 ATOMIC_CLAUSE_BOUNDARY = re.compile(
-    r"[。.!！?？\n\r，,；;]|不过|然而|可是|但|却|并(?!未|不|非|没)",
+    r"[。.!！?？\n\r，,；;]|不过|然而|可是|但|却",
     re.IGNORECASE,
 )
 RESPONSIBILITY_DISCLAIMERS = (
@@ -176,8 +176,13 @@ RESPONSIBILITY_DENIAL = re.compile(
 )
 CHINESE_EXPLICIT_NEGATIVE = re.compile(
     r"没有|从来没|从未|不曾|未曾|并未|尚未|未能|不再|不能|不会|"
-    r"不擅长|不太了解|不了解|不具备|不熟悉|不清楚|不知道|"
+    r"(?:^|我|本人|我们|团队)"
+    r"(?:不擅长|不太了解|不了解|不具备|不熟悉|不清楚|不知道)|"
     r"并非|不是|否认|缺乏|欠缺|"
+    r"(?:拒绝|放弃|避免)(?:真正|实际|直接|具体|独立|主动)*"
+    r"(?:负责|参与|完成|承担|组织|主导|获得|掌握|达成|做)|"
+    r"(?:缺少|鲜有)(?:相关|实际|具体|项目|工作|实习|课程)*"
+    r"(?:经验|经历|能力|技能)|"
     r"无法(?:负责|参与|完成|承担|组织|主导|获得|掌握|达成|做)|"
     r"不确定(?:是否|能否|有没有|可否)|"
     r"(?:没|不|未|无)(?:真正|实际|直接|具体|独立|主动|相关)*"
@@ -185,8 +190,25 @@ CHINESE_EXPLICIT_NEGATIVE = re.compile(
     r"掌握|达成|做过|参加)|"
     r"无(?:真正|实际|直接|具体|独立|主动|相关)*(?:项目|经验|经历|实习|能力|技能)"
 )
-OTHER_OWNER = re.compile(
-    r"由(?:他人|别人|同学|同事|队友|团队成员)(?:负责|完成|参与|承担|主导|做)"
+CHINESE_OWNER_ASSIGNMENT = re.compile(
+    r"(?:由(?P<by_owner>[^，,。.!！?？；;]{1,32}?)(?:负责|完成|参与|承担|主导|做)|"
+    r"是(?P<copula_owner>[^，,。.!！?？；;]{1,32}?)(?:负责|完成|参与|承担|主导|做)的)"
+)
+ENGLISH_BY_OWNER = re.compile(
+    r"\b(?:completed|led|owned|handled|delivered|done)\s+by\s+"
+    r"(?P<owner>[^,.;!?]{1,64})",
+    re.IGNORECASE,
+)
+ENGLISH_ACTIVE_OWNER = re.compile(
+    r"^(?P<owner>[A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*){0,3})\s+"
+    r"(?:led|completed|owned|handled|delivered)\b",
+    re.IGNORECASE,
+)
+CHINESE_POSITIVE_ASSERTION = re.compile(
+    r"^(?:(?:我|本人|我们|团队)"
+    r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*)?"
+    r"(?:负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|"
+    r"达成|推动|优化|合并|并行计算)"
 )
 CHINESE_TAIL_DENIAL = re.compile(
     r"(?:我|本人).*?(?:没有|没|未|不|缺乏|欠缺).*?"
@@ -199,7 +221,9 @@ ENGLISH_EXPLICIT_NEGATIVE = re.compile(
     r"wasnt|wasn't|werent|weren't|havent|haven't|hasnt|hasn't|"
     r"hadnt|hadn't|wont|won't|wouldnt|wouldn't|couldnt|couldn't|"
     r"shouldnt|shouldn't|lack|lacks|lacked|lacking|unable)\b|"
-    r"\bfailed\s+to\b",
+    r"\bfailed\s+to\b|\bunfamiliar\b|\brefus(?:e|es|ed|ing)\b|"
+    r"\b(?:have|has|had)\s+yet\s+to\b|"
+    r"\bzero(?:\s+\w+){0,3}\s+experience\b",
     re.IGNORECASE,
 )
 ENGLISH_TAIL_DENIAL = re.compile(
@@ -1931,7 +1955,7 @@ def _candidate_decision_mode(
     if (
         _has_explicit_negative(semantic_scope)
         or _prior_clause_has_dangling_negative(answer[:clause_start])
-        or _prior_negative_carries(answer, clause_start, clause)
+        or _prior_negative_carries(answer, clause_start)
         or _tail_denies_candidate(tail)
     ):
         return None
@@ -1951,7 +1975,12 @@ def _candidate_decision_mode(
         and candidate_trimmed_start == clause_trimmed_start
         and candidate_trimmed_end == clause_trimmed_end
     )
-    if not complete_clause or re.search(r"[没不未无]", _context_text(clause)):
+    if not complete_clause:
+        return "edit_only"
+    if (
+        re.search(r"[没不未无]", _context_text(clause))
+        and not _has_positive_assertion(clause)
+    ):
         return "edit_only"
     return "accept_or_edit"
 
@@ -1991,20 +2020,51 @@ def _has_explicit_negative(value: str) -> bool:
     compact = re.sub(r"[\s、]+", "", context)
     return bool(
         CHINESE_EXPLICIT_NEGATIVE.search(compact)
-        or OTHER_OWNER.search(compact)
+        or _has_other_owner(context)
         or ENGLISH_EXPLICIT_NEGATIVE.search(context)
     )
 
 
+def _has_positive_assertion(value: str) -> bool:
+    return bool(CHINESE_POSITIVE_ASSERTION.search(_context_text(value)))
+
+
+def _has_other_owner(value: str) -> bool:
+    context = _context_text(value)
+    compact = re.sub(r"\s+", "", context)
+    for match in CHINESE_OWNER_ASSIGNMENT.finditer(compact):
+        owner = match.group("by_owner") or match.group("copula_owner") or ""
+        if not re.fullmatch(r"(?:我|本人|我们(?:(?:的)?团队)?)", owner):
+            return True
+    for match in ENGLISH_BY_OWNER.finditer(context):
+        owner = match.group("owner").strip().lower()
+        if not re.match(r"^(?:me|myself|us|ourselves|we)\b", owner):
+            return True
+    active = ENGLISH_ACTIVE_OWNER.search(context)
+    if active is None:
+        return False
+    owner = active.group("owner").strip().lower()
+    return not (
+        re.match(r"^(?:i|we|us|my|our)\b", owner)
+        or owner.split()[-1] in {"am", "are", "is", "was", "were", "have", "has", "had"}
+    )
+
+
 def _prior_clause_has_dangling_negative(prefix: str) -> bool:
-    compact = re.sub(r"[\s，,；;、：:]+", "", _context_text(prefix))
-    return compact.endswith(("没有", "没", "不", "未", "无"))
+    prior_clause = re.split(r"[。.!！?？\n\r]", _context_text(prefix))[-1]
+    compact = re.sub(r"[\s，,；;、：:]+", "", prior_clause)
+    return bool(
+        re.fullmatch(r"(?:我|本人|我们|团队)?(?:没有|没|不能|不擅长)", compact)
+        or re.fullmatch(
+            r"(?:我|本人|我们|团队)?(?:没有|没|缺乏|欠缺)相关经验",
+            compact,
+        )
+    )
 
 
 def _prior_negative_carries(
     answer: str,
     clause_start: int,
-    clause: str,
 ) -> bool:
     boundaries = [
         boundary
@@ -2018,30 +2078,51 @@ def _prior_negative_carries(
         return False
     prior_start = boundaries[-2].end() if len(boundaries) > 1 else 0
     prior_clause = answer[prior_start:boundaries[-1].start()]
-    normalized_prior = _context_text(prior_clause)
-    leading_candidate_negative = re.match(
-        r"^(?:(?:我|本人|我们|团队)(?:其实|确实|尚|并|完全)*|"
-        r"(?:其实|确实|尚|并|完全)*)"
-        r"(?:没有|没|不|未|无|不能|不会|缺乏|欠缺)",
-        normalized_prior,
-    )
-    if not leading_candidate_negative or not _has_explicit_negative(prior_clause):
-        return False
-    normalized_clause = _context_text(clause)
-    return not bool(
-        re.match(r"^(?:我|本人|我们|团队)", normalized_clause)
-        or re.search(r"(?:已|曾|成功|独立|实际)?.*?(?:完成|负责|参与|实现|获得|达成)了", normalized_clause)
-        or re.match(r"^(?:I|we)\b", normalized_clause, re.IGNORECASE)
+    compact_prior = re.sub(r"\s+", "", _context_text(prior_clause))
+    return bool(
+        re.fullmatch(
+            r"(?:我|本人|我们|团队)?(?:没有|没|不能|不擅长)",
+            compact_prior,
+        )
+        or re.fullmatch(
+            r"(?:我|本人|我们|团队)?(?:没有|没|缺乏|欠缺)相关经验",
+            compact_prior,
+        )
     )
 
 
 def _tail_denies_candidate(tail: str) -> bool:
+    context = _context_text(tail)
+    if any(marker in context for marker in ("并不是我的职责", "不是我的职责", "与我无关")):
+        return True
+    if re.search(
+        r"(?:我|本人).{0,16}?(?:没有|没|未|不).{0,12}?"
+        r"(?:负责|完成|参与|承担|主导|做)",
+        context,
+    ):
+        return True
+    if re.search(
+        r"\b(?:i|we)\b.{0,24}\bnot\s+responsible\b",
+        context,
+        re.IGNORECASE,
+    ):
+        return True
+    if not context or context[0] in "。.!！?？\n\r":
+        return False
+    immediate = re.split(r"[。.!！?？\n\r]", context, maxsplit=1)[0]
+    immediate = re.sub(
+        r"^[\s，,；;]*(?:(?:不过|然而|可是|但|却|其实)\s*)?",
+        "",
+        immediate,
+    )
+    if re.match(r"^(?:另一个|另一项|其他|其它)", immediate):
+        return False
     return (
-        any(marker in tail for marker in RESPONSIBILITY_DISCLAIMERS)
-        or bool(RESPONSIBILITY_DENIAL.search(tail))
-        or bool(CHINESE_TAIL_DENIAL.search(tail))
-        or bool(OTHER_OWNER.search(tail))
-        or bool(ENGLISH_TAIL_DENIAL.search(tail))
+        any(marker in immediate for marker in RESPONSIBILITY_DISCLAIMERS)
+        or bool(RESPONSIBILITY_DENIAL.search(immediate))
+        or bool(CHINESE_TAIL_DENIAL.search(immediate))
+        or _has_other_owner(immediate)
+        or bool(ENGLISH_TAIL_DENIAL.search(immediate))
     )
 
 
