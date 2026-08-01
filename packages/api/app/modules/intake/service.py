@@ -151,14 +151,25 @@ QUESTIONS = {
 
 NEGATIVE_ANSWERS = frozenset({"没有", "不知道", "不清楚", "无", "跳过"})
 NEGATIVE_CLAIM = re.compile(
-    r"(?:(?:并)?没有|从未|未曾|未)(?:真正)?"
-    r"(?:负责|参与|完成|承担|做过|参加)(?:这个|该|相关)?"
+    r"(?:(?:并|完全)?没有|没|从未|不曾|未曾|并未|未)(?:真正|能)?"
+    r"(?:负责|参与|完成|承担|做过|参加)(?:过)?(?:这个|该|相关)?"
     r"(?:项目|任务|工作|实习|活动|课程)?"
+)
+NEGATIVE_EXPERIENCE = re.compile(
+    r"(?:暂时)?(?:没有|无)(?:相关|类似|这方面)?"
+    r"(?:经历|经验|项目|任务|内容|实习|兼职|工作|课程|社团|志愿活动)"
 )
 NUMBER_TOKEN = re.compile(
     r"(?<![\d.,])(?P<number>[+\-−]?(?:"
     r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+))"
     r"(?P<percent>[%％]?)(?![\d.,])"
+)
+CHINESE_NUMBER = r"[零〇一二两三四五六七八九十百千万亿]+"
+CHINESE_PERCENT_TOKEN = re.compile(rf"百分之(?P<number>{CHINESE_NUMBER})")
+CHINESE_ORDINAL_TOKEN = re.compile(rf"第(?P<number>{CHINESE_NUMBER})")
+CHINESE_COUNT_TOKEN = re.compile(
+    rf"(?P<number>{CHINESE_NUMBER})(?P<unit>"
+    r"小时|分钟|个月|人|名|次|项|个|天|周|月|年|份|家|位|届|场|分|元|成)"
 )
 
 
@@ -243,6 +254,37 @@ class IntakeService:
                         "Wait for or finish the current answer analysis before restarting",
                         409,
                     )
+                failed_outboxes = (
+                    await session.scalars(
+                        select(Outbox)
+                        .join(
+                            IntakeAnswer,
+                            and_(
+                                IntakeAnswer.analysis_task_id == Outbox.task_id,
+                                IntakeAnswer.owner_user_id
+                                == Outbox.owner_user_id,
+                            ),
+                        )
+                        .join(
+                            Task,
+                            and_(
+                                Task.id == Outbox.task_id,
+                                Task.owner_user_id == Outbox.owner_user_id,
+                            ),
+                        )
+                        .where(
+                            IntakeAnswer.session_id == active.id,
+                            IntakeAnswer.owner_user_id == active.owner_user_id,
+                            IntakeAnswer.analysis_status == "failed",
+                            Task.type == "analyze_intake_answer",
+                            Task.resource_type == "intake_answer",
+                            Task.resource_id == IntakeAnswer.id,
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+                for failed_outbox in failed_outboxes:
+                    _clear_analysis_snapshot(failed_outbox)
             if active is not None:
                 active.status = "abandoned"
                 active.active_owner_key = None
@@ -591,6 +633,15 @@ class IntakeService:
             answer_row.analysis_status = (
                 "waiting_for_confirmation" if valid else "completed"
             )
+            outbox = await session.scalar(
+                select(Outbox)
+                .where(
+                    Outbox.task_id == task.id,
+                    Outbox.owner_user_id == task.owner_user_id,
+                )
+                .with_for_update()
+            )
+            _clear_analysis_snapshot(outbox)
             await task_service.complete_task_in_session(
                 session,
                 task,
@@ -729,6 +780,7 @@ class IntakeService:
                 )
             except TaskServiceError as error:
                 raise IntakeError(error.code, error.message, error.status_code) from error
+            _clear_analysis_snapshot(old_outbox)
             answer_row.analysis_task_id = task.id
             answer_row.analysis_status = "queued"
             answer_row.next_question_source = None
@@ -818,6 +870,15 @@ class IntakeService:
                     task.owner_user_id,
                     task.id,
                 )
+            outbox = await session.scalar(
+                select(Outbox)
+                .where(
+                    Outbox.task_id == task.id,
+                    Outbox.owner_user_id == task.owner_user_id,
+                )
+                .with_for_update()
+            )
+            _clear_analysis_snapshot(outbox)
             intake.current_question = _next_question(
                 answer_row.question_id,
                 answer_row.answer_encrypted or "",
@@ -1231,6 +1292,49 @@ class IntakeService:
                 raise IntakeError(
                     "INTAKE_VERSION_CONFLICT",
                     "Intake session has changed",
+                    409,
+                )
+            pending_candidates = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(FactCandidate)
+                    .join(
+                        IntakeAnswer,
+                        and_(
+                            IntakeAnswer.id == FactCandidate.intake_answer_id,
+                            IntakeAnswer.owner_user_id
+                            == FactCandidate.owner_user_id,
+                        ),
+                    )
+                    .where(
+                        IntakeAnswer.session_id == row.id,
+                        IntakeAnswer.owner_user_id == row.owner_user_id,
+                        FactCandidate.owner_user_id == row.owner_user_id,
+                        FactCandidate.status == "pending",
+                    )
+                )
+                or 0
+            )
+            if pending_candidates:
+                raise IntakeError(
+                    "INTAKE_FACT_REVIEW_REQUIRED",
+                    "Review all pending fact candidates before generating a draft",
+                    409,
+                )
+            latest_answer = await self._latest_analysis_answer(
+                session,
+                row,
+                lock=False,
+            )
+            if latest_answer is not None and latest_answer.analysis_status in {
+                "queued",
+                "running",
+                "waiting_for_confirmation",
+                "failed",
+            }:
+                raise IntakeError(
+                    "INTAKE_ANALYSIS_NOT_READY",
+                    "Finish or resolve the latest answer analysis before generating a draft",
                     409,
                 )
             ready_facts = await self._ready_facts(session, row)
@@ -1724,7 +1828,10 @@ def _validated_candidates(
             source_slice = answer_text[start:end]
             if hashlib.sha256(source_slice.encode()).hexdigest() != candidate.source_hash:
                 reason = "source_hash_mismatch"
-            elif _answer_state(source_slice, False) != "answered":
+            elif (
+                _answer_state(source_slice, False) != "answered"
+                or _has_negative_source(source_slice)
+            ):
                 reason = "negative_source"
             elif not _number_tokens(candidate.value).issubset(
                 _number_tokens(source_slice)
@@ -1765,7 +1872,29 @@ def _number_tokens(value: str) -> set[str]:
         if match.group("percent"):
             normalized = f"{normalized}%"
         tokens.add(normalized)
+    for match in CHINESE_PERCENT_TOKEN.finditer(value):
+        tokens.add(f"zh-percent:{match.group('number')}")
+    for match in CHINESE_ORDINAL_TOKEN.finditer(value):
+        tokens.add(f"zh-ordinal:{match.group('number')}")
+    for match in CHINESE_COUNT_TOKEN.finditer(value):
+        tokens.add(f"zh-count:{match.group('number')}:{match.group('unit')}")
     return tokens
+
+
+def _has_negative_source(value: str) -> bool:
+    normalized = re.sub(r"[\s，。！？,.!?；;：:]+", "", value)
+    return bool(
+        NEGATIVE_CLAIM.search(normalized)
+        or NEGATIVE_EXPERIENCE.search(normalized)
+    )
+
+
+def _clear_analysis_snapshot(outbox: Outbox | None) -> None:
+    if outbox is None or "analysis_snapshot" not in outbox.payload:
+        return
+    payload = dict(outbox.payload)
+    payload.pop("analysis_snapshot", None)
+    outbox.payload = payload
 
 
 def _analysis_next_question(

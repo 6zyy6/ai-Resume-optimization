@@ -34,6 +34,7 @@ from app.db.models import (
     Outbox,
     SourceRecord,
     Task,
+    TaskEvent,
     UsageLedger,
     User,
 )
@@ -48,6 +49,8 @@ from app.integrations.storage import MemoryStorage
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.service import IntakeError, IntakeService
+from app.modules.tasks.service import TaskAdmission
+from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
 from app.workers.execution import TaskExecutor, resolve_operation
 from app.workers.pipeline import configure_pipeline_operations
 
@@ -379,6 +382,11 @@ class FailingIntakeClient:
         raise RuntimeError("malformed provider response")
 
 
+class FailingPublisher:
+    def publish(self, task_id, owner_user_id, queue):
+        raise ConnectionError("broker unavailable")
+
+
 class MismatchedReceiptClient(IntakeReceiptClient):
     async def run(self, input, cancellation=None):
         receipt = await super().run(input, cancellation)
@@ -549,6 +557,14 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
                 "source_hash": hashlib.sha256(negative.encode()).hexdigest(),
                 "risk_flags": [],
             },
+            {
+                "kind": "experience",
+                "value": "完成课程项目",
+                "source_answer_id": input.payload.answer_id,
+                "source_range": {"start": 0, "end": len(answer_text)},
+                "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
+                "risk_flags": [],
+            },
         ]
 
     queued = _queue_answer(client, answer_text)
@@ -574,7 +590,17 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
 
 @pytest.mark.parametrize(
     "negative_slice",
-    ["并没有负责项目", "从未负责项目", "未参与这个项目"],
+    [
+        "并没有负责项目",
+        "从未负责项目",
+        "未参与这个项目",
+        "并未负责项目",
+        "不曾参与项目",
+        "完全没有参与项目",
+        "没有参与过项目",
+        "没负责项目",
+        "未能完成项目",
+    ],
 )
 def test_negative_candidate_slices_never_become_positive_candidates(
     intake_analysis_app,
@@ -631,6 +657,57 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
     expected_count,
 ):
     """Loose digit matching must not merge signs, decimals, or thousands."""
+    client, sessions, application = intake_analysis_app
+
+    def candidates(input):
+        return [{
+            "kind": "result",
+            "value": value,
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": 0, "end": len(source)},
+            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
+            "risk_flags": [],
+        }]
+
+    queued = _queue_answer(client, source)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_model_count(sessions, FactCandidate)) == expected_count
+    if expected_count == 0:
+        assert "unsupported_numeric" in _run(_trace_payload(sessions))
+
+
+@pytest.mark.parametrize(
+    ("source", "value", "expected_count"),
+    [
+        ("完成十项任务", "完成十项任务", 1),
+        ("完成十项任务", "完成二十项任务", 0),
+        ("获得第二名", "获得第二名", 1),
+        ("获得第二名", "获得第一名", 0),
+        ("提升百分之五", "提升百分之五", 1),
+        ("提升百分之五", "提升百分之十", 0),
+        ("服务十人", "服务二十人", 0),
+        ("连续三个月", "连续三周", 0),
+    ],
+)
+def test_chinese_numeric_tokens_require_exact_source_support(
+    intake_analysis_app,
+    source,
+    value,
+    expected_count,
+):
     client, sessions, application = intake_analysis_app
 
     def candidates(input):
@@ -811,6 +888,7 @@ def test_pipeline_executes_typed_answer_analysis_without_a_second_completion(
     answer_id = _run(_answer_id(sessions, task_id))
     assert _run(_task_state(sessions, task_id)) == ("succeeded", answer_id)
     assert len(_run(_candidate_values(sessions, answer_id))) == 1
+    assert "analysis_snapshot" not in _run(_outbox_payload(sessions, task_id))
 
 
 def test_pipeline_failure_marks_answer_failed_and_releases_unused_usage(
@@ -841,6 +919,107 @@ def test_pipeline_failure_marks_answer_failed_and_releases_unused_usage(
     assert _run(_analysis_state(sessions, answer_id))[0] == "failed"
     assert _run(_model_count(sessions, AiRun)) == 0
     assert _run(_usage_state(sessions, task_id))[0] == "released"
+
+
+@pytest.mark.parametrize("recovery", ["retry", "continue", "restart"])
+def test_outbox_exhaustion_atomically_unblocks_intake_recovery(
+    intake_analysis_app,
+    recovery,
+):
+    """A never-published task must not strand the answer or its reservation."""
+    client, sessions, _ = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    session_id = _run(_session_id(sessions))
+    dispatcher = OutboxDispatcher(
+        sessions,
+        FailingPublisher(),
+        retry_base_seconds=0,
+        jitter=lambda: 0,
+    )
+
+    for _ in range(3):
+        with pytest.raises(TaskQueueBusy):
+            _run(dispatcher.dispatch_task(task_id))
+
+    assert _run(_task_error(sessions, task_id)) == (
+        "failed",
+        "TASK_QUEUE_UNAVAILABLE",
+    )
+    assert _run(_analysis_state(sessions, answer_id))[0] == "failed"
+    assert _run(_usage_state(sessions, task_id)) == ("released", None)
+    assert _run(_outbox_state(sessions, task_id)) == (3, True)
+    assert "analysis_snapshot" in _run(_outbox_payload(sessions, task_id))
+    assert _run(_task_event_stages(sessions, task_id))[-1] == "failed"
+    assert client.get(
+        f"/v1/intake-sessions/{session_id}"
+    ).json()["analysis_status"] == "failed"
+
+    if recovery == "retry":
+        recovered = client.post(
+            f"/v1/intake-sessions/{session_id}/analysis/retry",
+            json={"base_version": 1},
+            headers={"Idempotency-Key": "exhausted-analysis-retry"},
+        )
+        assert recovered.status_code == 202
+    elif recovery == "continue":
+        recovered = client.post(
+            f"/v1/intake-sessions/{session_id}/analysis/continue",
+            json={"base_version": 1},
+            headers={"Idempotency-Key": "exhausted-analysis-continue"},
+        )
+        assert recovered.status_code == 200
+        assert recovered.json()["analysis_status"] == "completed"
+    else:
+        recovered = client.post(
+            "/v1/intake-sessions",
+            json={"restart": True},
+            headers={"Idempotency-Key": "exhausted-analysis-restart"},
+        )
+        assert recovered.status_code == 201
+        assert recovered.json()["id"] != session_id
+    assert "analysis_snapshot" not in _run(_outbox_payload(sessions, task_id))
+
+
+def test_non_intake_outbox_exhaustion_only_releases_its_own_reservation(
+    intake_analysis_app,
+):
+    """Generic exhaustion must not update an unrelated IntakeAnswer graph."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    intake_task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, intake_task_id))
+    generic = _run(
+        application.state.task_service.create_task(
+            "usr_analysis",
+            task_type="resume_optimize",
+            queue="ai.batch",
+            trace_id="tr_generic_exhaustion",
+            idempotency_key="generic-exhaustion",
+            admission=TaskAdmission.ai(),
+            resource_type="resume",
+            resource_id=answer_id,
+        )
+    )
+    dispatcher = OutboxDispatcher(
+        sessions,
+        FailingPublisher(),
+        retry_base_seconds=0,
+        jitter=lambda: 0,
+    )
+
+    for _ in range(3):
+        with pytest.raises(TaskQueueBusy):
+            _run(dispatcher.dispatch_task(generic.id))
+
+    assert _run(_task_error(sessions, generic.id)) == (
+        "failed",
+        "TASK_QUEUE_UNAVAILABLE",
+    )
+    assert _run(_usage_state(sessions, generic.id)) == ("released", None)
+    assert _run(_analysis_state(sessions, answer_id))[0] == "queued"
+    assert _run(_usage_state(sessions, intake_task_id)) == ("reserved", None)
 
 
 def test_pipeline_receipt_mismatch_does_not_leave_answer_running(
@@ -1237,6 +1416,106 @@ def test_candidate_decision_is_owner_filtered_and_rejects_invalid_modes(
     assert other_owner.status_code == 404
 
 
+def test_draft_rejects_pending_fact_review_without_mutating_intake(
+    intake_analysis_app,
+):
+    """Confirmed facts must not let draft generation bypass a pending review."""
+    client, sessions, application = intake_analysis_app
+    candidate_id, session_id = _analyze_one_candidate(
+        client,
+        sessions,
+        application,
+        "我完成了课程项目",
+    )
+    _run(
+        _seed_confirmed_intake_fact(
+            sessions,
+            fact_id="fact_ready_one",
+            value="我持续完成课程项目",
+        )
+    )
+    _run(
+        _seed_confirmed_intake_fact(
+            sessions,
+            fact_id="fact_ready_two",
+            value="我负责用户调研",
+        )
+    )
+    task_count = _run(_model_count(sessions, Task))
+    usage_count = _run(_model_count(sessions, UsageLedger))
+    session_state = _run(_intake_state(sessions, session_id))
+
+    blocked = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={"base_version": 1, "title": "不应生成"},
+        headers={"Idempotency-Key": "draft-before-candidate-review"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "INTAKE_FACT_REVIEW_REQUIRED"
+    assert _run(_model_count(sessions, Task)) == task_count
+    assert _run(_model_count(sessions, UsageLedger)) == usage_count
+    assert _run(_intake_state(sessions, session_id)) == session_state
+    assert _run(_candidate_status(sessions, candidate_id)) == "pending"
+
+    decided = client.post(
+        f"/v1/intake-sessions/{session_id}/fact-candidates/"
+        f"{candidate_id}/decision",
+        json={"decision": "reject", "base_version": 1},
+        headers={"Idempotency-Key": "review-after-draft-block"},
+    )
+    assert decided.status_code == 200
+    assert _run(_candidate_status(sessions, candidate_id)) == "rejected"
+
+
+@pytest.mark.parametrize(
+    "analysis_status",
+    ["queued", "running", "waiting_for_confirmation", "failed"],
+)
+def test_draft_rejects_unresolved_latest_answer_analysis(
+    intake_analysis_app,
+    analysis_status,
+):
+    client, sessions, _ = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    answer_id = _run(_answer_id(sessions, queued["analysis_task_id"]))
+    session_id = _run(_session_id(sessions))
+    _run(_set_answer_analysis_status(sessions, answer_id, analysis_status))
+    _run(
+        _seed_confirmed_intake_fact(
+            sessions,
+            fact_id="fact_ready_one",
+            value="我持续完成课程项目",
+        )
+    )
+    _run(
+        _seed_confirmed_intake_fact(
+            sessions,
+            fact_id="fact_ready_two",
+            value="我负责用户调研",
+        )
+    )
+    before = (
+        _run(_intake_state(sessions, session_id)),
+        _run(_model_count(sessions, Task)),
+        _run(_model_count(sessions, UsageLedger)),
+    )
+
+    blocked = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={"base_version": 1, "title": "不应生成"},
+        headers={"Idempotency-Key": f"draft-{analysis_status}"},
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "INTAKE_ANALYSIS_NOT_READY"
+    assert (
+        _run(_intake_state(sessions, session_id)),
+        _run(_model_count(sessions, Task)),
+        _run(_model_count(sessions, UsageLedger)),
+    ) == before
+
+
 def test_failed_analysis_retry_reuses_answer_and_replaces_unused_reservation(
     intake_analysis_app,
 ):
@@ -1278,6 +1557,7 @@ def test_failed_analysis_retry_reuses_answer_and_replaces_unused_reservation(
         new_task_id,
         "queued",
     )
+    assert "analysis_snapshot" not in _run(_outbox_payload(sessions, old_task_id))
 
 
 def test_retry_reuses_enqueue_snapshot_and_worker_ignores_mutated_live_context(
@@ -1351,6 +1631,7 @@ def test_retry_reuses_enqueue_snapshot_and_worker_ignores_mutated_live_context(
     assert [fact.value for fact in request.payload.confirmed_facts] == [
         "原始已确认事实"
     ]
+    assert "analysis_snapshot" not in _run(_outbox_payload(sessions, new_task_id))
 
 
 def test_worker_rejects_tampered_analysis_snapshot_before_calling_ai(
@@ -1406,6 +1687,7 @@ def test_analysis_continue_releases_reservation_and_advances_by_rule(
     )
     assert _run(_task_error(sessions, task_id))[0] == "failed"
     assert _run(_usage_state(sessions, task_id))[0] == "released"
+    assert "analysis_snapshot" not in _run(_outbox_payload(sessions, task_id))
 
 
 def test_analysis_continue_rejects_a_task_with_the_wrong_resource_type(
@@ -1561,9 +1843,24 @@ async def _candidate_id(sessions, answer_id):
         )
 
 
+async def _candidate_status(sessions, candidate_id):
+    async with sessions() as session:
+        return await session.scalar(
+            select(FactCandidate.status).where(FactCandidate.id == candidate_id)
+        )
+
+
 async def _session_id(sessions):
     async with sessions() as session:
         return await session.scalar(select(IntakeSession.id))
+
+
+async def _intake_state(sessions, session_id):
+    async with sessions() as session:
+        row = await session.scalar(
+            select(IntakeSession).where(IntakeSession.id == session_id)
+        )
+        return row.status, row.version, row.task_id, row.draft_title
 
 
 async def _analysis_state(sessions, answer_id):
@@ -1690,7 +1987,7 @@ async def _seed_confirmed_intake_fact(sessions, *, fact_id, value):
         await session.flush()
         fact.status = "confirmed"
         fact.confirmed_at = datetime.now(timezone.utc)
-        intake.fact_ids = [fact.id]
+        intake.fact_ids = [*intake.fact_ids, fact.id]
 
 
 async def _outbox_payload(sessions, task_id):
@@ -1700,6 +1997,33 @@ async def _outbox_payload(sessions, task_id):
                 Outbox.task_id == task_id,
                 Outbox.owner_user_id == "usr_analysis",
             )
+        )
+
+
+async def _outbox_state(sessions, task_id):
+    async with sessions() as session:
+        row = await session.scalar(
+            select(Outbox).where(
+                Outbox.task_id == task_id,
+                Outbox.owner_user_id == "usr_analysis",
+            )
+        )
+        return row.attempts, row.exhausted_at is not None
+
+
+async def _task_event_stages(sessions, task_id):
+    async with sessions() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(TaskEvent.stage)
+                    .where(
+                        TaskEvent.task_id == task_id,
+                        TaskEvent.owner_user_id == "usr_analysis",
+                    )
+                    .order_by(TaskEvent.seq)
+                )
+            ).all()
         )
 
 

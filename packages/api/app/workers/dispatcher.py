@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import get_settings
 from app.core.ids import new_id
-from app.db.models import Outbox, Task, TaskEvent
+from app.db.models import IntakeAnswer, Outbox, Task, TaskEvent, UsageLedger
 from app.modules.tasks.state import TERMINAL_STATUSES
 from app.workers.celery_app import celery_app
 
@@ -160,10 +160,43 @@ class OutboxDispatcher:
         task.finished_at = now
         task.claim_token = None
         task.claim_lease_expires_at = None
+        if task.usage_type == "ai_task" and task.active_ai_run_id is None:
+            reservation = await session.scalar(
+                select(UsageLedger)
+                .where(
+                    UsageLedger.task_id == task.id,
+                    UsageLedger.owner_user_id == task.owner_user_id,
+                    UsageLedger.usage_type == "ai_task",
+                    UsageLedger.state == "reserved",
+                    UsageLedger.ai_run_id.is_(None),
+                )
+                .with_for_update()
+            )
+            if reservation is not None:
+                reservation.state = "released"
+                reservation.updated_at = now
+        if (
+            task.type == "analyze_intake_answer"
+            and task.resource_type == "intake_answer"
+            and task.resource_id is not None
+        ):
+            answer = await session.scalar(
+                select(IntakeAnswer)
+                .where(
+                    IntakeAnswer.id == task.resource_id,
+                    IntakeAnswer.owner_user_id == task.owner_user_id,
+                    IntakeAnswer.analysis_task_id == task.id,
+                    IntakeAnswer.analysis_status.in_(("queued", "running")),
+                )
+                .with_for_update()
+            )
+            if answer is not None:
+                answer.analysis_status = "failed"
         sequence = (
             await session.scalar(
                 select(func.coalesce(func.max(TaskEvent.seq), 0)).where(
-                    TaskEvent.task_id == task.id
+                    TaskEvent.task_id == task.id,
+                    TaskEvent.owner_user_id == task.owner_user_id,
                 )
             )
             or 0
