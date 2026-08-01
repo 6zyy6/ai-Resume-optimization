@@ -154,6 +154,8 @@ def test_ai_receipt_and_usage_reservation_metadata_is_constrained():
     assert ai_runs.c.status.nullable is False
     assert ai_runs.c.error_code.nullable is True
     assert ai_runs.c.workflow_stage.nullable is False
+    assert ai_runs.c.provider_cost.type.precision == 24
+    assert ai_runs.c.provider_cost.type.scale == 12
     assert usage.c.state.nullable is False
     assert usage.c.task_id.nullable is True
     assert usage.c.ai_run_id.nullable is True
@@ -218,6 +220,177 @@ def test_migration_0012_marks_legacy_usage_as_consumed(tmp_path, monkeypatch):
     assert row.task_id is None
     assert row.ai_run_id is None
     assert str(row.updated_at).startswith("2026-07-30 08:00:00")
+
+    command.downgrade(config, "0011")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.connect() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(usage_ledger)"))}
+        preserved = connection.execute(
+            text("SELECT quantity, cost_cny FROM usage_ledger WHERE id = 'usg_legacy'")
+        ).one()
+    engine.dispose()
+
+    assert "state" not in columns
+    assert preserved.quantity == 1
+    assert Decimal(str(preserved.cost_cny)) == Decimal("0.5")
+
+
+def _seed_legacy_ai_run(connection, *, suffix: str, workflow_type: str, input_hash: str):
+    created_at = "2026-07-30 08:00:00"
+    task_id = f"tsk_{suffix}"
+    connection.execute(
+        text(
+            "INSERT INTO tasks "
+            "(id, owner_user_id, type, status, priority, trace_id, attempts, "
+            "max_attempts, queued_at, stage, progress, cancellation_requested) "
+            "VALUES (:task_id, 'usr_migration', 'ai', 'queued', 0, :trace_id, "
+            "0, 3, :created_at, 'queued', 0, 0)"
+        ),
+        {"task_id": task_id, "trace_id": f"tr_{suffix}", "created_at": created_at},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO ai_runs "
+            "(id, owner_user_id, trace_id, task_id, workflow_type, workflow_version, "
+            "provider, requested_model, input_tokens, output_tokens, cache_tokens, "
+            "reasoning_tokens, provider_cost, cost_cny, turn_count, tool_count, "
+            "retry_count, fallback_count, prompt_template_version, input_hash) "
+            "VALUES (:run_id, 'usr_migration', :trace_id, :task_id, :workflow_type, "
+            "'2', 'deepseek', 'deepseek-chat', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "
+            "'template@2', :input_hash)"
+        ),
+        {
+            "run_id": f"run_{suffix}",
+            "trace_id": f"tr_{suffix}",
+            "task_id": task_id,
+            "workflow_type": workflow_type,
+            "input_hash": input_hash,
+        },
+    )
+
+
+def test_migration_0012_maps_all_workflows_to_fixed_business_stages(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "workflow-stage.db"
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0011")
+    engine = create_engine(f"sqlite:///{database_path}")
+    workflows = {
+        "analyze_intake_answer": "analysis",
+        "compose_resume_draft": "draft",
+        "parse_jd": "parse",
+        "match_resume_to_jd": "match",
+        "generate_suggestions_batch": "suggestions",
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, status, locale, created_at) "
+                "VALUES ('usr_migration', 'active', 'zh-CN', '2026-07-30 08:00:00')"
+            )
+        )
+        for index, workflow_type in enumerate(workflows):
+            _seed_legacy_ai_run(
+                connection,
+                suffix=str(index),
+                workflow_type=workflow_type,
+                input_hash=f"hash_{index}",
+            )
+    engine.dispose()
+
+    command.upgrade(config, "0012")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.connect() as connection:
+        rows = dict(
+            connection.execute(
+                text("SELECT workflow_type, workflow_stage FROM ai_runs")
+            ).all()
+        )
+    engine.dispose()
+
+    assert rows == workflows
+
+
+def test_migration_0012_rejects_duplicate_mapped_stable_keys(tmp_path, monkeypatch):
+    database_path = tmp_path / "duplicate-stage.db"
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0011")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, status, locale, created_at) "
+                "VALUES ('usr_migration', 'active', 'zh-CN', '2026-07-30 08:00:00')"
+            )
+        )
+        _seed_legacy_ai_run(
+            connection,
+            suffix="duplicate",
+            workflow_type="parse_jd",
+            input_hash="same_hash",
+        )
+        connection.execute(
+            text(
+                "INSERT INTO ai_runs "
+                "(id, owner_user_id, trace_id, task_id, workflow_type, "
+                "workflow_version, provider, requested_model, response_model, "
+                "started_at, first_token_at, finished_at, stop_reason, input_tokens, "
+                "output_tokens, cache_tokens, reasoning_tokens, provider_cost, "
+                "cost_cny, turn_count, tool_count, schema_valid, facts_valid, "
+                "retry_count, fallback_count, result_ref, prompt_template_version, "
+                "input_hash) SELECT 'run_duplicate_2', owner_user_id, "
+                "trace_id, task_id, workflow_type, workflow_version, provider, "
+                "requested_model, response_model, started_at, first_token_at, "
+                "finished_at, stop_reason, input_tokens, output_tokens, cache_tokens, "
+                "reasoning_tokens, provider_cost, cost_cny, turn_count, tool_count, "
+                "schema_valid, facts_valid, retry_count, fallback_count, result_ref, "
+                "prompt_template_version, input_hash FROM ai_runs "
+                "WHERE id = 'run_duplicate'"
+            )
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="duplicate"):
+        command.upgrade(config, "0012")
+
+
+@pytest.mark.parametrize("state", ["reserved", "released"])
+def test_migration_0012_downgrade_rejects_non_consumed_usage(
+    tmp_path, monkeypatch, state
+):
+    database_path = tmp_path / f"downgrade-{state}.db"
+    engine = migrated_sqlite_engine(database_path, monkeypatch)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, status, locale, created_at) "
+                "VALUES ('usr_downgrade', 'active', 'zh-CN', '2026-07-30 08:00:00')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO usage_ledger "
+                "(id, owner_user_id, usage_type, quantity, cost_cny, trace_id, "
+                "state, updated_at, created_at) VALUES "
+                "('usg_downgrade', 'usr_downgrade', 'ai_task', 1, 0, 'tr', "
+                ":state, '2026-07-30 08:00:00', '2026-07-30 08:00:00')"
+            ),
+            {"state": state},
+        )
+    engine.dispose()
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+
+    with pytest.raises(RuntimeError, match="non-consumed"):
+        command.downgrade(config, "0011")
 
 
 def test_memory_resource_repositories_are_owner_scoped():

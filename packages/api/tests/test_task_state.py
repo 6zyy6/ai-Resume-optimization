@@ -4,7 +4,12 @@ import pytest
 from sqlalchemy import select
 
 from app.db.models import TaskEvent, UsageLedger, User
-from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
+from app.modules.tasks.service import (
+    TaskAdmission,
+    TaskClaimError,
+    TaskService,
+    TaskServiceError,
+)
 
 
 pytestmark = pytest.mark.anyio
@@ -201,11 +206,18 @@ async def test_ai_run_created_during_cancel_is_bound_but_cannot_continue(
         "run_created_during_cancel",
     )
     stored = await service.get_task("usr_tasks", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
 
     assert should_continue is False
     assert stored is not None
     assert stored.status == "cancelled"
     assert stored.active_ai_run_id == "run_created_during_cancel"
+    assert reservation is not None
+    assert reservation.state == "consumed"
+    assert reservation.ai_run_id == "run_created_during_cancel"
 
 
 async def test_same_claim_cannot_replace_an_active_ai_run(sql_session_factory):
@@ -293,6 +305,36 @@ async def test_first_ai_run_consumes_one_reservation_and_later_run_reuses_it(
     assert rows[0].ai_run_id == "run_match"
 
 
+async def test_consumed_reservation_rejects_a_different_ai_run_id(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="resume_optimize",
+        queue="ai.batch",
+        trace_id="tr_reservation_conflict",
+        idempotency_key="reservation-conflict-1",
+        admission=TaskAdmission.ai(),
+    )
+
+    first = await service.consume_ai_reservation(
+        "usr_tasks", task.id, "run_first"
+    )
+    replay = await service.consume_ai_reservation(
+        "usr_tasks", task.id, "run_first"
+    )
+    with pytest.raises(TaskServiceError) as conflict:
+        await service.consume_ai_reservation(
+            "usr_tasks", task.id, "run_second"
+        )
+
+    assert first.state == replay.state == "consumed"
+    assert conflict.value.code == "AI_RESERVATION_STATE_INVALID"
+    assert conflict.value.status_code == 409
+
+
 async def test_rule_only_ai_task_releases_unused_reservation(sql_session_factory):
     await _seed_user(sql_session_factory)
     service = TaskService(sql_session_factory)
@@ -307,6 +349,7 @@ async def test_rule_only_ai_task_releases_unused_reservation(sql_session_factory
     claim = await service.claim_task("usr_tasks", task.id)
     assert claim is not None
 
+    await service.release_ai_reservation("usr_tasks", task.id)
     await service.complete_task("usr_tasks", task.id, claim.token, "rule:done")
 
     async with sql_session_factory() as session:

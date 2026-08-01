@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.integrations.ai_client import AiCancellation, AiClient, InternalAiClient
+from app.integrations.ai_client import (
+    AiCancellation,
+    AiClient,
+    InternalAiClient,
+    LegacyAiClientAdapter,
+)
 from app.integrations.storage import StoragePort, build_storage
 from app.modules.exports.service import ExportService
 from app.modules.imports.service import ImportService
@@ -60,8 +65,11 @@ def configure_pipeline_operations(
     )
     imports = ImportService(sessions, storage)
     intake = IntakeService(sessions)
-    jobs = JobService(sessions, ai_client)
-    matching = MatchingService(sessions, ai_client)
+    legacy_ai_client = (
+        LegacyAiClientAdapter(ai_client) if ai_client is not None else None
+    )
+    jobs = JobService(sessions, legacy_ai_client)
+    matching = MatchingService(sessions, legacy_ai_client)
     exports = ExportService(sessions, storage)
     privacy = PrivacyWorker(sessions, storage)
 

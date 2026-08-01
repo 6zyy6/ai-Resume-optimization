@@ -356,7 +356,6 @@ class SqlUsageRepository:
                     select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
                         UsageLedger.owner_user_id.in_(owner_ids),
                         UsageLedger.usage_type == "ai_task",
-                        UsageLedger.state.in_(("reserved", "consumed")),
                         UsageLedger.created_at >= since,
                     )
                 )
@@ -456,7 +455,6 @@ class SqlUsageRepository:
                 cost = Decimal(
                     await session.scalar(
                         select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
-                            UsageLedger.state == "consumed",
                             UsageLedger.created_at >= day_start
                         )
                     )
@@ -467,7 +465,6 @@ class SqlUsageRepository:
                         select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
                             UsageLedger.owner_user_id.in_(owner_ids),
                             UsageLedger.usage_type == "ai_task",
-                            UsageLedger.state.in_(("reserved", "consumed")),
                             UsageLedger.created_at >= day_start,
                         )
                     )
@@ -506,7 +503,6 @@ class SqlUsageRepository:
                             queued_at=created_at,
                             stage="queued",
                             progress=0,
-                            usage_type="ai_task",
                         )
                     )
                     session.add(
@@ -517,10 +513,7 @@ class SqlUsageRepository:
                             quantity=1,
                             cost_cny=cost_cny,
                             trace_id=trace_id,
-                            state="reserved",
-                            task_id=task_id,
                             created_at=created_at,
-                            updated_at=created_at,
                         )
                     )
                     decision = UsageDecision(

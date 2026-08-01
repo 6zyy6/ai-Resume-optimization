@@ -20,7 +20,7 @@ from app.db.models import (
     VersionOperation,
 )
 from app.modules.resumes.service import canonical_snapshot
-from app.integrations.ai_client import InternalAiClient
+from app.integrations.ai_client import InternalAiClient, LegacyAiClientAdapter
 from app.modules.matching.service import MATCH_CATEGORIES, classify_requirements
 import httpx
 from sqlalchemy import select
@@ -92,7 +92,7 @@ def test_internal_ai_client_sends_exact_pi_contract_and_polls_to_terminal():
         transport=httpx.MockTransport(handler),
     )
     result = asyncio.run(
-        client.run(
+        LegacyAiClientAdapter(client).run(
             workflow_type="match_resume_to_jd",
             workflow_version="1",
             trace_id="trace_1",

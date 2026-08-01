@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
+import hashlib
+import json
+import math
+import re
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -9,34 +13,49 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import JsonValue
 
 from app.core.ids import new_id
-from app.db.models import AiRun, AiTraceEvent, Task, UsageLedger
+from app.db.models import AiRun, AiTraceEvent, Task
 from app.integrations.ai_client import AiExecutionReceipt, TraceEvent, derive_ai_run_id
 
 
-_SENSITIVE_DETAIL_KEYS = frozenset(
+_SAFE_DETAIL_KEYS = frozenset(
     {
-        "answer_text",
-        "authorization",
-        "confirmed_facts",
-        "current_object",
-        "job_description",
-        "jd_requirements",
-        "jd_text",
-        "payload",
-        "prompt",
-        "provider_raw_response",
-        "provider_response",
-        "raw_response",
-        "request",
-        "reasoning",
-        "resume_snapshot",
-        "secret",
-        "thinking",
-        "token",
-        "user_body",
-        "user_input",
+        "provider",
+        "model",
+        "response_model",
+        "response_id",
+        "stop_reason",
+        "tool_name",
+        "schema_valid",
+        "status",
+        "duration_ms",
+        "latency_ms",
+        "schema_path",
+        "error_code",
+        "risk_flags",
+        "fallback_reason",
+        "input_hash",
+        "prompt_template_version",
+        "input_length",
+        "output_length",
+        "source_event_type_hash",
+        "usage",
     }
 )
+_NUMBER_DETAIL_KEYS = frozenset(
+    {"duration_ms", "latency_ms", "input_length", "output_length"}
+)
+_USAGE_KEYS = frozenset(
+    {
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+        "reasoning",
+        "total_tokens",
+        "cost_usd",
+    }
+)
+_UNSAFE_STRING_CHARS = re.compile(r"[^a-zA-Z0-9_$.:/\[\]-]")
 
 
 class AiRunService:
@@ -63,6 +82,8 @@ class AiRunService:
         )
         if task is None:
             raise ValueError("AI receipt task is not owned by the requested owner")
+        if task.trace_id != run.trace_id:
+            raise ValueError("AI receipt trace does not match its task trace")
         existing = await session.scalar(
             select(AiRun).where(
                 AiRun.task_id == run.task_id,
@@ -74,46 +95,21 @@ class AiRunService:
         if existing is not None:
             if existing.id != run.ai_run_id:
                 raise ValueError("AI run stable key conflicts with another receipt")
-            return existing
-        reservation_cost = await session.scalar(
-            select(UsageLedger.cost_cny).where(
-                UsageLedger.task_id == run.task_id,
-                UsageLedger.owner_user_id == owner_id,
-                UsageLedger.usage_type == "ai_task",
+            await _assert_replay_matches(
+                session,
+                existing,
+                receipt,
+                workflow_stage=workflow_stage,
+                result_ref=result_ref,
             )
-        )
+            return existing
         stored = AiRun(
-            id=run.ai_run_id,
             owner_user_id=owner_id,
-            trace_id=run.trace_id,
-            task_id=run.task_id,
-            workflow_type=run.workflow_type,
-            workflow_version=run.workflow_version,
-            workflow_stage=workflow_stage,
-            status=run.status,
-            error_code=run.error_code,
-            provider=run.provider,
-            requested_model=run.requested_model,
-            response_model=run.response_model,
-            started_at=_datetime(run.started_at),
-            first_token_at=_datetime(run.first_token_at),
-            finished_at=_datetime(run.finished_at),
-            stop_reason=run.error_code or run.status,
-            input_tokens=run.usage.input,
-            output_tokens=run.usage.output,
-            cache_tokens=run.usage.cache_read + run.usage.cache_write,
-            reasoning_tokens=run.usage.reasoning,
-            provider_cost=run.usage.cost_usd,
-            cost_cny=Decimal(reservation_cost or 0),
-            turn_count=run.turn_count,
-            tool_count=run.tool_call_count,
-            schema_valid=run.schema_valid,
-            facts_valid=run.facts_valid,
-            retry_count=run.retry_count,
-            fallback_count=run.fallback_count,
-            result_ref=result_ref,
-            prompt_template_version=run.prompt_template_version,
-            input_hash=run.input_hash,
+            **_stored_run_values(
+                receipt,
+                workflow_stage=workflow_stage,
+                result_ref=result_ref,
+            ),
         )
         try:
             async with session.begin_nested():
@@ -130,6 +126,13 @@ class AiRunService:
             )
             if replay is None or replay.id != run.ai_run_id:
                 raise
+            await _assert_replay_matches(
+                session,
+                replay,
+                receipt,
+                workflow_stage=workflow_stage,
+                result_ref=result_ref,
+            )
             return replay
         session.add_all(
             [
@@ -151,6 +154,8 @@ class AiRunService:
 
 def _validate_events(receipt: AiExecutionReceipt) -> None:
     run = receipt.run
+    if not run.events:
+        raise ValueError("AI receipt requires at least one trace event")
     for expected, event in enumerate(run.events, start=1):
         if event.event_seq != expected:
             raise ValueError("AI trace event sequence must start at 1 and be continuous")
@@ -165,30 +170,157 @@ def _validate_events(receipt: AiExecutionReceipt) -> None:
 def _safe_details(event: TraceEvent) -> dict[str, JsonValue] | None:
     if not event.details:
         return None
-    safe = _sanitize_mapping(event.details)
+    safe: dict[str, JsonValue] = {}
+    for key, value in event.details.items():
+        if key not in _SAFE_DETAIL_KEYS:
+            continue
+        if key == "risk_flags" and isinstance(value, list):
+            safe[key] = [
+                normalized
+                for item in value
+                if (normalized := _safe_string(item, 128))
+            ]
+        elif key in _NUMBER_DETAIL_KEYS and _is_finite_number(value):
+            safe[key] = value
+        elif key == "schema_valid" and isinstance(value, bool):
+            safe[key] = value
+        elif key == "usage" and isinstance(value, dict):
+            safe[key] = {
+                usage_key: usage_value
+                for usage_key, usage_value in value.items()
+                if usage_key in _USAGE_KEYS and _is_finite_number(usage_value)
+            }
+        elif (normalized := _safe_string(value)) is not None:
+            safe[key] = normalized
     return safe or None
 
 
-def _sanitize_mapping(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
+def _safe_string(value: object, max_length: int = 256) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return _UNSAFE_STRING_CHARS.sub("_", value)[:max_length]
+
+
+def _is_finite_number(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
+def _stored_run_values(
+    receipt: AiExecutionReceipt,
+    *,
+    workflow_stage: str,
+    result_ref: str | None,
+) -> dict[str, object]:
+    run = receipt.run
     return {
-        key: _sanitize_value(value)
-        for key, value in values.items()
-        if key.lower() not in _SENSITIVE_DETAIL_KEYS
-        and not key.lower().endswith(
-            ("_body", "_prompt", "_response", "_secret", "_key", "_token")
-        )
+        "id": run.ai_run_id,
+        "trace_id": run.trace_id,
+        "task_id": run.task_id,
+        "workflow_type": run.workflow_type,
+        "workflow_version": run.workflow_version,
+        "workflow_stage": workflow_stage,
+        "status": run.status,
+        "error_code": run.error_code,
+        "provider": run.provider,
+        "requested_model": run.requested_model,
+        "response_model": run.response_model,
+        "started_at": _datetime(run.started_at),
+        "first_token_at": _datetime(run.first_token_at),
+        "finished_at": _datetime(run.finished_at),
+        "stop_reason": run.error_code or run.status,
+        "input_tokens": run.usage.input,
+        "output_tokens": run.usage.output,
+        "cache_tokens": run.usage.cache_read + run.usage.cache_write,
+        "reasoning_tokens": run.usage.reasoning,
+        "provider_cost": run.usage.cost_usd,
+        "cost_cny": Decimal(0),
+        "turn_count": run.turn_count,
+        "tool_count": run.tool_call_count,
+        "schema_valid": run.schema_valid,
+        "facts_valid": run.facts_valid,
+        "retry_count": run.retry_count,
+        "fallback_count": run.fallback_count,
+        "result_ref": result_ref,
+        "prompt_template_version": run.prompt_template_version,
+        "input_hash": run.input_hash,
+        "receipt_hash": _receipt_hash(receipt),
     }
 
 
-def _sanitize_value(value: JsonValue) -> JsonValue:
-    if isinstance(value, dict):
-        return _sanitize_mapping(value)
-    if isinstance(value, list):
-        return [_sanitize_value(item) for item in value]
-    return value
+async def _assert_replay_matches(
+    session: AsyncSession,
+    existing: AiRun,
+    receipt: AiExecutionReceipt,
+    *,
+    workflow_stage: str,
+    result_ref: str | None,
+) -> None:
+    expected = _stored_run_values(
+        receipt,
+        workflow_stage=workflow_stage,
+        result_ref=result_ref,
+    )
+    for field, value in expected.items():
+        actual = getattr(existing, field)
+        if isinstance(value, datetime):
+            actual = _as_utc(actual)
+            value = _as_utc(value)
+        if isinstance(value, Decimal):
+            actual = Decimal(actual)
+        if actual != value:
+            raise ValueError(f"AI receipt replay conflict for {field}")
+    events = list(
+        (
+            await session.scalars(
+                select(AiTraceEvent)
+                .where(AiTraceEvent.ai_run_id == existing.id)
+                .order_by(AiTraceEvent.event_seq)
+            )
+        ).all()
+    )
+    expected_events = [
+        (
+            event.event_seq,
+            event.event_type,
+            _safe_details(event),
+            _as_utc(_datetime(event.occurred_at)),
+        )
+        for event in receipt.run.events
+    ]
+    actual_events = [
+        (
+            event.event_seq,
+            event.event_type,
+            event.payload,
+            _as_utc(event.created_at),
+        )
+        for event in events
+    ]
+    if actual_events != expected_events:
+        raise ValueError("AI receipt replay conflict for trace events")
 
 
 def _datetime(value: str | None) -> datetime | None:
     if value is None:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _receipt_hash(receipt: AiExecutionReceipt) -> str:
+    canonical = json.dumps(
+        receipt.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)

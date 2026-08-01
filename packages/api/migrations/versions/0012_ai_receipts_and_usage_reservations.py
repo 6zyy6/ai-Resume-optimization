@@ -8,11 +8,23 @@ branch_labels = None
 depends_on = None
 
 
+_WORKFLOW_STAGE_CASE = """
+CASE workflow_type
+  WHEN 'analyze_intake_answer' THEN 'analysis'
+  WHEN 'compose_resume_draft' THEN 'draft'
+  WHEN 'parse_jd' THEN 'parse'
+  WHEN 'match_resume_to_jd' THEN 'match'
+  WHEN 'generate_suggestions_batch' THEN 'suggestions'
+END
+"""
+
+
 def _drop_usage_update_guard() -> None:
     dialect = op.get_bind().dialect.name
     if dialect == "sqlite":
         op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_no_update")
         op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_guard_update")
+        op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_no_delete")
     elif dialect == "postgresql":
         op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_append_only ON usage_ledger")
         op.execute("DROP TRIGGER IF EXISTS trg_usage_ledger_guard_update ON usage_ledger")
@@ -140,19 +152,58 @@ def _create_usage_append_only_guard() -> None:
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    unsupported = bind.execute(
+        sa.text(
+            f"SELECT id FROM ai_runs "
+            f"WHERE ({_WORKFLOW_STAGE_CASE}) IS NULL LIMIT 1"
+        )
+    ).first()
+    if unsupported is not None:
+        raise RuntimeError("unsupported legacy AI workflow cannot map to a business stage")
+    duplicate = bind.execute(
+        sa.text(
+            f"""
+            SELECT task_id, ({_WORKFLOW_STAGE_CASE}) AS mapped_stage, input_hash
+            FROM ai_runs
+            GROUP BY task_id, mapped_stage, input_hash
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        )
+    ).first()
+    if duplicate is not None:
+        raise RuntimeError("duplicate AI run stable key after workflow stage mapping")
     with op.batch_alter_table("ai_runs") as batch_op:
         batch_op.add_column(sa.Column("status", sa.String(length=32)))
         batch_op.add_column(sa.Column("error_code", sa.String(length=128)))
         batch_op.add_column(sa.Column("workflow_stage", sa.String(length=64)))
-        batch_op.alter_column("provider", existing_type=sa.String(length=64), nullable=True)
+        batch_op.add_column(sa.Column("receipt_hash", sa.String(length=64)))
+        batch_op.alter_column(
+            "provider",
+            existing_type=sa.String(length=64),
+            nullable=True,
+        )
         batch_op.alter_column(
             "requested_model",
             existing_type=sa.String(length=128),
             nullable=True,
         )
-    op.execute("UPDATE ai_runs SET status = 'succeeded', workflow_stage = workflow_type")
+        batch_op.alter_column(
+            "provider_cost",
+            existing_type=sa.Numeric(18, 6),
+            type_=sa.Numeric(24, 12),
+            nullable=False,
+        )
+    op.execute(
+        f"UPDATE ai_runs SET status = 'succeeded', workflow_stage = ({_WORKFLOW_STAGE_CASE})"
+    )
     with op.batch_alter_table("ai_runs") as batch_op:
-        batch_op.alter_column("status", existing_type=sa.String(length=32), nullable=False)
+        batch_op.alter_column(
+            "status",
+            existing_type=sa.String(length=32),
+            nullable=False,
+        )
         batch_op.alter_column(
             "workflow_stage",
             existing_type=sa.String(length=64),
@@ -202,6 +253,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    non_consumed = op.get_bind().execute(
+        sa.text("SELECT id FROM usage_ledger WHERE state != 'consumed' LIMIT 1")
+    ).first()
+    if non_consumed is not None:
+        raise RuntimeError("cannot downgrade usage ledger with non-consumed rows")
     _drop_usage_update_guard()
     with op.batch_alter_table("usage_ledger") as batch_op:
         batch_op.drop_index("ix_usage_ledger_owner_state_created")
@@ -225,7 +281,18 @@ def downgrade() -> None:
             existing_type=sa.String(length=128),
             nullable=False,
         )
-        batch_op.alter_column("provider", existing_type=sa.String(length=64), nullable=False)
+        batch_op.alter_column(
+            "provider",
+            existing_type=sa.String(length=64),
+            nullable=False,
+        )
+        batch_op.alter_column(
+            "provider_cost",
+            existing_type=sa.Numeric(24, 12),
+            type_=sa.Numeric(18, 6),
+            nullable=False,
+        )
         batch_op.drop_column("workflow_stage")
+        batch_op.drop_column("receipt_hash")
         batch_op.drop_column("error_code")
         batch_op.drop_column("status")

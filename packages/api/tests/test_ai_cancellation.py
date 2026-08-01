@@ -14,13 +14,13 @@ from app.db.models import (
     SuggestionFactLink,
 )
 from app.integrations.ai_client import (
-    AiRunCancelled,
     InternalAiClient,
     ParseJdRequest,
     derive_ai_run_id,
 )
 from app.modules.matching.service import MatchingService
 from app.modules.tasks.service import TaskClaimError
+from test_ai_receipts import _receipt
 
 
 pytestmark = pytest.mark.anyio
@@ -32,8 +32,11 @@ class CancellationProbe:
     cancelled: bool = True
     registered_run_id: str | None = None
     acknowledged_run_id: str | None = None
+    registration_count: int = 0
+    acknowledgement_count: int = 0
 
     async def register_run(self, ai_run_id: str) -> bool:
+        self.registration_count += 1
         self.registered_run_id = ai_run_id
         return self.continue_after_registration
 
@@ -41,10 +44,11 @@ class CancellationProbe:
         return self.cancelled
 
     async def acknowledge_cancel(self, ai_run_id: str) -> None:
+        self.acknowledgement_count += 1
         self.acknowledged_run_id = ai_run_id
 
 
-async def test_internal_ai_client_cancels_registered_run_before_polling(monkeypatch):
+async def test_terminal_post_receipt_wins_over_pending_cancellation(monkeypatch):
     requests: list[tuple[str, str]] = []
     client_options: list[dict] = []
     real_async_client = httpx.AsyncClient
@@ -60,12 +64,8 @@ async def test_internal_ai_client_cancels_registered_run_before_polling(monkeypa
         if request.method == "POST" and request.url.path == "/internal/v1/runs":
             return httpx.Response(
                 202,
-                json={
-                    "run": {"ai_run_id": ai_run_id, "status": "queued"},
-                },
+                json={"receipt": _receipt("task_cancel", "parse").model_dump(mode="json")},
             )
-        if request.method == "POST" and request.url.path.endswith("/cancel"):
-            return httpx.Response(202, json={"status": "cancelling"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     probe = CancellationProbe()
@@ -76,29 +76,87 @@ async def test_internal_ai_client_cancels_registered_run_before_polling(monkeypa
         task_id="task_cancel",
         owner_scope_hash="owner_hash",
         input_version=1,
-        input_hash="cancel_hash",
+        input_hash="input_hash_1",
         payload={
             "jd_text": "cancel me",
-            "allowed_categories": ["must_have"],
+            "allowed_categories": ("must_have",),
         },
     )
-    ai_run_id = derive_ai_run_id("task_cancel", "parse", "cancel_hash")
+    ai_run_id = derive_ai_run_id("task_cancel", "parse", "input_hash_1")
     client = InternalAiClient(
         "http://pi.internal",
         "service-token",
         transport=httpx.MockTransport(handler),
     )
 
-    with pytest.raises(AiRunCancelled):
-        await client.run(request, cancellation=probe)
+    receipt = await client.run(request, cancellation=probe)
 
-    assert probe.registered_run_id == ai_run_id
-    assert probe.acknowledged_run_id == ai_run_id
+    assert receipt.run.status == "failed"
+    assert probe.registered_run_id is None
+    assert probe.acknowledged_run_id is None
     assert client_options[0]["trust_env"] is False
-    assert requests == [
-        ("POST", "/internal/v1/runs"),
-        ("POST", f"/internal/v1/runs/{ai_run_id}/cancel"),
-    ]
+    assert requests == [("POST", "/internal/v1/runs")]
+
+
+async def test_internal_ai_client_cancels_once_then_polls_terminal_receipt():
+    requests: list[tuple[str, str]] = []
+    poll_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal poll_count
+        requests.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path == "/internal/v1/runs":
+            return httpx.Response(
+                202,
+                json={"run": {"ai_run_id": ai_run_id, "status": "queued"}},
+            )
+        if request.method == "POST" and request.url.path.endswith("/cancel"):
+            return httpx.Response(202, json={"status": "cancelling"})
+        if request.method == "GET":
+            poll_count += 1
+            if poll_count == 1:
+                return httpx.Response(
+                    200,
+                    json={"run": {"ai_run_id": ai_run_id, "status": "running"}},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "receipt": _receipt(
+                        "task_cancel_poll",
+                        "parse",
+                        status="cancelled",
+                        error_code=None,
+                    ).model_dump(mode="json")
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    probe = CancellationProbe(continue_after_registration=False)
+    request = ParseJdRequest(
+        workflow_type="parse_jd",
+        prompt_template_version="jd-parse@2",
+        trace_id="trace_cancel",
+        task_id="task_cancel_poll",
+        owner_scope_hash="owner_hash",
+        input_version=1,
+        input_hash="input_hash_1",
+        payload={"jd_text": "cancel me", "allowed_categories": ("must_have",)},
+    )
+    ai_run_id = derive_ai_run_id("task_cancel_poll", "parse", "input_hash_1")
+    client = InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    receipt = await client.run(request, cancellation=probe)
+
+    assert receipt.run.status == "cancelled"
+    assert probe.registration_count == 1
+    assert probe.acknowledgement_count == 1
+    assert requests.count(("POST", f"/internal/v1/runs/{ai_run_id}/cancel")) == 1
+    assert requests.count(("GET", f"/internal/v1/runs/{ai_run_id}")) == 2
 
 
 async def test_cancelled_match_cannot_publish_ai_business_rows(

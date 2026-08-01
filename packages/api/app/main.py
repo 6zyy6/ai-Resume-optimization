@@ -24,7 +24,7 @@ from app.modules.auth.service import (
     build_default_auth_service,
 )
 from app.modules.auth.preflight import AuthPreflightStore
-from app.integrations.ai_client import AiClient, InternalAiClient
+from app.integrations.ai_client import AiClient, InternalAiClient, LegacyAiClientAdapter
 from app.integrations.storage import StoragePort, build_storage
 from app.modules.exports.router import router as exports_router
 from app.modules.exports.service import ExportService
@@ -169,8 +169,11 @@ def create_app(
     )
     application.state.storage = storage
     application.state.import_service = ImportService(task4_sessions, storage)
-    application.state.job_service = JobService(task4_sessions, ai_client)
-    application.state.matching_service = MatchingService(task4_sessions, ai_client)
+    legacy_ai_client = (
+        LegacyAiClientAdapter(ai_client) if ai_client is not None else None
+    )
+    application.state.job_service = JobService(task4_sessions, legacy_ai_client)
+    application.state.matching_service = MatchingService(task4_sessions, legacy_ai_client)
     application.state.suggestion_service = SuggestionService(task4_sessions)
     application.state.export_service = ExportService(task4_sessions, storage)
     application.state.task_dispatcher = (

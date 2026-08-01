@@ -9,6 +9,7 @@ from app.main import app
 from app.db.models import User
 from app.db.task3_repositories import SqlUsageRepository
 from app.modules.auth.service import AuthenticatedSession
+from app.modules.tasks.service import TaskAdmission, TaskService
 from app.modules.usage.service import (
     InMemoryUsageRepository,
     UsageRecord,
@@ -309,17 +310,13 @@ async def test_sql_usage_summary_hides_reserved_quantity_and_cost(
         session.add(User(id="usr_sql_usage"))
     repository = SqlUsageRepository(sql_session_factory)
     service = UsageService(repository, clock)
-    reserved = await repository.admit_ai_task(
+    reserved = await TaskService(sql_session_factory, clock=clock).create_task(
         "usr_sql_usage",
-        "tr_reserved",
-        "reserved-key",
-        clock.now(),
-        service._day_start(),
-        service._retry_after_day(),
-        "parse_jd",
-        False,
-        Decimal("9.00"),
-        "reserved-body-hash",
+        task_type="parse_jd",
+        queue="ai.interactive",
+        trace_id="tr_reserved",
+        idempotency_key="reserved-key",
+        admission=TaskAdmission.ai(Decimal("9.00")),
     )
     await repository.append_ai_task(
         "usr_sql_usage",
@@ -330,6 +327,6 @@ async def test_sql_usage_summary_hides_reserved_quantity_and_cost(
 
     summary = await service.summary("usr_sql_usage")
 
-    assert reserved.allowed is True
+    assert reserved.status == "queued"
     assert summary.ai_tasks_used == 1
     assert summary.global_cost_cny == Decimal("1.25")

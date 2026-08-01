@@ -38,7 +38,11 @@ from app.db.models import (
     UserAlias,
     VersionOperation,
 )
-from app.integrations.ai_client import FixtureAiClient, InternalAiClient
+from app.integrations.ai_client import (
+    FixtureAiClient,
+    InternalAiClient,
+    LegacyAiClientAdapter,
+)
 from app.integrations.storage import CosStorage
 from app.modules.imports.parsers import FileParseError, parse_resume_file
 from app.modules.matching.service import MatchingService
@@ -241,7 +245,7 @@ def test_targeted_key_supports_alias_owned_base_and_job(pipeline_client):
     )
     client.app.state.matching_service = MatchingService(
         sessions,
-        FixtureAiClient(
+        LegacyAiClientAdapter(FixtureAiClient(
             {
                 "match_resume_to_jd": {
                     "result": {
@@ -257,7 +261,7 @@ def test_targeted_key_supports_alias_owned_base_and_job(pipeline_client):
                     }
                 }
             }
-        ),
+        )),
     )
 
     response = client.post(
@@ -298,7 +302,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     )
     client.app.state.matching_service = MatchingService(
         sessions,
-        FixtureAiClient(
+        LegacyAiClientAdapter(FixtureAiClient(
             {
                 "match_resume_to_jd": {
                     "result": {
@@ -312,7 +316,7 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
                     }
                 }
             }
-        ),
+        )),
     )
     match = client.post(
         "/v1/match-analyses",
@@ -768,7 +772,7 @@ class RejectingTaskService:
 
 
 async def _run_ai(client):
-    return await client.run(
+    return await LegacyAiClientAdapter(client).run(
         workflow_type="match_resume_to_jd",
         workflow_version="1",
         trace_id="trace_review",

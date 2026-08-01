@@ -817,7 +817,7 @@ class AiRun(OwnerMixin, Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cache_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reasoning_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    provider_cost: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
+    provider_cost: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False, default=0)
     cost_cny: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tool_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -828,6 +828,7 @@ class AiRun(OwnerMixin, Base):
     result_ref: Mapped[str | None] = mapped_column(String(255))
     prompt_template_version: Mapped[str] = mapped_column(String(64), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    receipt_hash: Mapped[str | None] = mapped_column(String(64))
 
 
 class AiTraceEvent(OwnerMixin, Base):
