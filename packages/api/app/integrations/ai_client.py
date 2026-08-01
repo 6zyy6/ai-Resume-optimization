@@ -604,25 +604,23 @@ class InternalAiClient:
             try:
                 response = await client.post("/internal/v1/runs", json=payload, headers=headers)
                 response.raise_for_status()
-                body = response.json(parse_float=Decimal)
-                receipt = _receipt_from_body(body)
-                if receipt is not None:
-                    _validate_receipt_id(receipt, ai_run_id)
-                    run_settled = True
-                    if cancellation is not None:
-                        await cancellation.register_run(ai_run_id)
-                        if receipt.run.status == "cancelled":
-                            await _acknowledge_terminal_cancel(
-                                cancellation,
-                                ai_run_id,
-                            )
-                    return receipt
-                _validate_summary(body, ai_run_id)
                 cancel_requested = False
                 if cancellation is not None:
                     should_continue = await cancellation.register_run(ai_run_id)
                     if not should_continue:
                         cancel_requested = True
+                body = _response_json(response)
+                receipt = _receipt_from_body(body)
+                if receipt is not None:
+                    _validate_receipt_id(receipt, ai_run_id)
+                    run_settled = True
+                    if receipt.run.status == "cancelled" and cancellation is not None:
+                        await _acknowledge_terminal_cancel(
+                            cancellation,
+                            ai_run_id,
+                        )
+                    return receipt
+                _validate_summary(body, ai_run_id)
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + self.timeout_seconds
                 while loop.time() < deadline:
@@ -639,7 +637,7 @@ class InternalAiClient:
                         f"/internal/v1/runs/{ai_run_id}", headers=headers
                     )
                     status_response.raise_for_status()
-                    status_body = status_response.json(parse_float=Decimal)
+                    status_body = _response_json(status_response)
                     receipt = _receipt_from_body(status_body)
                     if receipt is not None:
                         _validate_receipt_id(receipt, ai_run_id)
@@ -663,6 +661,14 @@ class InternalAiClient:
             raise HttpServiceError(error.response.status_code) from error
         except (httpx.TimeoutException, httpx.TransportError) as error:
             raise TimeoutError("AI internal transport failed") from error
+
+
+def _response_json(response: httpx.Response) -> object:
+    try:
+        return response.json(parse_float=Decimal)
+    except ValueError as error:
+        raise AiProtocolError("AI response body is invalid JSON") from error
+
 
 def _receipt_from_body(body: object) -> AiExecutionReceipt | None:
     if not isinstance(body, dict):

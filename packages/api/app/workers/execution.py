@@ -145,19 +145,21 @@ class TaskExecutor:
                 )
                 return _task_result(task)
             except Exception as error:
+                retryable = should_retry(error)
                 current = await self.service.get_task(owner_user_id, task_id)
                 if current is not None and current.status in {
                     "succeeded",
                     "failed",
                     "cancelled",
                 }:
+                    if retryable:
+                        return _task_result(current)
                     return await self._terminal_result(
                         owner_user_id,
                         task_id,
                         claim.token,
                         current,
                     )
-                retryable = should_retry(error)
                 if retryable and claim.attempts < claim.max_attempts:
                     await self.service.release_claim_for_retry(
                         owner_user_id,

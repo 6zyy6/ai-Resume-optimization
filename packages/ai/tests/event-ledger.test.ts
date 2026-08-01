@@ -222,6 +222,10 @@ describe("event ledger", () => {
       "john-doe",
       "john_doe",
       "john@example.com",
+      "gpt-13800138000",
+      "deepseek-11010519491231002X-john@example.com",
+      "faux-john_doe",
+      "john-doe@2",
     ];
     const stringFields = [
       "provider",
@@ -298,6 +302,11 @@ describe("event ledger", () => {
       provider: "faux",
       model: "faux-1",
     });
+    const configured = ledger.append("message_end", {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      response_model: "deepseek-v4-pro",
+    });
 
     expect(deepseek.details).toEqual({
       provider: "deepseek",
@@ -317,6 +326,11 @@ describe("event ledger", () => {
       source_event_type_hash: "b".repeat(16),
     });
     expect(faux.details).toEqual({ provider: "faux", model: "faux-1" });
+    expect(configured.details).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      response_model: "deepseek-v4-pro",
+    });
   });
 
   it("maps nested Agent assistant deltas to first_token then message_update", () => {

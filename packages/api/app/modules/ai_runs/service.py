@@ -66,13 +66,15 @@ _APPROVED_PROVIDERS = frozenset(
         "test-faux",
     }
 )
-_APPROVED_MODEL_PREFIXES = (
-    "claude-",
-    "deepseek-",
-    "faux-",
-    "gemini-",
-    "gpt-",
-    "qwen-",
+_APPROVED_MODELS = frozenset(
+    {
+        "deepseek-chat",
+        "deepseek-chat-202607",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "faux-1",
+        "faux-1.1",
+    }
 )
 _APPROVED_STATUSES = frozenset(
     {"cancelled", "error", "failed", "ok", "queued", "running", "succeeded"}
@@ -132,8 +134,14 @@ _JSON_PATH = re.compile(
 )
 _CANONICAL_HASH = re.compile(r"[a-f0-9]{16,64}")
 _PROTECTED_HASH = re.compile(r"sha256:[a-f0-9]{16}")
-_PROMPT_TEMPLATE_VERSION = re.compile(
-    r"[a-z][a-z0-9-]{0,63}@[0-9]+(?:\.[0-9]+)*"
+_APPROVED_PROMPT_TEMPLATE_VERSIONS = frozenset(
+    {
+        "intake-answer@2",
+        "jd-parse@2",
+        "resume-draft@2",
+        "resume-match@2",
+        "suggestions-batch@2",
+    }
 )
 
 
@@ -279,10 +287,10 @@ def _safe_string_field(key: str, value: object) -> str | None:
         return None
     if key == "provider":
         return value if value in _APPROVED_PROVIDERS else None
+    if key == "workflow_version":
+        return value if value == "2" else _short_hash(value)
     if key in {"model", "response_model"}:
-        if value.startswith(_APPROVED_MODEL_PREFIXES):
-            return value[:256]
-        return _short_hash(value)
+        return value if value in _APPROVED_MODELS else _short_hash(value)
     if key == "response_id":
         return _short_hash(value)
     if key == "status":
@@ -300,9 +308,11 @@ def _safe_string_field(key: str, value: object) -> str | None:
             return value
         return _short_hash(value)
     if key == "prompt_template_version":
-        if _PROMPT_TEMPLATE_VERSION.fullmatch(value) is not None:
-            return value
-        return _short_hash(value)
+        return (
+            value
+            if value in _APPROVED_PROMPT_TEMPLATE_VERSIONS
+            else _short_hash(value)
+        )
     return None
 
 
@@ -332,17 +342,23 @@ def _stored_run_values(
         "trace_id": run.trace_id,
         "task_id": run.task_id,
         "workflow_type": run.workflow_type,
-        "workflow_version": run.workflow_version,
+        "workflow_version": _safe_string_field(
+            "workflow_version",
+            run.workflow_version,
+        ),
         "workflow_stage": workflow_stage,
         "status": run.status,
-        "error_code": run.error_code,
-        "provider": run.provider,
-        "requested_model": run.requested_model,
-        "response_model": run.response_model,
+        "error_code": _safe_string_field("error_code", run.error_code),
+        "provider": _safe_string_field("provider", run.provider),
+        "requested_model": _safe_string_field("model", run.requested_model),
+        "response_model": _safe_string_field("response_model", run.response_model),
         "started_at": _datetime(run.started_at),
         "first_token_at": _datetime(run.first_token_at),
         "finished_at": _datetime(run.finished_at),
-        "stop_reason": run.error_code or run.status,
+        "stop_reason": _safe_string_field(
+            "stop_reason",
+            run.error_code or run.status,
+        ),
         "input_tokens": run.usage.input,
         "output_tokens": run.usage.output,
         "cache_tokens": run.usage.cache_read + run.usage.cache_write,
@@ -356,7 +372,10 @@ def _stored_run_values(
         "retry_count": run.retry_count,
         "fallback_count": run.fallback_count,
         "result_ref": result_ref,
-        "prompt_template_version": run.prompt_template_version,
+        "prompt_template_version": _safe_string_field(
+            "prompt_template_version",
+            run.prompt_template_version,
+        ),
         "input_hash": run.input_hash,
         "receipt_hash": _receipt_hash(receipt),
     }

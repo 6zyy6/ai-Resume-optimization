@@ -67,14 +67,14 @@ const APPROVED_PROVIDERS = new Set([
   "qwen-token-plan-cn",
   "test-faux",
 ]);
-const APPROVED_MODEL_PREFIXES = [
-  "claude-",
-  "deepseek-",
-  "faux-",
-  "gemini-",
-  "gpt-",
-  "qwen-",
-];
+const APPROVED_MODELS = new Set([
+  "deepseek-chat",
+  "deepseek-chat-202607",
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+  "faux-1",
+  "faux-1.1",
+]);
 const APPROVED_STATUSES = new Set([
   "cancelled",
   "error",
@@ -129,7 +129,13 @@ const APPROVED_CODES = new Set([
 const JSON_PATH = /^\$(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[(?:0|[1-9]\d*)\]))*$/;
 const CANONICAL_HASH = /^[a-f0-9]{16,64}$/;
 const PROTECTED_HASH = /^sha256:[a-f0-9]{16}$/;
-const PROMPT_TEMPLATE_VERSION = /^[a-z][a-z0-9-]{0,63}@[0-9]+(?:\.[0-9]+)*$/;
+const APPROVED_PROMPT_TEMPLATE_VERSIONS = new Set([
+  "intake-answer@2",
+  "jd-parse@2",
+  "resume-draft@2",
+  "resume-match@2",
+  "suggestions-batch@2",
+]);
 
 function emptyUsage(): TraceUsage {
   return {
@@ -162,9 +168,7 @@ function safeStringField(key: string, value: unknown): string | undefined {
     return APPROVED_PROVIDERS.has(value) ? value : undefined;
   }
   if (key === "model" || key === "response_model") {
-    return APPROVED_MODEL_PREFIXES.some((prefix) => value.startsWith(prefix))
-      ? value.slice(0, 256)
-      : shortHash(value);
+    return APPROVED_MODELS.has(value) ? value : shortHash(value);
   }
   if (key === "response_id") {
     return shortHash(value);
@@ -190,7 +194,9 @@ function safeStringField(key: string, value: unknown): string | undefined {
     return CANONICAL_HASH.test(value) ? value : shortHash(value);
   }
   if (key === "prompt_template_version") {
-    return PROMPT_TEMPLATE_VERSION.test(value) ? value : shortHash(value);
+    return APPROVED_PROMPT_TEMPLATE_VERSIONS.has(value)
+      ? value
+      : shortHash(value);
   }
   return undefined;
 }

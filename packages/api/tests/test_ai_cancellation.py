@@ -16,6 +16,7 @@ from app.db.models import (
     User,
 )
 from app.integrations.ai_client import (
+    AiProtocolError,
     InternalAiClient,
     ParseJdRequest,
     derive_ai_run_id,
@@ -23,6 +24,7 @@ from app.integrations.ai_client import (
 from app.modules.matching.service import MatchingService
 from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
 from app.workers.pipeline import TaskAiCancellation
+from app.workers.execution import TaskExecutor
 from test_ai_receipts import _receipt
 
 
@@ -164,6 +166,76 @@ async def test_terminal_post_receipt_binds_and_consumes_before_return(
         terminal.run.ai_run_id,
     )
     assert settled.active_ai_run_id is None
+
+
+async def test_successful_malformed_post_binds_before_parsing_and_is_not_released(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_malformed_post"))
+    task_service = TaskService(sql_session_factory)
+    task = await task_service.create_task(
+        "usr_malformed_post",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_malformed_post",
+        idempotency_key="malformed-post-accounting",
+        admission=TaskAdmission.ai(),
+    )
+    expected_run_id = derive_ai_run_id(task.id, "parse", "input_hash_1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                202,
+                content=b'{"receipt":',
+                headers={"content-type": "application/json"},
+            )
+        if request.method == "DELETE":
+            return httpx.Response(202, json={"accepted": True})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def malformed_after_acceptance(claim) -> str:
+        request = ParseJdRequest(
+            workflow_type="parse_jd",
+            prompt_template_version="jd-parse@2",
+            trace_id="tr_malformed_post",
+            task_id=task.id,
+            owner_scope_hash="owner_hash",
+            input_version=1,
+            input_hash="input_hash_1",
+            payload={"jd_text": "Python", "allowed_categories": ("must_have",)},
+        )
+        await client.run(
+            request,
+            cancellation=TaskAiCancellation(task_service, claim),
+        )
+        return "unreachable"
+
+    result = await TaskExecutor(task_service).execute(
+        "usr_malformed_post",
+        task.id,
+        lambda _: malformed_after_acceptance,
+    )
+    stored = await task_service.get_task("usr_malformed_post", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == AiProtocolError.__name__
+    assert stored is not None
+    assert stored.active_ai_run_id == expected_run_id
+    assert reservation is not None
+    assert reservation.state == "consumed"
+    assert reservation.ai_run_id == expected_run_id
 
 
 async def test_internal_ai_client_cancels_once_then_polls_terminal_receipt():

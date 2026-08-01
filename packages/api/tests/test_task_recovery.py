@@ -188,6 +188,47 @@ async def test_executor_finalizes_cancelled_running_task_that_never_started_pi(
 
 
 @pytest.mark.anyio
+async def test_cancelled_timeout_keeps_ambiguous_reservation_and_claim(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_cancelled_timeout",
+        idempotency_key="cancelled-timeout",
+        admission=TaskAdmission.ai(),
+    )
+    claim_token = None
+
+    async def cancel_then_timeout(claim) -> str:
+        nonlocal claim_token
+        claim_token = claim.token
+        await service.request_cancel("usr_recovery", task.id)
+        raise TimeoutError("Pi acceptance is ambiguous")
+
+    result = await TaskExecutor(service).execute(
+        "usr_recovery",
+        task.id,
+        lambda _: cancel_then_timeout,
+    )
+    stored = await service.get_task("usr_recovery", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result["status"] == "cancelled"
+    assert stored is not None
+    assert stored.claim_token == claim_token
+    assert stored.active_ai_run_id is None
+    assert reservation is not None
+    assert reservation.state == "reserved"
+
+
+@pytest.mark.anyio
 async def test_executor_never_releases_cancelled_task_registered_during_post_race(
     sql_session_factory,
 ):

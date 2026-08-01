@@ -619,6 +619,10 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
     assert stored.status == "failed"
     assert stored.error_code == "provider_unavailable"
     assert stored.workflow_stage == "parse"
+    assert stored.provider == "deepseek"
+    assert stored.requested_model == "deepseek-chat"
+    assert stored.response_model == "deepseek-chat-202607"
+    assert stored.prompt_template_version == "jd-parse@2"
     assert stored.provider_cost == Decimal("0.1234567890123")
     assert stored.cost_cny == Decimal("0")
     assert [event.event_seq for event in events] == [1, 2]
@@ -679,6 +683,10 @@ async def test_trace_string_fields_apply_irreversible_field_level_privacy_policy
         "john-doe",
         "john_doe",
         "john@example.com",
+        "gpt-13800138000",
+        "deepseek-11010519491231002X-john@example.com",
+        "faux-john_doe",
+        "john-doe@2",
     )
     string_fields = (
         "provider",
@@ -783,6 +791,96 @@ async def test_trace_string_fields_apply_irreversible_field_level_privacy_policy
         assert payload.get("risk_flags") == []
 
     assert stored_events[-1].payload == safe_details
+
+
+async def test_ai_run_top_level_audit_strings_are_sanitized_on_persist_and_replay(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_run_privacy"))
+    tasks = TaskService(sql_session_factory)
+    task = await tasks.create_task(
+        "usr_run_privacy",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_receipt",
+        idempotency_key="run-field-privacy",
+        admission=TaskAdmission.ai(),
+    )
+    base = _receipt(task.id, "parse")
+    malicious_values = (
+        "deepseek-11010519491231002X-john@example.com",
+        "gpt-13800138000",
+        "faux-john_doe",
+        "john.doe",
+        "john-doe",
+        "john@example.com",
+    )
+    malicious = base.model_copy(
+        update={
+            "run": base.run.model_copy(
+                update={
+                    "provider": malicious_values[0],
+                    "requested_model": malicious_values[1],
+                    "response_model": malicious_values[2],
+                    "error_code": malicious_values[3],
+                    "prompt_template_version": malicious_values[4],
+                    "workflow_version": malicious_values[5],
+                }
+            )
+        }
+    )
+    service = AiRunService()
+
+    async with sql_session_factory.begin() as session:
+        first = await service.persist_in_session(
+            session,
+            "usr_run_privacy",
+            malicious,
+            workflow_stage="parse",
+        )
+        replay = await service.persist_in_session(
+            session,
+            "usr_run_privacy",
+            malicious,
+            workflow_stage="parse",
+        )
+    async with sql_session_factory() as session:
+        stored = await session.scalar(
+            select(AiRun).where(AiRun.id == malicious.run.ai_run_id)
+        )
+
+    assert first.id == replay.id == malicious.run.ai_run_id
+    assert stored is not None
+    stored_text = "|".join(
+        value or ""
+        for value in (
+            stored.provider,
+            stored.workflow_version,
+            stored.requested_model,
+            stored.response_model,
+            stored.error_code,
+            stored.stop_reason,
+            stored.prompt_template_version,
+        )
+    )
+    for value in malicious_values:
+        assert value not in stored_text
+    assert stored.provider is None
+    assert stored.requested_model == (
+        "sha256:" + hashlib.sha256(malicious_values[1].encode()).hexdigest()[:16]
+    )
+    assert stored.response_model == (
+        "sha256:" + hashlib.sha256(malicious_values[2].encode()).hexdigest()[:16]
+    )
+    assert stored.error_code is None
+    assert stored.stop_reason is None
+    assert stored.prompt_template_version == (
+        "sha256:" + hashlib.sha256(malicious_values[4].encode()).hexdigest()[:16]
+    )
+    assert stored.workflow_version == (
+        "sha256:" + hashlib.sha256(malicious_values[5].encode()).hexdigest()[:16]
+    )
 
 
 async def test_receipt_requires_at_least_one_terminal_trace_event(
