@@ -642,6 +642,55 @@ def test_negative_candidate_slices_never_become_positive_candidates(
 
 
 @pytest.mark.parametrize(
+    ("negative_slice", "value"),
+    [
+        ("没有实际负责", "实际负责"),
+        ("不负责", "负责"),
+        ("没有做", "做"),
+        ("并未实际参与", "实际参与"),
+    ],
+)
+def test_any_explicit_negative_marker_blocks_automatic_candidates(
+    intake_analysis_app,
+    negative_slice,
+    value,
+):
+    """Validation must not depend on an enumerated list of negated verbs."""
+    client, sessions, application = intake_analysis_app
+    answer_text = f"补充说明：{negative_slice}，但完成了课程项目"
+    start = answer_text.index(negative_slice)
+    end = start + len(negative_slice)
+
+    def candidates(input):
+        return [{
+            "kind": "role",
+            "value": value,
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": start, "end": end},
+            "source_hash": hashlib.sha256(negative_slice.encode()).hexdigest(),
+            "risk_flags": [],
+        }]
+
+    queued = _queue_answer(client, answer_text)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_model_count(sessions, FactCandidate)) == 0
+    assert "negative_source" in _run(_trace_payload(sessions))
+
+
+@pytest.mark.parametrize(
     ("source", "value", "expected_count"),
     [
         ("服务了1,000人", "服务了1000人", 1),
@@ -700,6 +749,26 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
         ("提升百分之五", "提升百分之十", 0),
         ("服务十人", "服务二十人", 0),
         ("连续三个月", "连续三周", 0),
+        ("增长十倍", "增长十倍", 1),
+        ("增长十倍", "增长二十倍", 0),
+        ("进入前十", "进入前十", 1),
+        ("进入前十", "进入前三", 0),
+        ("月薪一万", "月薪一万", 1),
+        ("月薪一万", "月薪两万", 0),
+        ("服务十余人", "服务十余人", 1),
+        ("服务十余人", "服务二十余人", 0),
+        ("GPA四点五", "GPA四点五", 1),
+        ("GPA四点五", "GPA三点五", 0),
+        ("月薪两万", "月薪二万", 1),
+        ("服务两人", "服务二人", 1),
+        ("服务一〇人", "服务一零人", 1),
+        ("服务十多人", "服务二十多人", 0),
+        ("增长三成", "增长五成", 0),
+        ("提升五％", "提升十％", 0),
+        ("一直负责项目", "一直负责项目", 1),
+        ("唯一负责项目", "唯一负责项目", 1),
+        ("一直负责项目", "负责十人", 0),
+        ("唯一负责项目", "负责二人", 0),
     ],
 )
 def test_chinese_numeric_tokens_require_exact_source_support(

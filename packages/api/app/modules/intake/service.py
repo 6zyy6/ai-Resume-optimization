@@ -155,21 +155,20 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:负责|参与|完成|承担|做过|参加)(?:过)?(?:这个|该|相关)?"
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
-NEGATIVE_EXPERIENCE = re.compile(
-    r"(?:暂时)?(?:没有|无)(?:相关|类似|这方面)?"
-    r"(?:经历|经验|项目|任务|内容|实习|兼职|工作|课程|社团|志愿活动)"
-)
+NEGATIVE_SOURCE_MARKER = re.compile(r"没有|从未|不曾|并未|没|未|无|不")
 NUMBER_TOKEN = re.compile(
     r"(?<![\d.,])(?P<number>[+\-−]?(?:"
     r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+))"
     r"(?P<percent>[%％]?)(?![\d.,])"
 )
-CHINESE_NUMBER = r"[零〇一二两三四五六七八九十百千万亿]+"
-CHINESE_PERCENT_TOKEN = re.compile(rf"百分之(?P<number>{CHINESE_NUMBER})")
-CHINESE_ORDINAL_TOKEN = re.compile(rf"第(?P<number>{CHINESE_NUMBER})")
-CHINESE_COUNT_TOKEN = re.compile(
-    rf"(?P<number>{CHINESE_NUMBER})(?P<unit>"
-    r"小时|分钟|个月|人|名|次|项|个|天|周|月|年|份|家|位|届|场|分|元|成)"
+CHINESE_NUMBER = r"[零〇一二两三四五六七八九十百千万亿点]+"
+CHINESE_NUMBER_SUFFIX = (
+    r"小时|分钟|个月|人|名|次|项|个|天|周|月|年|份|家|位|届|场|分|元|倍|成"
+)
+CHINESE_NUMBER_TOKEN = re.compile(
+    rf"(?P<prefix>百分之|第|前)?(?P<number>{CHINESE_NUMBER})"
+    rf"(?P<suffix>(?:余|多)(?:{CHINESE_NUMBER_SUFFIX})?"
+    rf"|{CHINESE_NUMBER_SUFFIX}|[%％])?"
 )
 
 
@@ -1872,21 +1871,18 @@ def _number_tokens(value: str) -> set[str]:
         if match.group("percent"):
             normalized = f"{normalized}%"
         tokens.add(normalized)
-    for match in CHINESE_PERCENT_TOKEN.finditer(value):
-        tokens.add(f"zh-percent:{match.group('number')}")
-    for match in CHINESE_ORDINAL_TOKEN.finditer(value):
-        tokens.add(f"zh-ordinal:{match.group('number')}")
-    for match in CHINESE_COUNT_TOKEN.finditer(value):
-        tokens.add(f"zh-count:{match.group('number')}:{match.group('unit')}")
+    for match in CHINESE_NUMBER_TOKEN.finditer(value):
+        number = match.group("number").translate(str.maketrans("两〇", "二零"))
+        tokens.add(
+            f"zh:{match.group('prefix') or ''}:{number}:"
+            f"{match.group('suffix') or ''}"
+        )
     return tokens
 
 
 def _has_negative_source(value: str) -> bool:
     normalized = re.sub(r"[\s，。！？,.!?；;：:]+", "", value)
-    return bool(
-        NEGATIVE_CLAIM.search(normalized)
-        or NEGATIVE_EXPERIENCE.search(normalized)
-    )
+    return bool(NEGATIVE_SOURCE_MARKER.search(normalized))
 
 
 def _clear_analysis_snapshot(outbox: Outbox | None) -> None:
