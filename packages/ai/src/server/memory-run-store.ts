@@ -83,11 +83,23 @@ export class MemoryRunStore implements RunStore {
     errorCode?: string,
   ): Promise<RunRecord | undefined> {
     const record = this.runs.get(aiRunId);
-    this.expireOwnerLease(record);
+    const now = this.now();
     if (!record || isTerminalStatus(record.status)) {
       return this.clone(record);
     }
-    if (record.owner_instance_id !== instanceId || record.lease_expires_at <= this.now()) {
+    if (record.owner_instance_id !== instanceId) {
+      return this.clone(record);
+    }
+    if (record.lease_expires_at <= now) {
+      record.status = "failed";
+      record.error_code = "owner_instance_lost";
+      record.receipt = terminalReceipt(
+        record.context,
+        "failed",
+        "owner_instance_lost",
+        receipt,
+        new Date(now).toISOString(),
+      );
       return this.clone(record);
     }
     const finalStatus =
@@ -97,7 +109,7 @@ export class MemoryRunStore implements RunStore {
     record.status = finalStatus;
     record.receipt = finalStatus === status
       ? structuredClone(receipt)
-      : terminalReceipt(record.context, "cancelled", null, receipt, new Date(this.now()).toISOString());
+      : terminalReceipt(record.context, "cancelled", null, receipt, new Date(now).toISOString());
     record.error_code = record.receipt.run.error_code ?? undefined;
     return this.clone(record);
   }

@@ -55,13 +55,14 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
         await first.markRunning(aiRunId);
         expect((await second.get(aiRunId))?.status).toBe("running");
         expect((await second.requestCancel(aiRunId)).outcome).toBe("accepted");
+        const receipt = terminalReceipt(record.context, "cancelled", null);
         await first.complete(
           aiRunId,
           "pi-redis-owner",
           "cancelled",
-          terminalReceipt(record.context, "cancelled", null),
+          receipt,
         );
-        expect((await second.get(aiRunId))?.status).toBe("cancelled");
+        expect((await second.get(aiRunId))?.receipt).toEqual(receipt);
       }
       await expect.poll(() => received.size).toBe(100);
 
@@ -90,7 +91,21 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
       });
       await first.markRunning(lostRunId);
       await new Promise((resolve) => setTimeout(resolve, 75));
-      const lost = await second.get(lostRunId);
+      const sourceReceipt = terminalReceipt(
+        context(lostRunId, "lost_hash"), "succeeded", null,
+      );
+      sourceReceipt.run.provider = "faux";
+      sourceReceipt.run.requested_model = "faux-1";
+      sourceReceipt.run.response_model = "faux-1.1";
+      sourceReceipt.run.usage.total_tokens = 17;
+      sourceReceipt.run.schema_valid = true;
+      sourceReceipt.run.events = [{
+        ai_run_id: lostRunId, trace_id: "trace_redis", task_id: "task_redis",
+        event_seq: 1, event_type: "message_end", occurred_at: new Date().toISOString(),
+      }];
+      const lost = await first.complete(
+        lostRunId, "pi-lost-owner", "succeeded", sourceReceipt,
+      );
       expect(lost?.status).toBe("failed");
       expect(lost?.error_code).toBe("owner_instance_lost");
       expect(lost?.receipt).not.toHaveProperty("result");
@@ -106,12 +121,18 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
         ai_run_id: lostRunId,
         status: "failed",
         error_code: "owner_instance_lost",
+        provider: "faux",
+        requested_model: "faux-1",
+        response_model: "faux-1.1",
+        usage: { total_tokens: 17 },
+        schema_valid: true,
       });
       expect(Array.isArray(lost?.receipt?.run.risk_flags)).toBe(true);
       expect(lost?.receipt?.run.risk_flags).toEqual([]);
       expect(Date.parse(lost!.receipt!.run.finished_at)).toBeGreaterThan(
         Date.parse(lost!.receipt!.run.started_at),
       );
+      expect(lost?.receipt?.run.events.map(({ event_seq }) => event_seq)).toEqual([1, 2]);
       expect(lost?.receipt?.run.events.at(-1)).toMatchObject({
         event_type: "run_failed",
         occurred_at: lost?.receipt?.run.finished_at,

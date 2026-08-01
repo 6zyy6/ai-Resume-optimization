@@ -224,6 +224,25 @@ describe("Pi internal API", () => {
     expect(response.json().receipt.run.finished_at).toEqual(expect.any(String));
   });
 
+  it("does not start the runtime when markRunning discovers owner loss", async () => {
+    let runtimeCalls = 0;
+    const runStore = new MemoryRunStore({ now: () => Date.now() + 20_000 });
+    const app = buildApp({
+      mode: "fixture", serviceToken: "service-token", runStore,
+      modelRouter: createModelRouter({ routes: {} }),
+      runtime: runtime(async () => {
+        runtimeCalls += 1;
+        return { status: "success", output: { requirements: [] }, events: [] };
+      }),
+    });
+    apps.push(app);
+    const request = runRequest();
+    await app.inject({ method: "POST", url: "/internal/v1/runs", headers: { authorization: "Bearer service-token" }, payload: request });
+    const run = await waitForTerminal(app, request.ai_run_id);
+    expect(runtimeCalls).toBe(0);
+    expect(run).toMatchObject({ status: "failed", error_code: "owner_instance_lost" });
+  });
+
   it("keeps liveness public but requires a Bearer service token for runs", async () => {
     const app = buildApp({
       mode: "production",

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { AiExecutionReceipt } from "../src/contracts.js";
 import { MemoryRunStore } from "../src/server/memory-run-store.js";
 import { terminalReceipt } from "../src/server/run-store.js";
 
@@ -14,6 +15,27 @@ function runContext(aiRunId: string, inputHash: string) {
     input_hash: inputHash,
     started_at: "2026-01-01T00:00:00.000Z",
   };
+}
+
+function auditedReceipt(
+  aiRunId: string,
+  status: "succeeded" | "failed" | "cancelled" = "succeeded",
+): AiExecutionReceipt {
+  const run = {
+    ai_run_id: aiRunId, trace_id: "trace_1", task_id: "task_1",
+    workflow_type: "parse_jd" as const, workflow_version: "2",
+    prompt_template_version: "jd-parse@2", status,
+    error_code: status === "failed" ? "runtime_failed" : null,
+    provider: "faux", requested_model: "faux-1", response_model: "faux-1.1",
+    started_at: "2026-01-01T00:00:00.000Z", first_token_at: "2026-01-01T00:00:00.050Z",
+    finished_at: "2026-01-01T00:00:00.100Z",
+    usage: { input: 17, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, total_tokens: 17, cost_usd: 0.01 },
+    events: [{ ai_run_id: aiRunId, trace_id: "trace_1", task_id: "task_1", event_seq: 1, event_type: "message_end", occurred_at: "2026-01-01T00:00:00.090Z" }],
+    turn_count: 2, tool_call_count: 1, retry_count: 1, fallback_count: 0,
+    schema_valid: true, facts_valid: true, input_hash: "hash_fenced",
+    exportable: false, risk_flags: [],
+  };
+  return status === "succeeded" ? { run, result: { requirements: [] } } : { run };
 }
 
 describe("RunStore state fencing", () => {
@@ -139,12 +161,35 @@ describe("RunStore state fencing", () => {
     });
     now = 1_101;
     const completed = await store.complete(
-      "run_fenced", "pi-a", "succeeded", terminalReceipt(context, "succeeded", null),
+      "run_fenced", "pi-a", "succeeded", auditedReceipt("run_fenced"),
     );
 
     expect(completed).toMatchObject({
       status: "failed", error_code: "owner_instance_lost",
-      receipt: { run: { status: "failed", error_code: "owner_instance_lost" } },
+      receipt: { run: {
+        status: "failed", error_code: "owner_instance_lost", provider: "faux",
+        requested_model: "faux-1", response_model: "faux-1.1",
+        usage: { total_tokens: 17 }, turn_count: 2, tool_call_count: 1,
+        retry_count: 1, schema_valid: true, facts_valid: true,
+      } },
     });
+    expect(completed?.receipt).not.toHaveProperty("result");
+    expect(completed?.receipt?.run.events.map(({ event_seq }) => event_seq)).toEqual([1, 2]);
+    expect(completed?.receipt?.run.events.at(-1)?.event_type).toBe("run_failed");
   });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "preserves an unchanged %s receipt byte-for-byte",
+    async (status) => {
+      const store = new MemoryRunStore({ now: () => 1_000 });
+      const context = runContext(`run_${status}`, "hash_fenced");
+      await store.createOrGet({
+        ai_run_id: `run_${status}`, input_hash: "hash_fenced", status: "queued",
+        owner_instance_id: "pi-a", cancel_requested: false, lease_expires_at: 1_100, context,
+      });
+      const receipt = auditedReceipt(`run_${status}`, status);
+      const completed = await store.complete(`run_${status}`, "pi-a", status, receipt);
+      expect(completed?.receipt).toEqual(receipt);
+    },
+  );
 });
