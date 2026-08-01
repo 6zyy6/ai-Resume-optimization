@@ -16,7 +16,11 @@ export const WorkflowTypeSchema = Type.Union(
 
 const IdSchema = Type.String({ minLength: 1, maxLength: 128 });
 const TextSchema = Type.String({ minLength: 1, maxLength: 20_000 });
-const HashSchema = Type.String({ minLength: 1, maxLength: 128 });
+const HashSchema = Type.String({
+  minLength: 64,
+  maxLength: 64,
+  pattern: "^[a-f0-9]{64}$",
+});
 const StringListSchema = Type.Array(IdSchema, { maxItems: 1_000 });
 
 export const ConfirmedFactSchema = Type.Object(
@@ -504,12 +508,40 @@ export interface TraceUsage {
 export const TRACE_COST_USD_MAX = 999_999;
 export const TRACE_COST_USD_DECIMAL_PLACES = 18;
 
+export const TRACE_EVENT_TYPES = [
+  "run_queued",
+  "agent_start",
+  "turn_start",
+  "message_start",
+  "first_token",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_end",
+  "turn_end",
+  "auto_retry_start",
+  "auto_retry_end",
+  "model_fallback",
+  "schema_validation_failed",
+  "fact_validation_failed",
+  "agent_end",
+  "agent_settled",
+  "run_succeeded",
+  "run_failed",
+  "run_cancelled",
+  "user_accepted",
+  "user_edited",
+  "user_ignored",
+  "unknown",
+] as const;
+export type TraceEventType = (typeof TRACE_EVENT_TYPES)[number];
+
 export interface TraceEvent {
   ai_run_id: string;
   trace_id: string;
   task_id: string;
   event_seq: number;
-  event_type: string;
+  event_type: TraceEventType;
   occurred_at: string;
   details?: Record<string, unknown>;
 }

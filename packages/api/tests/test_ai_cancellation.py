@@ -25,7 +25,7 @@ from app.modules.matching.service import MatchingService
 from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
 from app.workers.pipeline import TaskAiCancellation
 from app.workers.execution import TaskExecutor
-from test_ai_receipts import _receipt
+from test_ai_receipts import CANONICAL_HASH, _receipt
 
 
 pytestmark = pytest.mark.anyio
@@ -79,15 +79,15 @@ async def test_terminal_post_receipt_wins_over_pending_cancellation(monkeypatch)
         prompt_template_version="jd-parse@2",
         trace_id="trace_cancel",
         task_id="task_cancel",
-        owner_scope_hash="owner_hash",
+        owner_scope_hash="b" * 64,
         input_version=1,
-        input_hash="input_hash_1",
+        input_hash=CANONICAL_HASH,
         payload={
             "jd_text": "cancel me",
             "allowed_categories": ("must_have",),
         },
     )
-    ai_run_id = derive_ai_run_id("task_cancel", "parse", "input_hash_1")
+    ai_run_id = derive_ai_run_id("task_cancel", "parse", CANONICAL_HASH)
     client = InternalAiClient(
         "http://pi.internal",
         "service-token",
@@ -136,9 +136,9 @@ async def test_terminal_post_receipt_binds_and_consumes_before_return(
         prompt_template_version="jd-parse@2",
         trace_id="tr_receipt",
         task_id=task.id,
-        owner_scope_hash="owner_hash",
+        owner_scope_hash="b" * 64,
         input_version=1,
-        input_hash="input_hash_1",
+        input_hash=CANONICAL_HASH,
         payload={"jd_text": "Python", "allowed_categories": ("must_have",)},
     )
     receipt = await InternalAiClient(
@@ -182,7 +182,7 @@ async def test_successful_malformed_post_binds_before_parsing_and_is_not_release
         idempotency_key="malformed-post-accounting",
         admission=TaskAdmission.ai(),
     )
-    expected_run_id = derive_ai_run_id(task.id, "parse", "input_hash_1")
+    expected_run_id = derive_ai_run_id(task.id, "parse", CANONICAL_HASH)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
@@ -207,9 +207,9 @@ async def test_successful_malformed_post_binds_before_parsing_and_is_not_release
             prompt_template_version="jd-parse@2",
             trace_id="tr_malformed_post",
             task_id=task.id,
-            owner_scope_hash="owner_hash",
+            owner_scope_hash="b" * 64,
             input_version=1,
-            input_hash="input_hash_1",
+            input_hash=CANONICAL_HASH,
             payload={"jd_text": "Python", "allowed_categories": ("must_have",)},
         )
         await client.run(
@@ -278,12 +278,12 @@ async def test_internal_ai_client_cancels_once_then_polls_terminal_receipt():
         prompt_template_version="jd-parse@2",
         trace_id="trace_cancel",
         task_id="task_cancel_poll",
-        owner_scope_hash="owner_hash",
+        owner_scope_hash="b" * 64,
         input_version=1,
-        input_hash="input_hash_1",
+        input_hash=CANONICAL_HASH,
         payload={"jd_text": "cancel me", "allowed_categories": ("must_have",)},
     )
-    ai_run_id = derive_ai_run_id("task_cancel_poll", "parse", "input_hash_1")
+    ai_run_id = derive_ai_run_id("task_cancel_poll", "parse", CANONICAL_HASH)
     client = InternalAiClient(
         "http://pi.internal",
         "service-token",

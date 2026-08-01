@@ -7,6 +7,7 @@ import inspect as python_inspect
 import json
 from pathlib import Path
 import subprocess
+from typing import get_args
 
 import httpx
 import pytest
@@ -21,6 +22,7 @@ from app.integrations.ai_client import (
     FixtureAiClient,
     InternalAiClient,
     ParseJdRequest,
+    TraceEventType,
     TraceUsage,
     derive_ai_run_id,
     workflow_stage_for,
@@ -31,6 +33,8 @@ from app.modules.tasks.service import TaskAdmission, TaskService
 
 pytestmark = pytest.mark.anyio
 
+CANONICAL_HASH = "a" * 64
+
 
 def _receipt(
     task_id: str,
@@ -39,7 +43,7 @@ def _receipt(
     status: str = "failed",
     error_code: str | None = "provider_unavailable",
 ) -> AiExecutionReceipt:
-    ai_run_id = derive_ai_run_id(task_id, workflow_stage, "input_hash_1")
+    ai_run_id = derive_ai_run_id(task_id, workflow_stage, CANONICAL_HASH)
     finished_at = "2026-07-30T08:00:04Z"
     return AiExecutionReceipt.model_validate_json(
         json.dumps(
@@ -74,7 +78,7 @@ def _receipt(
                         "trace_id": "tr_receipt",
                         "task_id": task_id,
                         "event_seq": 1,
-                        "event_type": "provider_started",
+                        "event_type": "agent_start",
                         "occurred_at": "2026-07-30T08:00:01Z",
                         "details": {
                             "provider": "deepseek",
@@ -117,7 +121,7 @@ def _receipt(
                 "fallback_count": 0,
                 "schema_valid": False,
                 "facts_valid": False,
-                "input_hash": "input_hash_1",
+                "input_hash": CANONICAL_HASH,
                 "exportable": False,
                 "risk_flags": ["provider_failure"],
             }
@@ -127,17 +131,17 @@ def _receipt(
 
 
 def test_stable_run_id_is_rederived_for_the_same_task_stage_and_hash():
-    first = derive_ai_run_id("tsk_1", "match", "abc")
-    second = derive_ai_run_id("tsk_1", "match", "abc")
+    first = derive_ai_run_id("tsk_1", "match", CANONICAL_HASH)
+    second = derive_ai_run_id("tsk_1", "match", CANONICAL_HASH)
 
-    assert first == second == "run_3e24278c1fc67246ecc0288cd4eae94ff19794f4"
+    assert first == second == "run_2505943c5ae4ea2e6b1ee5f17bbc4156cf7c7782"
     assert first.startswith("run_")
     assert len(first) == 44
-    assert derive_ai_run_id("tsk_1", "suggestions", "abc") == (
-        "run_f1065a7eb658641b64889f8fa6f9a29233d0282b"
+    assert derive_ai_run_id("tsk_1", "suggestions", CANONICAL_HASH) == (
+        "run_6cc41282b5ade5d5b03d51554943e08cdef21f0f"
     )
-    assert derive_ai_run_id("tsk_1", "match", "def") == (
-        "run_376c6db670f40d18d7afac2eccf0af9f7f12168d"
+    assert derive_ai_run_id("tsk_1", "match", "b" * 64) == (
+        "run_1c789a1f35877e6c7684aee084837e5ee1bf5acb"
     )
 
 
@@ -160,6 +164,29 @@ def test_workflow_types_map_to_the_only_allowed_business_stages():
     }
 
 
+def test_python_trace_event_types_match_the_pi_contract():
+    script = """
+      import { TRACE_EVENT_TYPES } from './src/contracts.ts';
+      process.stdout.write(JSON.stringify(TRACE_EVENT_TYPES));
+    """
+    completed = subprocess.run(
+        [
+            "node",
+            "--experimental-strip-types",
+            "--input-type=module",
+            "-e",
+            script,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[2] / "ai",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert list(get_args(TraceEventType)) == json.loads(completed.stdout)
+
+
 def test_workflow_request_rejects_unknown_keys():
     with pytest.raises(ValidationError):
         AI_WORKFLOW_REQUEST_ADAPTER.validate_python(
@@ -169,10 +196,10 @@ def test_workflow_request_rejects_unknown_keys():
                 "prompt_template_version": "jd-parse@2",
                 "trace_id": "tr_strict",
                 "task_id": "tsk_strict",
-                "owner_scope_hash": "owner_hash",
+                "owner_scope_hash": "b" * 64,
                 "locale": "zh-CN",
                 "input_version": 1,
-                "input_hash": "input_hash",
+                "input_hash": CANONICAL_HASH,
                 "payload": {
                     "jd_text": "Python",
                     "allowed_categories": ["must_have"],
@@ -201,10 +228,10 @@ def test_python_workflow_schema_matches_real_typebox_validation():
         "prompt_template_version": "jd-parse@2",
         "trace_id": "tr_parity",
         "task_id": "tsk_parity",
-        "owner_scope_hash": "owner_hash",
+        "owner_scope_hash": CANONICAL_HASH,
         "locale": "zh-CN",
         "input_version": 1,
-        "input_hash": "input_hash",
+        "input_hash": CANONICAL_HASH,
         "payload": {
             "jd_text": "Python 工程师",
             "allowed_categories": ("must_have",),
@@ -214,6 +241,9 @@ def test_python_workflow_schema_matches_real_typebox_validation():
         valid,
         {**valid, "task_id": ""},
         {**valid, "input_hash": ""},
+        {**valid, "owner_scope_hash": "john@example.com"},
+        {**valid, "input_hash": "arbitrary-string"},
+        {**valid, "input_hash": "A" * 64},
         {**valid, "input_version": "1"},
         {**valid, "payload": {**valid["payload"], "jd_text": ""}},
         {**valid, "payload": {**valid["payload"], "job_title": None}},
@@ -252,17 +282,37 @@ def test_python_workflow_schema_matches_real_typebox_validation():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == [True, False, False, False, False, False]
-    assert python_results == [True, False, False, False, False, False]
+    assert json.loads(completed.stdout) == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert python_results == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
 
 
 async def test_every_posted_workflow_input_passes_the_real_typebox_schema():
     common = {
         "workflow_version": "2",
-        "owner_scope_hash": "owner_hash",
+        "owner_scope_hash": "b" * 64,
         "locale": "zh-CN",
         "input_version": 1,
-        "input_hash": "input_hash",
+        "input_hash": CANONICAL_HASH,
     }
     samples = [
         {
@@ -270,7 +320,7 @@ async def test_every_posted_workflow_input_passes_the_real_typebox_schema():
             "workflow_type": "analyze_intake_answer",
             "prompt_template_version": "intake-answer@2",
             "payload": {
-                "session_id_hash": "session_hash",
+                "session_id_hash": "c" * 64,
                 "answer_id": "answer_1",
                 "question_id": "question_1",
                 "question_reason": "项目经历",
@@ -308,7 +358,7 @@ async def test_every_posted_workflow_input_passes_the_real_typebox_schema():
             "prompt_template_version": "resume-match@2",
             "payload": {
                 "resume_version_id": "resume_1",
-                "resume_snapshot_hash": "snapshot_hash",
+                "resume_snapshot_hash": "d" * 64,
                 "confirmed_facts": [],
                 "confirmed_requirements": [],
             },
@@ -324,7 +374,7 @@ async def test_every_posted_workflow_input_passes_the_real_typebox_schema():
                         "category": "transferable",
                         "fact_refs": [],
                         "target_path": "sections[0].bullets[0]",
-                        "original_hash": "bullet_hash",
+                        "original_hash": "e" * 64,
                         "original_text": "开发服务",
                     }
                 ],
@@ -484,15 +534,15 @@ async def test_internal_client_posts_strict_envelope_and_returns_failed_receipt(
         prompt_template_version="jd-parse@2",
         trace_id="tr_client",
         task_id="tsk_client",
-        owner_scope_hash="owner_hash",
+        owner_scope_hash="b" * 64,
         input_version=1,
-        input_hash="input_hash_1",
+        input_hash=CANONICAL_HASH,
         payload={
             "jd_text": "Python 工程师",
             "allowed_categories": ("must_have",),
         },
     )
-    expected_id = derive_ai_run_id("tsk_client", "parse", "input_hash_1")
+    expected_id = derive_ai_run_id("tsk_client", "parse", CANONICAL_HASH)
     terminal = _receipt("tsk_client", "parse")
 
     def handler(http_request: httpx.Request) -> httpx.Response:
@@ -527,9 +577,9 @@ async def test_internal_client_rejects_wire_cost_with_more_than_18_decimals():
         prompt_template_version="jd-parse@2",
         trace_id="tr_wire_cost",
         task_id="tsk_wire_cost",
-        owner_scope_hash="owner_hash",
+        owner_scope_hash="b" * 64,
         input_version=1,
-        input_hash="input_hash_1",
+        input_hash=CANONICAL_HASH,
         payload={
             "jd_text": "Python 工程师",
             "allowed_categories": ("must_have",),
@@ -560,6 +610,68 @@ async def test_internal_client_rejects_wire_cost_with_more_than_18_decimals():
 
     with pytest.raises(AiProtocolError, match="terminal receipt is invalid"):
         await client.run(request)
+
+
+@pytest.mark.parametrize("malicious_event_type", ["john@example.com", "13800138000"])
+async def test_malicious_receipt_event_type_is_rejected_before_persistence(
+    sql_session_factory,
+    malicious_event_type,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_event_type_privacy"))
+    task = await TaskService(sql_session_factory).create_task(
+        "usr_event_type_privacy",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_receipt",
+        idempotency_key="event-type-privacy",
+        admission=TaskAdmission.ai(),
+    )
+    request = ParseJdRequest(
+        workflow_type="parse_jd",
+        prompt_template_version="jd-parse@2",
+        trace_id="tr_receipt",
+        task_id=task.id,
+        owner_scope_hash="b" * 64,
+        input_version=1,
+        input_hash=CANONICAL_HASH,
+        payload={
+            "jd_text": "Python 工程师",
+            "allowed_categories": ("must_have",),
+        },
+    )
+    raw_receipt = _receipt(task.id, "parse").model_dump(mode="json")
+    expected_id = derive_ai_run_id(task.id, "parse", CANONICAL_HASH)
+    raw_receipt["run"]["ai_run_id"] = expected_id
+    raw_receipt["run"]["input_hash"] = CANONICAL_HASH
+    for event in raw_receipt["run"]["events"]:
+        event["ai_run_id"] = expected_id
+    raw_receipt["run"]["events"][0]["event_type"] = malicious_event_type
+
+    def handler(_http_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"receipt": raw_receipt})
+
+    client = InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(AiProtocolError, match="terminal receipt is invalid"):
+        receipt = await client.run(request)
+        async with sql_session_factory.begin() as session:
+            await AiRunService().persist_in_session(
+                session,
+                "usr_event_type_privacy",
+                receipt,
+                workflow_stage="parse",
+            )
+
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AiRun)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(AiTraceEvent))
+            == 0
+        )
 
 
 async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(

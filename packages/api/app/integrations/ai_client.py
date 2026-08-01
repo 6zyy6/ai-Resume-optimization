@@ -36,13 +36,42 @@ WorkflowType: TypeAlias = Literal[
     "generate_suggestions_batch",
 ]
 IdString: TypeAlias = Annotated[str, Field(min_length=1, max_length=128)]
-HashString: TypeAlias = Annotated[str, Field(min_length=1, max_length=128)]
+HashString: TypeAlias = Annotated[
+    str,
+    Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$"),
+]
 TextString: TypeAlias = Annotated[str, Field(min_length=1, max_length=20_000)]
 ShortString: TypeAlias = Annotated[str, Field(min_length=1, max_length=64)]
 TitleString: TypeAlias = Annotated[str, Field(min_length=1, max_length=512)]
 ReasonString: TypeAlias = Annotated[str, Field(min_length=1, max_length=4_000)]
 IdList: TypeAlias = Annotated[tuple[IdString, ...], Field(max_length=1_000)]
 RiskList: TypeAlias = Annotated[tuple[IdString, ...], Field(max_length=100)]
+TraceEventType: TypeAlias = Literal[
+    "run_queued",
+    "agent_start",
+    "turn_start",
+    "message_start",
+    "first_token",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_end",
+    "turn_end",
+    "auto_retry_start",
+    "auto_retry_end",
+    "model_fallback",
+    "schema_validation_failed",
+    "fact_validation_failed",
+    "agent_end",
+    "agent_settled",
+    "run_succeeded",
+    "run_failed",
+    "run_cancelled",
+    "user_accepted",
+    "user_edited",
+    "user_ignored",
+    "unknown",
+]
 WORKFLOW_STAGES: Mapping[WorkflowType, str] = {
     "analyze_intake_answer": "analysis",
     "compose_resume_draft": "draft",
@@ -316,7 +345,7 @@ class TraceEvent(StrictModel):
     trace_id: IdString
     task_id: IdString
     event_seq: int = Field(ge=1)
-    event_type: ShortString
+    event_type: TraceEventType
     occurred_at: IdString
     details: dict[str, JsonValue] | None = None
 

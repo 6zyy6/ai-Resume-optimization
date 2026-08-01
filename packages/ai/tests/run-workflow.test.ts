@@ -14,24 +14,24 @@ const common = {
   workflow_version: "2" as const,
   trace_id: "trace_1",
   task_id: "task_1",
-  owner_scope_hash: "owner_hash",
+  owner_scope_hash: "a".repeat(64),
   locale: "zh-CN" as const,
   input_version: 1,
-  input_hash: "input_hash",
+  input_hash: "b".repeat(64),
 };
 
 function input(workflowType: WorkflowInput["workflow_type"]): WorkflowInput {
   switch (workflowType) {
     case "analyze_intake_answer":
-      return { ...common, workflow_type: workflowType, prompt_template_version: "intake-answer@2", payload: { session_id_hash: "session_hash", answer_id: "answer_1", question_id: "question_1", question_reason: "项目经历", answer_text: "我使用 Python。", answer_state: "answered", confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], covered_slots: [], missing_slots: ["impact"], asked_question_ids: [] } };
+      return { ...common, workflow_type: workflowType, prompt_template_version: "intake-answer@2", payload: { session_id_hash: "c".repeat(64), answer_id: "answer_1", question_id: "question_1", question_reason: "项目经历", answer_text: "我使用 Python。", answer_state: "answered", confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], covered_slots: [], missing_slots: ["impact"], asked_question_ids: [] } };
     case "compose_resume_draft":
-      return { ...common, workflow_type: workflowType, prompt_template_version: "resume-draft@2", payload: { resume_title: "简历", experience_groups: [{ title: "实习", fact_refs: ["fact_1"] }], confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python", source_hashes: ["source_hash"] }], allowed_section_types: ["experience"] } };
+      return { ...common, workflow_type: workflowType, prompt_template_version: "resume-draft@2", payload: { resume_title: "简历", experience_groups: [{ title: "实习", fact_refs: ["fact_1"] }], confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python", source_hashes: ["d".repeat(64)] }], allowed_section_types: ["experience"] } };
     case "parse_jd":
       return { ...common, workflow_type: workflowType, prompt_template_version: "jd-parse@2", payload: { jd_text: "Python 工程师", allowed_categories: ["must_have"] } };
     case "match_resume_to_jd":
-      return { ...common, workflow_type: workflowType, prompt_template_version: "resume-match@2", payload: { resume_version_id: "resume_1", resume_snapshot_hash: "snapshot_hash", confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], confirmed_requirements: [{ id: "requirement_1", category: "must_have", value: "Python" }] } };
+      return { ...common, workflow_type: workflowType, prompt_template_version: "resume-match@2", payload: { resume_version_id: "resume_1", resume_snapshot_hash: "e".repeat(64), confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], confirmed_requirements: [{ id: "requirement_1", category: "must_have", value: "Python" }] } };
     case "generate_suggestions_batch":
-      return { ...common, workflow_type: workflowType, prompt_template_version: "suggestions-batch@2", payload: { matches: [{ requirement_ref: "requirement_1", category: "transferable", fact_refs: ["fact_1"], target_path: "sections[0].bullets[0]", original_hash: "bullet_hash", original_text: "开发服务" }], confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], confirmed_requirements: [{ id: "requirement_1", category: "must_have", value: "Python" }] } };
+      return { ...common, workflow_type: workflowType, prompt_template_version: "suggestions-batch@2", payload: { matches: [{ requirement_ref: "requirement_1", category: "transferable", fact_refs: ["fact_1"], target_path: "sections[0].bullets[0]", original_hash: "f".repeat(64), original_text: "开发服务" }], confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }], confirmed_requirements: [{ id: "requirement_1", category: "must_have", value: "Python" }] } };
   }
 }
 
@@ -41,7 +41,7 @@ function output(workflowType: WorkflowInput["workflow_type"]): unknown {
     case "compose_resume_draft": return { sections: [{ type: "experience", title: "实习", bullets: [{ text: "使用 Python 开发服务", atomic_claims: [{ text: "使用 Python", fact_refs: ["fact_1"], claim_order: 0 }], risk_flags: [] }] }] };
     case "parse_jd": return { requirements: [{ category: "must_have", priority: 1, value: "Python", source_range: { start: 0, end: 6 }, explicitness: "explicit", confidence_band: "high" }] };
     case "match_resume_to_jd": return { matches: [{ requirement_ref: "requirement_1", category: "direct", fact_refs: ["fact_1"], resume_target_paths: ["sections[0]"], reason_code: "fact_match" }] };
-    case "generate_suggestions_batch": return { suggestions: [{ target_path: "sections[0].bullets[0]", original_hash: "bullet_hash", suggested_text: "使用 Python 开发服务", atomic_claims: [{ text: "Python", fact_refs: ["fact_1"], claim_order: 0 }], requirement_ref: "requirement_1", reason: "补充技能", risk_flags: [], proposed_status: "pending" }] };
+    case "generate_suggestions_batch": return { suggestions: [{ target_path: "sections[0].bullets[0]", original_hash: "f".repeat(64), suggested_text: "使用 Python 开发服务", atomic_claims: [{ text: "Python", fact_refs: ["fact_1"], claim_order: 0 }], requirement_ref: "requirement_1", reason: "补充技能", risk_flags: [], proposed_status: "pending" }] };
   }
 }
 
@@ -196,7 +196,7 @@ describe("runWorkflow", () => {
       fallback_count: 0,
       schema_valid: false,
       facts_valid: false,
-      input_hash: "input_hash",
+      input_hash: "b".repeat(64),
       exportable: false,
       risk_flags: [],
     });
@@ -514,7 +514,7 @@ describe("runWorkflow", () => {
     expect(validateRuntimeOutput(input("match_resume_to_jd"), match)[0]).toMatchObject({ type: "requirement_coverage_invalid" });
 
     const suggestion = output("generate_suggestions_batch") as any;
-    suggestion.suggestions[0].original_hash = "wrong_hash";
+    suggestion.suggestions[0].original_hash = "0".repeat(64);
     expect(validateRuntimeOutput(input("generate_suggestions_batch"), suggestion)[0]).toMatchObject({ type: "unknown_reference" });
   });
 
@@ -548,13 +548,13 @@ describe("runWorkflow", () => {
     });
   });
 
-  it("does not treat colon-delimited suggestion source fields as a tuple", () => {
+  it("does not combine independently mismatched suggestion source fields", () => {
     const suggestionInput = input("generate_suggestions_batch") as any;
     suggestionInput.payload.matches[0].target_path = "sections:0";
-    suggestionInput.payload.matches[0].original_hash = "bullet_hash";
+    suggestionInput.payload.matches[0].original_hash = "f".repeat(64);
     const suggestion = output("generate_suggestions_batch") as any;
     suggestion.suggestions[0].target_path = "sections";
-    suggestion.suggestions[0].original_hash = "0:bullet_hash";
+    suggestion.suggestions[0].original_hash = "0".repeat(64);
 
     expect(validateRuntimeOutput(suggestionInput, suggestion)[0]).toEqual({
       path: "$.suggestions[0]",

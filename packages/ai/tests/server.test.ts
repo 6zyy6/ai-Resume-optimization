@@ -19,10 +19,10 @@ function input(): WorkflowInput {
     prompt_template_version: "jd-parse@2",
     trace_id: "trace_1",
     task_id: "task_1",
-    owner_scope_hash: "owner_hash",
+    owner_scope_hash: "a".repeat(64),
     locale: "zh-CN",
     input_version: 1,
-    input_hash: "input_hash",
+    input_hash: "b".repeat(64),
     payload: {
       jd_text: "负责产品整体战略",
       allowed_categories: ["responsibility"],
@@ -116,7 +116,7 @@ describe("Pi internal API", () => {
       headers,
       payload: {
         ai_run_id: aiRunId,
-        input: { ...input(), input_hash: "different_hash" },
+        input: { ...input(), input_hash: "c".repeat(64) },
       },
     });
 

@@ -20,6 +20,10 @@ function context(aiRunId: string, inputHash: string) {
 
 const redisUrl = process.env.TEST_REDIS_URL;
 
+function hash(index: number): string {
+  return index.toString(16).padStart(64, "0");
+}
+
 describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
   it("shares one hundred runs across replicas and expires a lost owner", async () => {
     const first = await RedisRunStore.connect({
@@ -41,16 +45,19 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
         const aiRunId = `run_test_${randomUUID()}`;
         const record = {
           ai_run_id: aiRunId,
-          input_hash: `hash_${index}`,
+          input_hash: hash(index),
           status: "queued",
           owner_instance_id: "pi-redis-owner",
           cancel_requested: false,
           lease_expires_at: Date.now() + 50,
-          context: context(aiRunId, `hash_${index}`),
+          context: context(aiRunId, hash(index)),
         } as const;
         expect((await first.createOrGet(record)).kind).toBe("created");
         expect((await second.createOrGet(record)).kind).toBe("existing");
-        expect((await second.createOrGet({ ...record, input_hash: "other" })).kind)
+        expect((await second.createOrGet({
+          ...record,
+          input_hash: hash(index + 1_000),
+        })).kind)
           .toBe("conflict");
         await first.markRunning(aiRunId);
         expect((await second.get(aiRunId))?.status).toBe("running");
@@ -67,9 +74,9 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
       await expect.poll(() => received.size).toBe(100);
 
       const mismatchedRunId = `run_test_${randomUUID()}`;
-      const mismatchedContext = context(mismatchedRunId, "mismatch_hash");
+      const mismatchedContext = context(mismatchedRunId, hash(2_000));
       await first.createOrGet({
-        ai_run_id: mismatchedRunId, input_hash: "mismatch_hash", status: "queued",
+        ai_run_id: mismatchedRunId, input_hash: hash(2_000), status: "queued",
         owner_instance_id: "pi-owner-a", cancel_requested: false,
         lease_expires_at: Date.now() + 5_000, context: mismatchedContext,
       });
@@ -82,17 +89,17 @@ describe.runIf(Boolean(redisUrl))("RedisRunStore integration", () => {
       const lostRunId = `run_test_${randomUUID()}`;
       await first.createOrGet({
         ai_run_id: lostRunId,
-        input_hash: "lost_hash",
+        input_hash: hash(2_001),
         status: "queued",
         owner_instance_id: "pi-lost-owner",
         cancel_requested: false,
         lease_expires_at: Date.now() + 25,
-        context: context(lostRunId, "lost_hash"),
+        context: context(lostRunId, hash(2_001)),
       });
       await first.markRunning(lostRunId);
       await new Promise((resolve) => setTimeout(resolve, 75));
       const sourceReceipt = terminalReceipt(
-        context(lostRunId, "lost_hash"), "succeeded", null,
+        context(lostRunId, hash(2_001)), "succeeded", null,
       );
       sourceReceipt.run.provider = "faux";
       sourceReceipt.run.requested_model = "faux-1";

@@ -4,6 +4,13 @@ import type { AiExecutionReceipt } from "../src/contracts.js";
 import { MemoryRunStore } from "../src/server/memory-run-store.js";
 import { terminalReceipt } from "../src/server/run-store.js";
 
+const HASH_A = "a".repeat(64);
+const HASH_B = "b".repeat(64);
+const HASH_C = "c".repeat(64);
+const HASH_D = "d".repeat(64);
+const HASH_E = "e".repeat(64);
+const HASH_F = "f".repeat(64);
+
 function runContext(aiRunId: string, inputHash: string) {
   return {
     ai_run_id: aiRunId,
@@ -32,7 +39,7 @@ function auditedReceipt(
     usage: { input: 17, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, total_tokens: 17, cost_usd: 0.01 },
     events: [{ ai_run_id: aiRunId, trace_id: "trace_1", task_id: "task_1", event_seq: 1, event_type: "message_end", occurred_at: "2026-01-01T00:00:00.090Z" }],
     turn_count: 2, tool_call_count: 1, retry_count: 1, fallback_count: 0,
-    schema_valid: true, facts_valid: true, input_hash: "hash_fenced",
+    schema_valid: true, facts_valid: true, input_hash: HASH_A,
     exportable: false, risk_flags: [],
   };
   return status === "succeeded" ? { run, result: { requirements: [] } } : { run };
@@ -43,17 +50,17 @@ describe("RunStore state fencing", () => {
     const store = new MemoryRunStore();
     const record = {
       ai_run_id: "run_idempotent",
-      input_hash: "hash_a",
+      input_hash: HASH_B,
       status: "queued" as const,
       owner_instance_id: "pi-a",
       cancel_requested: false,
       lease_expires_at: Date.now() + 15_000,
-      context: runContext("run_idempotent", "hash_a"),
+      context: runContext("run_idempotent", HASH_B),
     };
 
     expect(await store.createOrGet(record)).toMatchObject({ kind: "created" });
     expect(await store.createOrGet(record)).toMatchObject({ kind: "existing" });
-    expect(await store.createOrGet({ ...record, input_hash: "hash_b" }))
+    expect(await store.createOrGet({ ...record, input_hash: HASH_C }))
       .toMatchObject({ kind: "conflict" });
   });
 
@@ -62,7 +69,7 @@ describe("RunStore state fencing", () => {
     const store = new MemoryRunStore({ now: () => now, leaseMs: 100 });
     await store.createOrGet({
       ai_run_id: "run_lost_receipt",
-      input_hash: "hash_lost",
+      input_hash: HASH_D,
       status: "queued",
       owner_instance_id: "pi-owner",
       cancel_requested: false,
@@ -74,7 +81,7 @@ describe("RunStore state fencing", () => {
         prompt_template_version: "jd-parse@2",
         trace_id: "trace_lost",
         task_id: "task_lost",
-        input_hash: "hash_lost",
+        input_hash: HASH_D,
         started_at: "1970-01-01T00:00:01.000Z",
       },
     });
@@ -99,12 +106,12 @@ describe("RunStore state fencing", () => {
     const store = new MemoryRunStore();
     await store.createOrGet({
       ai_run_id: "run_1",
-      input_hash: "hash_1",
+      input_hash: HASH_E,
       status: "queued",
       owner_instance_id: "pi-a",
       cancel_requested: false,
       lease_expires_at: Date.now() + 15_000,
-      context: runContext("run_1", "hash_1"),
+      context: runContext("run_1", HASH_E),
     });
     await store.markRunning("run_1");
 
@@ -116,7 +123,7 @@ describe("RunStore state fencing", () => {
       "run_1",
       "pi-a",
       "succeeded",
-      terminalReceipt(runContext("run_1", "hash_1"), "succeeded", null),
+      terminalReceipt(runContext("run_1", HASH_E), "succeeded", null),
     );
 
     expect(completed?.status).toBe("cancelled");
@@ -132,12 +139,12 @@ describe("RunStore state fencing", () => {
     });
     await store.createOrGet({
       ai_run_id: "run_owner_lost",
-      input_hash: "hash_owner_lost",
+      input_hash: HASH_F,
       status: "queued",
       owner_instance_id: "pi-owner",
       cancel_requested: false,
       lease_expires_at: 1_100,
-      context: runContext("run_owner_lost", "hash_owner_lost"),
+      context: runContext("run_owner_lost", HASH_F),
     });
     await store.markRunning("run_owner_lost");
     now = 1_101;
@@ -154,9 +161,9 @@ describe("RunStore state fencing", () => {
   it("fences an expired owner from completing successfully", async () => {
     let now = 1_000;
     const store = new MemoryRunStore({ now: () => now, leaseMs: 100 });
-    const context = runContext("run_fenced", "hash_fenced");
+    const context = runContext("run_fenced", HASH_A);
     await store.createOrGet({
-      ai_run_id: "run_fenced", input_hash: "hash_fenced", status: "queued",
+      ai_run_id: "run_fenced", input_hash: HASH_A, status: "queued",
       owner_instance_id: "pi-a", cancel_requested: false, lease_expires_at: 1_100, context,
     });
     now = 1_101;
@@ -182,9 +189,9 @@ describe("RunStore state fencing", () => {
     "preserves an unchanged %s receipt byte-for-byte",
     async (status) => {
       const store = new MemoryRunStore({ now: () => 1_000 });
-      const context = runContext(`run_${status}`, "hash_fenced");
+      const context = runContext(`run_${status}`, HASH_A);
       await store.createOrGet({
-        ai_run_id: `run_${status}`, input_hash: "hash_fenced", status: "queued",
+        ai_run_id: `run_${status}`, input_hash: HASH_A, status: "queued",
         owner_instance_id: "pi-a", cancel_requested: false, lease_expires_at: 1_100, context,
       });
       const receipt = auditedReceipt(`run_${status}`, status);

@@ -2,39 +2,17 @@ import { createHash } from "node:crypto";
 
 import type {
   TraceEvent,
+  TraceEventType,
   TraceUsage,
 } from "../contracts.js";
 import {
   TRACE_COST_USD_DECIMAL_PLACES,
   TRACE_COST_USD_MAX,
+  TRACE_EVENT_TYPES,
 } from "../contracts.js";
 import { ALLOWED_TOOL_NAMES } from "../tools/guard.js";
 
-const KNOWN_EVENT_TYPES = new Set([
-  "run_queued",
-  "agent_start",
-  "turn_start",
-  "message_start",
-  "first_token",
-  "message_update",
-  "message_end",
-  "tool_execution_start",
-  "tool_execution_end",
-  "turn_end",
-  "auto_retry_start",
-  "auto_retry_end",
-  "model_fallback",
-  "schema_validation_failed",
-  "fact_validation_failed",
-  "agent_end",
-  "agent_settled",
-  "run_succeeded",
-  "run_failed",
-  "run_cancelled",
-  "user_accepted",
-  "user_edited",
-  "user_ignored",
-]);
+const KNOWN_EVENT_TYPES = new Set<string>(TRACE_EVENT_TYPES);
 
 const SAFE_DETAIL_KEYS = new Set([
   "provider",
@@ -295,12 +273,15 @@ export function createEventLedger({
     eventType: string,
     rawDetails?: Record<string, unknown>,
   ): TraceEvent {
+    const safeEventType: TraceEventType = KNOWN_EVENT_TYPES.has(eventType)
+      ? eventType as TraceEventType
+      : "unknown";
     const event: TraceEvent = {
       ai_run_id,
       trace_id,
       task_id,
       event_seq: events.length + 1,
-      event_type: KNOWN_EVENT_TYPES.has(eventType) ? eventType : "unknown",
+      event_type: safeEventType,
       occurred_at: now().toISOString(),
     };
     const details = safeDetails(rawDetails);
@@ -323,7 +304,9 @@ export function createEventLedger({
       typeof assistantMessageEvent?.type === "string"
         ? assistantMessageEvent.type
         : rawType;
-    let eventType = KNOWN_EVENT_TYPES.has(rawType) ? rawType : "unknown";
+    let eventType: TraceEventType = KNOWN_EVENT_TYPES.has(rawType)
+      ? rawType as TraceEventType
+      : "unknown";
     if (rawType === "start") {
       eventType = "message_start";
     } else if (rawType === "done" || rawType === "error") {

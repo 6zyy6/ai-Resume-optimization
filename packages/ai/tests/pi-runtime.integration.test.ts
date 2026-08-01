@@ -30,10 +30,10 @@ const input: WorkflowInput = {
   prompt_template_version: "jd-parse@2",
   trace_id: "trace_real_faux",
   task_id: "task_real_faux",
-  owner_scope_hash: "owner_hash",
+  owner_scope_hash: "a".repeat(64),
   locale: "zh-CN",
   input_version: 1,
-  input_hash: "input_hash",
+  input_hash: "b".repeat(64),
   payload: {
     jd_text: "Python 工程师",
     allowed_categories: ["must_have"],

@@ -11,10 +11,10 @@ const common = {
   workflow_version: "2",
   trace_id: "trace_1",
   task_id: "task_1",
-  owner_scope_hash: "owner_hash",
+  owner_scope_hash: "a".repeat(64),
   locale: "zh-CN",
   input_version: 1,
-  input_hash: "input_hash",
+  input_hash: "b".repeat(64),
 };
 
 function makeAnalyzeIntakeInput() {
@@ -23,7 +23,7 @@ function makeAnalyzeIntakeInput() {
     workflow_type: "analyze_intake_answer",
     prompt_template_version: "intake-answer@2",
     payload: {
-      session_id_hash: "session_hash",
+      session_id_hash: "c".repeat(64),
       answer_id: "answer_1",
       question_id: "question_1",
       question_reason: "了解项目经历",
@@ -49,7 +49,7 @@ function makeComposeDraftInput() {
         id: "fact_1",
         kind: "skill",
         value: "Python",
-        source_hashes: ["source_hash"],
+        source_hashes: ["d".repeat(64)],
       }],
       allowed_section_types: ["experience"],
     },
@@ -76,7 +76,7 @@ function makeMatchInput() {
     prompt_template_version: "resume-match@2",
     payload: {
       resume_version_id: "resume_1",
-      resume_snapshot_hash: "snapshot_hash",
+      resume_snapshot_hash: "e".repeat(64),
       confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }],
       confirmed_requirements: [{
         id: "requirement_1",
@@ -98,7 +98,7 @@ function makeSuggestionBatchInput() {
         category: "transferable",
         fact_refs: ["fact_1"],
         target_path: "sections[0].bullets[0]",
-        original_hash: "bullet_hash",
+        original_hash: "f".repeat(64),
         original_text: "负责服务开发",
       }],
       confirmed_facts: [{ id: "fact_1", kind: "skill", value: "Python" }],
@@ -132,6 +132,56 @@ describe("V2 workflow contracts", () => {
 
   it.each(validInputs)("accepts each V2 workflow envelope", (input) => {
     expect(Value.Check(WorkflowInputSchema, input)).toBe(true);
+  });
+
+  it.each([
+    { input: { ...makeParseJdInput(), owner_scope_hash: "john@example.com" } },
+    { input: { ...makeParseJdInput(), input_hash: "arbitrary-string" } },
+    { input: { ...makeParseJdInput(), input_hash: "A".repeat(64) } },
+    {
+      input: {
+        ...makeAnalyzeIntakeInput(),
+        payload: {
+          ...makeAnalyzeIntakeInput().payload,
+          session_id_hash: "john@example.com",
+        },
+      },
+    },
+    {
+      input: {
+        ...makeComposeDraftInput(),
+        payload: {
+          ...makeComposeDraftInput().payload,
+          confirmed_facts: [{
+            ...makeComposeDraftInput().payload.confirmed_facts[0],
+            source_hashes: ["arbitrary-string"],
+          }],
+        },
+      },
+    },
+    {
+      input: {
+        ...makeMatchInput(),
+        payload: {
+          ...makeMatchInput().payload,
+          resume_snapshot_hash: "john@example.com",
+        },
+      },
+    },
+    {
+      input: {
+        ...makeSuggestionBatchInput(),
+        payload: {
+          ...makeSuggestionBatchInput().payload,
+          matches: [{
+            ...makeSuggestionBatchInput().payload.matches[0],
+            original_hash: "arbitrary-string",
+          }],
+        },
+      },
+    },
+  ])("rejects a noncanonical hash in every hash-bearing workflow", ({ input }) => {
+    expect(Value.Check(WorkflowInputSchema, input)).toBe(false);
   });
 
   it("rejects the removed generic current_object payload", () => {
