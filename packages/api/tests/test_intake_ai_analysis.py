@@ -41,6 +41,7 @@ from app.db.models import (
 from app.integrations.ai_client import (
     AiExecutionReceipt,
     AnalyzeIntakeRequest,
+    AnalyzeIntakeResult,
     FactCandidate as AiFactCandidate,
     derive_ai_run_id,
 )
@@ -48,7 +49,12 @@ from app.main import create_app
 from app.integrations.storage import MemoryStorage
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
-from app.modules.intake.service import IntakeError, IntakeService
+from app.modules.intake.service import (
+    IntakeError,
+    IntakeService,
+    _number_tokens,
+    _validated_candidates,
+)
 from app.modules.tasks.service import TaskAdmission
 from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
 from app.workers.execution import TaskExecutor, resolve_operation
@@ -691,6 +697,87 @@ def test_any_explicit_negative_marker_blocks_automatic_candidates(
 
 
 @pytest.mark.parametrize(
+    "term",
+    [
+        "无人机研发",
+        "无障碍设计",
+        "未来规划",
+        "未成年人服务",
+        "不断优化流程",
+        "不同方案比较",
+        "沉没成本分析",
+        "无损检测",
+        "无监督学习",
+        "无服务器架构",
+        "未登录用户处理",
+        "不稳定网络优化",
+        "不锈钢检测",
+        "无锡志愿活动",
+        "未央区调研",
+        "不间断服务",
+    ],
+)
+def test_negative_marker_inside_candidate_lexeme_is_not_rejected(term):
+    valid, invalid = _validate_candidate_slice(f"我完成了{term}", term)
+
+    assert len(valid) == 1
+    assert invalid == []
+
+
+def test_candidate_without_shared_cjk_core_is_rejected():
+    valid, invalid = _validate_candidate_slice(
+        "我完成了课程项目",
+        "负责用户调研",
+    )
+
+    assert valid == []
+    assert invalid == [(0, "unsupported_lexical")]
+
+
+def test_negation_alignment_preserves_4900_direct_negative_combinations():
+    markers = (
+        "没有",
+        "并没有",
+        "完全没有",
+        "从未",
+        "不曾",
+        "并未",
+        "未能",
+        "没",
+        "不",
+        "无",
+    )
+    modifiers = ("", "实际", "真正", "直接", "独立", "具体", "主动")
+    actions = ("负责", "参与", "完成", "承担", "组织", "主导", "获得")
+    objects = (
+        "项目",
+        "任务",
+        "工作",
+        "实习",
+        "活动",
+        "课程",
+        "比赛",
+        "调研",
+        "设计",
+        "汇报",
+    )
+    rejected = 0
+
+    for marker in markers:
+        for modifier in modifiers:
+            for action in actions:
+                for object_name in objects:
+                    candidate = f"{modifier}{action}{object_name}"
+                    valid, _ = _validate_candidate_slice(
+                        f"{marker}{candidate}",
+                        candidate,
+                    )
+                    rejected += not valid
+
+    assert rejected == 4_900
+
+
+@pytest.mark.parametrize(
     ("source", "value", "expected_count"),
     [
         ("服务了1,000人", "服务了1000人", 1),
@@ -769,6 +856,24 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
         ("唯一负责项目", "唯一负责项目", 1),
         ("一直负责项目", "负责十人", 0),
         ("唯一负责项目", "负责二人", 0),
+        ("服务俩人", "服务双人", 0),
+        ("增长双倍", "增长俩倍", 0),
+        ("完成过半", "完成过半且增长双倍", 0),
+        ("投入半天", "投入半天且服务俩人", 0),
+        ("完成廿项", "完成卅项", 0),
+        ("月薪壹萬", "月薪贰萬", 0),
+        ("服务俩人", "服务俩人", 1),
+        ("增长双倍", "增长双倍", 1),
+        ("完成廿项", "完成二十项", 1),
+        ("完成卅项", "完成三十项", 1),
+        ("月薪壹萬", "月薪一万", 1),
+        ("负责团队协作", "服务几人", 0),
+        ("负责团队协作", "提升百分之几", 0),
+        ("负责团队协作", "获得第几名", 0),
+        ("负责团队协作", "完成若干项", 0),
+        ("负责团队协作", "服务数人", 0),
+        ("完成数据分析", "完成数据分析", 1),
+        ("推动数字化项目", "推动数字化项目", 1),
     ],
 )
 def test_chinese_numeric_tokens_require_exact_source_support(
@@ -807,6 +912,64 @@ def test_chinese_numeric_tokens_require_exact_source_support(
     assert _run(_model_count(sessions, FactCandidate)) == expected_count
     if expected_count == 0:
         assert "unsupported_numeric" in _run(_trace_payload(sessions))
+
+
+def test_simplified_chinese_numeric_fuzz_keeps_1920_mismatches_distinct():
+    numbers = (
+        "零",
+        "一",
+        "二",
+        "三",
+        "四",
+        "五",
+        "六",
+        "七",
+        "八",
+        "九",
+        "十",
+        "二十",
+        "三十",
+        "百",
+        "千",
+        "万",
+    )
+    suffixes = (
+        "人",
+        "名",
+        "次",
+        "项",
+        "个",
+        "天",
+        "周",
+        "月",
+        "年",
+        "份",
+        "家",
+        "倍",
+    )
+    stems = (
+        "服务",
+        "完成",
+        "组织",
+        "支持",
+        "覆盖",
+        "持续",
+        "增长",
+        "减少",
+        "交付",
+        "获得",
+    )
+    mismatches = 0
+
+    for index, number in enumerate(numbers):
+        other = numbers[(index + 1) % len(numbers)]
+        for suffix in suffixes:
+            for stem in stems:
+                source_tokens = _number_tokens(f"{stem}{number}{suffix}")
+                candidate_tokens = _number_tokens(f"{stem}{other}{suffix}")
+                mismatches += not candidate_tokens.issubset(source_tokens)
+
+    assert mismatches == 1_920
 
 
 def test_cancelled_analysis_receipt_atomically_marks_answer_and_task_failed(
@@ -1808,6 +1971,36 @@ def test_user_retry_is_disabled_at_the_global_degraded_cost_gate(
 
 def _run(awaitable):
     return asyncio.run(awaitable)
+
+
+def _validate_candidate_slice(source, value):
+    answer_id = "ians_guard_unit"
+    answer = IntakeAnswer(
+        id=answer_id,
+        owner_user_id="usr_analysis",
+        session_id="intake_guard_unit",
+        question_id="experience_radar",
+        answer_encrypted=source,
+        state="answered",
+        analysis_status="running",
+    )
+    candidate = AiFactCandidate.model_validate(
+        {
+            "kind": "experience",
+            "value": value,
+            "source_answer_id": answer_id,
+            "source_range": {"start": 0, "end": len(source)},
+            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
+            "risk_flags": [],
+        },
+        strict=False,
+    )
+    result = AnalyzeIntakeResult(
+        fact_candidates=(candidate,),
+        missing_slots=(),
+        question_candidate=None,
+    )
+    return _validated_candidates(answer, result)
 
 
 async def _create_schema(engine):

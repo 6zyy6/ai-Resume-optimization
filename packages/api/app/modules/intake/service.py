@@ -155,21 +155,41 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:负责|参与|完成|承担|做过|参加)(?:过)?(?:这个|该|相关)?"
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
-NEGATIVE_SOURCE_MARKER = re.compile(r"没有|从未|不曾|并未|没|未|无|不")
+MULTI_NEGATIVE_MARKERS = (
+    "完全没有",
+    "并没有",
+    "没有",
+    "从未",
+    "不曾",
+    "并未",
+    "未能",
+)
+SINGLE_NEGATIVE_MARKERS = frozenset("没不未无")
+NEGATION_CLAUSE_BOUNDARIES = ("但", "不过", "然而", "可是", "却")
+NEGATION_MAX_GAP = 4
 NUMBER_TOKEN = re.compile(
     r"(?<![\d.,])(?P<number>[+\-−]?(?:"
     r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+))"
     r"(?P<percent>[%％]?)(?![\d.,])"
 )
-CHINESE_NUMBER = r"[零〇一二两三四五六七八九十百千万亿点]+"
+CHINESE_NUMBER = (
+    r"[零〇一二两三四五六七八九十百千万亿点俩双半廿卅"
+    r"壹贰叁肆伍陆柒捌玖拾佰仟萬億]+"
+)
 CHINESE_NUMBER_SUFFIX = (
     r"小时|分钟|个月|人|名|次|项|个|天|周|月|年|份|家|位|届|场|分|元|倍|成"
 )
 CHINESE_NUMBER_TOKEN = re.compile(
-    rf"(?P<prefix>百分之|第|前)?(?P<number>{CHINESE_NUMBER})"
+    rf"(?P<prefix>百分之|第|前|过)?(?P<number>{CHINESE_NUMBER})"
     rf"(?P<suffix>(?:余|多)(?:{CHINESE_NUMBER_SUFFIX})?"
     rf"|{CHINESE_NUMBER_SUFFIX}|[%％])?"
 )
+UNPARSED_QUANTITY = re.compile(
+    rf"(?:百分之|第|前|过)(?:若干|好几|几|数)"
+    rf"(?:{CHINESE_NUMBER_SUFFIX}|[%％])?"
+    rf"|(?:若干|好几|几|数)(?:{CHINESE_NUMBER_SUFFIX}|[%％])"
+)
+CJK_CHARACTER = re.compile(r"[\u3400-\u9fff]")
 
 
 @dataclass
@@ -1829,13 +1849,17 @@ def _validated_candidates(
                 reason = "source_hash_mismatch"
             elif (
                 _answer_state(source_slice, False) != "answered"
-                or _has_negative_source(source_slice)
+                or _source_negates_candidate(source_slice, candidate.value)
             ):
                 reason = "negative_source"
+            elif _has_unparsed_quantity(candidate.value):
+                reason = "unsupported_numeric"
             elif not _number_tokens(candidate.value).issubset(
                 _number_tokens(source_slice)
             ):
                 reason = "unsupported_numeric"
+            elif not _has_lexical_support(source_slice, candidate.value):
+                reason = "unsupported_lexical"
         key = _candidate_key(candidate)
         if reason is None and key in seen:
             reason = "duplicate_candidate"
@@ -1872,7 +1896,7 @@ def _number_tokens(value: str) -> set[str]:
             normalized = f"{normalized}%"
         tokens.add(normalized)
     for match in CHINESE_NUMBER_TOKEN.finditer(value):
-        number = match.group("number").translate(str.maketrans("两〇", "二零"))
+        number = _canonical_chinese_number(match.group("number"))
         tokens.add(
             f"zh:{match.group('prefix') or ''}:{number}:"
             f"{match.group('suffix') or ''}"
@@ -1880,9 +1904,121 @@ def _number_tokens(value: str) -> set[str]:
     return tokens
 
 
-def _has_negative_source(value: str) -> bool:
-    normalized = re.sub(r"[\s，。！？,.!?；;：:]+", "", value)
-    return bool(NEGATIVE_SOURCE_MARKER.search(normalized))
+def _canonical_chinese_number(value: str) -> str:
+    expanded = value.replace("廿", "二十").replace("卅", "三十")
+    return expanded.translate(
+        str.maketrans(
+            {
+                "两": "二",
+                "〇": "零",
+                "壹": "一",
+                "贰": "二",
+                "叁": "三",
+                "肆": "四",
+                "伍": "五",
+                "陆": "六",
+                "柒": "七",
+                "捌": "八",
+                "玖": "九",
+                "拾": "十",
+                "佰": "百",
+                "仟": "千",
+                "萬": "万",
+                "億": "亿",
+            }
+        )
+    )
+
+
+def _has_unparsed_quantity(value: str) -> bool:
+    return bool(UNPARSED_QUANTITY.search(value))
+
+
+def _source_negates_candidate(source: str, candidate: str) -> bool:
+    source_cjk, anchors = _candidate_core_anchors(source, candidate)
+    return any(_anchor_is_negated(source_cjk, anchor) for anchor in anchors) or any(
+        _has_detached_negative_clause(source_cjk, anchor) for anchor in anchors
+    )
+
+
+def _has_lexical_support(source: str, candidate: str) -> bool:
+    _, anchors = _candidate_core_anchors(source, candidate)
+    if anchors:
+        return True
+    normalized_source = _normalized_lexeme(source)
+    normalized_candidate = _normalized_lexeme(candidate)
+    return bool(
+        normalized_candidate
+        and normalized_candidate in normalized_source
+    )
+
+
+def _candidate_core_anchors(
+    source: str,
+    candidate: str,
+) -> tuple[str, tuple[int, ...]]:
+    source_cjk = "".join(CJK_CHARACTER.findall(source))
+    candidate_cjk = "".join(CJK_CHARACTER.findall(candidate))
+    if not candidate_cjk:
+        return source_cjk, ()
+    if candidate_cjk in source_cjk:
+        return source_cjk, _occurrences(source_cjk, candidate_cjk)
+    if len(candidate_cjk) == 1:
+        return source_cjk, _occurrences(source_cjk, candidate_cjk)
+    source_bigrams = {
+        source_cjk[index : index + 2]
+        for index in range(len(source_cjk) - 1)
+    }
+    for index in range(len(candidate_cjk) - 1):
+        core = candidate_cjk[index : index + 2]
+        if core in source_bigrams:
+            return source_cjk, _occurrences(source_cjk, core)
+    return source_cjk, ()
+
+
+def _occurrences(value: str, needle: str) -> tuple[int, ...]:
+    positions: list[int] = []
+    start = 0
+    while (position := value.find(needle, start)) >= 0:
+        positions.append(position)
+        start = position + 1
+    return tuple(positions)
+
+
+def _anchor_is_negated(source: str, anchor: int) -> bool:
+    prefix = source[:anchor]
+    boundary_positions = [
+        position + len(marker)
+        for marker in NEGATION_CLAUSE_BOUNDARIES
+        if (position := prefix.rfind(marker)) >= 0
+    ]
+    boundary = max(boundary_positions, default=0)
+    segment = prefix[boundary:]
+    for marker in MULTI_NEGATIVE_MARKERS:
+        position = segment.rfind(marker)
+        if (
+            position >= 0
+            and len(segment) - position - len(marker) <= NEGATION_MAX_GAP
+        ):
+            return True
+    return bool(segment and segment[-1] in SINGLE_NEGATIVE_MARKERS)
+
+
+def _has_detached_negative_clause(source: str, anchor: int) -> bool:
+    prefix = source[:anchor]
+    boundary_positions = [
+        position
+        for marker in NEGATION_CLAUSE_BOUNDARIES
+        if (position := prefix.rfind(marker)) >= 0
+    ]
+    if not boundary_positions:
+        return False
+    prior_clauses = prefix[: max(boundary_positions)]
+    return any(marker in prior_clauses for marker in MULTI_NEGATIVE_MARKERS)
+
+
+def _normalized_lexeme(value: str) -> str:
+    return re.sub(r"[\s，。！？,.!?；;：:]+", "", value)
 
 
 def _clear_analysis_snapshot(outbox: Outbox | None) -> None:
