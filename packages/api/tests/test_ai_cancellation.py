@@ -13,7 +13,12 @@ from app.db.models import (
     Suggestion,
     SuggestionFactLink,
 )
-from app.integrations.ai_client import AiRunCancelled, InternalAiClient
+from app.integrations.ai_client import (
+    AiRunCancelled,
+    InternalAiClient,
+    ParseJdRequest,
+    derive_ai_run_id,
+)
 from app.modules.matching.service import MatchingService
 from app.modules.tasks.service import TaskClaimError
 
@@ -55,13 +60,29 @@ async def test_internal_ai_client_cancels_registered_run_before_polling(monkeypa
         if request.method == "POST" and request.url.path == "/internal/v1/runs":
             return httpx.Response(
                 202,
-                json={"ai_run_id": "run_cancel", "status": "queued"},
+                json={
+                    "run": {"ai_run_id": ai_run_id, "status": "queued"},
+                },
             )
         if request.method == "POST" and request.url.path.endswith("/cancel"):
             return httpx.Response(202, json={"status": "cancelling"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     probe = CancellationProbe()
+    request = ParseJdRequest(
+        workflow_type="parse_jd",
+        prompt_template_version="jd-parse@2",
+        trace_id="trace_cancel",
+        task_id="task_cancel",
+        owner_scope_hash="owner_hash",
+        input_version=1,
+        input_hash="cancel_hash",
+        payload={
+            "jd_text": "cancel me",
+            "allowed_categories": ["must_have"],
+        },
+    )
+    ai_run_id = derive_ai_run_id("task_cancel", "parse", "cancel_hash")
     client = InternalAiClient(
         "http://pi.internal",
         "service-token",
@@ -69,22 +90,14 @@ async def test_internal_ai_client_cancels_registered_run_before_polling(monkeypa
     )
 
     with pytest.raises(AiRunCancelled):
-        await client.run(
-            workflow_type="style_check",
-            workflow_version="1",
-            trace_id="trace_cancel",
-            task_id="task_cancel",
-            facts=[],
-            input_data={"text": "cancel me"},
-            cancellation=probe,
-        )
+        await client.run(request, cancellation=probe)
 
-    assert probe.registered_run_id == "run_cancel"
-    assert probe.acknowledged_run_id == "run_cancel"
+    assert probe.registered_run_id == ai_run_id
+    assert probe.acknowledged_run_id == ai_run_id
     assert client_options[0]["trust_env"] is False
     assert requests == [
         ("POST", "/internal/v1/runs"),
-        ("POST", "/internal/v1/runs/run_cancel/cancel"),
+        ("POST", f"/internal/v1/runs/{ai_run_id}/cancel"),
     ]
 
 

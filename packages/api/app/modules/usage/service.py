@@ -29,6 +29,10 @@ class UsageRecord:
     cost_cny: Decimal
     trace_id: str
     created_at: datetime
+    state: str = "consumed"
+    task_id: str | None = None
+    ai_run_id: str | None = None
+    updated_at: datetime | None = None
 
 
 class UsageRepository(Protocol):
@@ -41,6 +45,7 @@ class UsageRepository(Protocol):
     ) -> UsageRecord: ...
 
     async def count_ai_tasks(self, owner_user_id: str, since: datetime) -> int: ...
+    async def count_consumed_ai_tasks(self, owner_user_id: str, since: datetime) -> int: ...
     async def running_ai_tasks(self, owner_user_id: str) -> int: ...
     async def daily_cost(self, since: datetime) -> Decimal: ...
     async def admit_ai_task(
@@ -90,6 +95,8 @@ class InMemoryUsageRepository:
             cost_cny=cost_cny,
             trace_id=trace_id,
             created_at=created_at,
+            state="consumed",
+            updated_at=created_at,
         )
         self.rows.append(row)
         return row
@@ -100,6 +107,21 @@ class InMemoryUsageRepository:
             for row in self.rows
             if row.owner_user_id == owner_user_id
             and row.usage_type == "ai_task"
+            and row.state in {"reserved", "consumed"}
+            and row.created_at >= since
+        )
+
+    async def count_consumed_ai_tasks(
+        self,
+        owner_user_id: str,
+        since: datetime,
+    ) -> int:
+        return sum(
+            row.quantity
+            for row in self.rows
+            if row.owner_user_id == owner_user_id
+            and row.usage_type == "ai_task"
+            and row.state == "consumed"
             and row.created_at >= since
         )
 
@@ -116,7 +138,11 @@ class InMemoryUsageRepository:
         if self._daily_cost_override is not None:
             return self._daily_cost_override
         return sum(
-            (row.cost_cny for row in self.rows if row.created_at >= since),
+            (
+                row.cost_cny
+                for row in self.rows
+                if row.state == "consumed" and row.created_at >= since
+            ),
             start=Decimal("0"),
         )
 
@@ -166,11 +192,19 @@ class InMemoryUsageRepository:
                     "trace_id": trace_id,
                     "workflow_type": workflow_type,
                 }
-                await self.append_ai_task(
-                    owner_user_id,
-                    trace_id,
-                    created_at,
-                    cost_cny,
+                self.rows.append(
+                    UsageRecord(
+                        id=new_id("usg"),
+                        owner_user_id=owner_user_id,
+                        usage_type="ai_task",
+                        quantity=1,
+                        cost_cny=cost_cny,
+                        trace_id=trace_id,
+                        created_at=created_at,
+                        state="reserved",
+                        task_id=task_id,
+                        updated_at=created_at,
+                    )
                 )
                 decision = UsageDecision(
                     decision.allowed,
@@ -325,7 +359,10 @@ class UsageService:
         elif cost >= GLOBAL_COST_ALERT_CNY:
             state = "alert"
         return UsageSummary(
-            ai_tasks_used=await self.repository.count_ai_tasks(owner_user_id, day_start),
+            ai_tasks_used=await self.repository.count_consumed_ai_tasks(
+                owner_user_id,
+                day_start,
+            ),
             ai_tasks_limit=AI_TASKS_PER_DAY,
             ai_tasks_running=await self.repository.running_ai_tasks(owner_user_id),
             ai_concurrent_limit=AI_TASKS_CONCURRENT,

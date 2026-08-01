@@ -178,15 +178,17 @@ class TaskService:
             return task
 
         now = self.clock.now()
-        await self._admit_usage(
+        task_id = new_id("tsk")
+        reservation = await self._admit_usage(
             session,
             claim.row.owner_user_id,
             admission,
             trace_id,
             now,
+            task_id,
         )
         task = Task(
-            id=new_id("tsk"),
+            id=task_id,
             owner_user_id=claim.row.owner_user_id,
             type=task_type,
             status="queued",
@@ -203,6 +205,8 @@ class TaskService:
             usage_type=admission.usage_type,
         )
         session.add(task)
+        if reservation is not None:
+            session.add(reservation)
         await session.flush()
         await self._append_event(session, task, "queued", 0, now)
         session.add(
@@ -476,8 +480,124 @@ class TaskService:
                 )
             task.active_ai_run_id = ai_run_id
             task.ai_cancel_acknowledged_at = None
+            await self._consume_ai_reservation_in_session(
+                session,
+                owner_user_id,
+                task_id,
+                ai_run_id,
+            )
             await session.flush()
             return True
+
+    async def consume_ai_reservation(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> UsageLedger:
+        async with self.sessions.begin() as session:
+            return await self.consume_ai_reservation_in_session(
+                session,
+                owner_user_id,
+                task_id,
+                ai_run_id,
+            )
+
+    async def consume_ai_reservation_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> UsageLedger:
+        return await self._consume_ai_reservation_in_session(
+            session,
+            owner_user_id,
+            task_id,
+            ai_run_id,
+        )
+
+    async def release_ai_reservation(
+        self,
+        owner_user_id: str,
+        task_id: str,
+    ) -> UsageLedger:
+        async with self.sessions.begin() as session:
+            return await self.release_ai_reservation_in_session(
+                session,
+                owner_user_id,
+                task_id,
+            )
+
+    async def release_ai_reservation_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+    ) -> UsageLedger:
+        reservation = await self._usage_reservation(
+            session,
+            owner_user_id,
+            task_id,
+        )
+        if reservation.state == "released":
+            return reservation
+        if reservation.state != "reserved":
+            raise TaskServiceError(
+                "AI_RESERVATION_STATE_INVALID",
+                "Consumed AI reservation cannot be released",
+                409,
+            )
+        reservation.state = "released"
+        reservation.updated_at = self.clock.now()
+        await session.flush()
+        return reservation
+
+    async def settle_ai_run(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> Task:
+        async with self.sessions.begin() as session:
+            return await self.settle_ai_run_in_session(
+                session,
+                owner_user_id,
+                task_id,
+                ai_run_id,
+            )
+
+    async def settle_ai_run_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> Task:
+        task = await session.scalar(
+            select(Task)
+            .where(
+                Task.id == task_id,
+                Task.owner_user_id == owner_user_id,
+                Task.active_ai_run_id == ai_run_id,
+            )
+            .with_for_update()
+        )
+        if task is None:
+            raise TaskClaimError(
+                "TASK_AI_RUN_STALE",
+                "AI run is missing or superseded",
+            )
+        if task.status == "running":
+            task.active_ai_run_id = None
+        elif task.status == "cancelled":
+            task.ai_cancel_acknowledged_at = (
+                task.ai_cancel_acknowledged_at or self.clock.now()
+            )
+            task.claim_token = None
+            task.claim_lease_expires_at = None
+        await session.flush()
+        return task
 
     async def is_cancel_requested(
         self,
@@ -633,9 +753,10 @@ class TaskService:
         admission: TaskAdmission,
         trace_id: str,
         now: datetime,
-    ) -> None:
+        task_id: str,
+    ) -> UsageLedger | None:
         if admission.usage_type is None:
-            return
+            return None
         owners = await authorized_owner_ids(session, owner_user_id)
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         daily_tasks = int(
@@ -643,6 +764,7 @@ class TaskService:
                 select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
                     UsageLedger.owner_user_id.in_(owners),
                     UsageLedger.usage_type == admission.usage_type,
+                    UsageLedger.state.in_(("reserved", "consumed")),
                     UsageLedger.created_at >= day_start,
                 )
             )
@@ -663,6 +785,7 @@ class TaskService:
             Decimal(
                 await session.scalar(
                     select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
+                        UsageLedger.state == "consumed",
                         UsageLedger.created_at >= day_start
                     )
                 )
@@ -679,18 +802,87 @@ class TaskService:
                 "AI task admission was denied",
                 429,
             )
-        session.add(
-            UsageLedger(
-                id=new_id("usg"),
-                owner_user_id=owner_user_id,
-                usage_type=admission.usage_type,
-                quantity=1,
-                cost_cny=admission.cost_cny,
-                trace_id=trace_id,
-                created_at=now,
-            )
+        return UsageLedger(
+            id=new_id("usg"),
+            owner_user_id=owner_user_id,
+            usage_type=admission.usage_type,
+            quantity=1,
+            cost_cny=admission.cost_cny,
+            trace_id=trace_id,
+            state="reserved",
+            task_id=task_id,
+            created_at=now,
+            updated_at=now,
         )
-        await session.flush()
+
+    async def _usage_reservation(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+    ) -> UsageLedger:
+        reservation = await session.scalar(
+            select(UsageLedger)
+            .where(
+                UsageLedger.owner_user_id == owner_user_id,
+                UsageLedger.task_id == task_id,
+                UsageLedger.usage_type == "ai_task",
+            )
+            .with_for_update()
+        )
+        if reservation is None:
+            raise TaskServiceError(
+                "AI_RESERVATION_NOT_FOUND",
+                "AI reservation not found",
+                404,
+            )
+        return reservation
+
+    async def _consume_ai_reservation_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        ai_run_id: str,
+    ) -> UsageLedger:
+        reservation = await self._usage_reservation(
+            session,
+            owner_user_id,
+            task_id,
+        )
+        if reservation.state == "released":
+            raise TaskServiceError(
+                "AI_RESERVATION_STATE_INVALID",
+                "Released AI reservation cannot be consumed",
+                409,
+            )
+        if reservation.state == "reserved":
+            reservation.state = "consumed"
+            reservation.ai_run_id = ai_run_id
+            reservation.updated_at = self.clock.now()
+            await session.flush()
+        return reservation
+
+    async def _release_reserved_usage_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+    ) -> None:
+        if task.usage_type != "ai_task":
+            return
+        reservation = await session.scalar(
+            select(UsageLedger)
+            .where(
+                UsageLedger.owner_user_id == task.owner_user_id,
+                UsageLedger.task_id == task.id,
+                UsageLedger.usage_type == "ai_task",
+                UsageLedger.state == "reserved",
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            reservation.state = "released"
+            reservation.updated_at = self.clock.now()
 
     async def _claimed_task(
         self,
@@ -737,6 +929,7 @@ class TaskService:
         task.finished_at = now
         task.result_ref = result_ref
         task.error_code = error_code
+        await self._release_reserved_usage_in_session(session, task)
         if status != "cancelled" or task.usage_type != "ai_task":
             task.claim_token = None
             task.claim_lease_expires_at = None

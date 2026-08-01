@@ -3,7 +3,7 @@ from datetime import timezone
 import pytest
 from sqlalchemy import select
 
-from app.db.models import TaskEvent, User
+from app.db.models import TaskEvent, UsageLedger, User
 from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
 
 
@@ -248,3 +248,110 @@ async def test_same_claim_cannot_replace_an_active_ai_run(sql_session_factory):
     assert conflict.value.code == "TASK_AI_RUN_CONFLICT"
     assert stored is not None
     assert stored.active_ai_run_id == "run_first"
+
+
+async def test_first_ai_run_consumes_one_reservation_and_later_run_reuses_it(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="match_resume",
+        queue="ai.batch",
+        trace_id="tr_two_runs",
+        idempotency_key="two-runs-1",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+
+    await service.register_ai_run("usr_tasks", task.id, claim.token, "run_match")
+    await service.settle_ai_run("usr_tasks", task.id, "run_match")
+    await service.register_ai_run(
+        "usr_tasks",
+        task.id,
+        claim.token,
+        "run_suggestions",
+    )
+
+    async with sql_session_factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(UsageLedger).where(
+                        UsageLedger.owner_user_id == "usr_tasks",
+                        UsageLedger.task_id == task.id,
+                    )
+                )
+            ).all()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].state == "consumed"
+    assert rows[0].quantity == 1
+    assert rows[0].ai_run_id == "run_match"
+
+
+async def test_rule_only_ai_task_releases_unused_reservation(sql_session_factory):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="rule_only",
+        queue="ai.interactive",
+        trace_id="tr_rule_only",
+        idempotency_key="rule-only-1",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+
+    await service.complete_task("usr_tasks", task.id, claim.token, "rule:done")
+
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(
+                UsageLedger.owner_user_id == "usr_tasks",
+                UsageLedger.task_id == task.id,
+            )
+        )
+
+    assert reservation is not None
+    assert reservation.state == "released"
+    assert reservation.ai_run_id is None
+
+
+async def test_settling_cancelled_ai_run_only_acknowledges_cancellation(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="cancel_settle",
+        queue="ai.interactive",
+        trace_id="tr_cancel_settle",
+        idempotency_key="cancel-settle-1",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+    await service.register_ai_run(
+        "usr_tasks",
+        task.id,
+        claim.token,
+        "run_cancel_settle",
+    )
+    await service.request_cancel("usr_tasks", task.id)
+
+    settled = await service.settle_ai_run(
+        "usr_tasks",
+        task.id,
+        "run_cancel_settle",
+    )
+
+    assert settled.status == "cancelled"
+    assert settled.active_ai_run_id == "run_cancel_settle"
+    assert settled.ai_cancel_acknowledged_at is not None
+    assert settled.claim_token is None

@@ -20,6 +20,7 @@ from sqlalchemy import (
     func,
     inspect,
     select,
+    text,
     update,
 )
 from sqlalchemy.exc import IntegrityError
@@ -136,6 +137,7 @@ def test_metadata_registers_migration_indexes():
             "ix_tasks_active_ai_run_id",
         },
         "outbox": {"ix_outbox_dispatch_ready"},
+        "usage_ledger": {"ix_usage_ledger_owner_state_created"},
     }
 
     for table_name, expected_names in expected_indexes.items():
@@ -143,6 +145,79 @@ def test_metadata_registers_migration_indexes():
             index.name for index in Base.metadata.tables[table_name].indexes
         }
         assert expected_names <= actual_names
+
+
+def test_ai_receipt_and_usage_reservation_metadata_is_constrained():
+    ai_runs = Base.metadata.tables["ai_runs"]
+    usage = Base.metadata.tables["usage_ledger"]
+
+    assert ai_runs.c.status.nullable is False
+    assert ai_runs.c.error_code.nullable is True
+    assert ai_runs.c.workflow_stage.nullable is False
+    assert usage.c.state.nullable is False
+    assert usage.c.task_id.nullable is True
+    assert usage.c.ai_run_id.nullable is True
+    assert usage.c.updated_at.nullable is False
+    state_checks = {
+        str(constraint.sqltext)
+        for constraint in usage.constraints
+        if getattr(constraint, "name", None) == "ck_usage_ledger_state"
+    }
+    assert state_checks == {"state IN ('reserved', 'consumed', 'released')"}
+
+
+def test_migration_0012_marks_legacy_usage_as_consumed(tmp_path, monkeypatch):
+    database_path = tmp_path / "legacy-usage.db"
+    monkeypatch.setenv(
+        "ALEMBIC_DATABASE_URL",
+        f"sqlite+aiosqlite:///{database_path}",
+    )
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0011")
+    engine = create_engine(f"sqlite:///{database_path}")
+    created_at = "2026-07-30 08:00:00"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, status, locale, created_at) "
+                "VALUES ('usr_legacy', 'active', 'zh-CN', :created_at)"
+            ),
+            {"created_at": created_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO usage_ledger "
+                "(id, owner_user_id, usage_type, quantity, cost_cny, trace_id, created_at) "
+                "VALUES ('usg_legacy', 'usr_legacy', 'ai_task', 1, 0.5, "
+                "'tr_legacy', :created_at)"
+            ),
+            {"created_at": created_at},
+        )
+    engine.dispose()
+
+    command.upgrade(config, "0012")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT state, task_id, ai_run_id, updated_at "
+                "FROM usage_ledger WHERE id = 'usg_legacy'"
+            )
+        ).one()
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text("DELETE FROM usage_ledger WHERE id = 'usg_legacy'")
+            )
+    engine.dispose()
+
+    assert row.state == "consumed"
+    assert row.task_id is None
+    assert row.ai_run_id is None
+    assert str(row.updated_at).startswith("2026-07-30 08:00:00")
 
 
 def test_memory_resource_repositories_are_owner_scoped():

@@ -790,6 +790,12 @@ class AiRun(OwnerMixin, Base):
             ["tasks.id", "tasks.owner_user_id"],
             name="fk_ai_run_task_owner",
         ),
+        UniqueConstraint(
+            "task_id",
+            "workflow_stage",
+            "input_hash",
+            name="uq_ai_run_task_stage_input",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -797,8 +803,11 @@ class AiRun(OwnerMixin, Base):
     task_id: Mapped[str] = mapped_column(String(64), nullable=False)
     workflow_type: Mapped[str] = mapped_column(String(64), nullable=False)
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    provider: Mapped[str] = mapped_column(String(64), nullable=False)
-    requested_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    workflow_stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128))
+    provider: Mapped[str | None] = mapped_column(String(64))
+    requested_model: Mapped[str | None] = mapped_column(String(128))
     response_model: Mapped[str | None] = mapped_column(String(128))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_token_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -885,13 +894,40 @@ class IdempotencyRecord(OwnerMixin, Base):
 
 class UsageLedger(OwnerMixin, Base):
     __tablename__ = "usage_ledger"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["task_id", "owner_user_id"],
+            ["tasks.id", "tasks.owner_user_id"],
+            name="fk_usage_ledger_task_owner",
+        ),
+        UniqueConstraint(
+            "task_id",
+            "owner_user_id",
+            "usage_type",
+            name="uq_usage_ledger_task_owner_type",
+        ),
+        CheckConstraint(
+            "state IN ('reserved', 'consumed', 'released')",
+            name="ck_usage_ledger_state",
+        ),
+        Index(
+            "ix_usage_ledger_owner_state_created",
+            "owner_user_id",
+            "state",
+            "created_at",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     usage_type: Mapped[str] = mapped_column(String(64), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     cost_cny: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
     trace_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="consumed")
+    task_id: Mapped[str | None] = mapped_column(String(64))
+    ai_run_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class AuditLog(OwnerMixin, Base):
@@ -1184,10 +1220,26 @@ event.listen(
     "after_create",
     DDL(
         """
-        CREATE TRIGGER trg_usage_ledger_no_update
+        CREATE TRIGGER trg_usage_ledger_guard_update
         BEFORE UPDATE ON usage_ledger
+        WHEN NOT (
+          OLD.state = 'reserved'
+          AND NEW.state IN ('consumed', 'released')
+          AND NEW.id = OLD.id
+          AND NEW.owner_user_id = OLD.owner_user_id
+          AND NEW.usage_type = OLD.usage_type
+          AND NEW.quantity = OLD.quantity
+          AND NEW.cost_cny = OLD.cost_cny
+          AND NEW.trace_id = OLD.trace_id
+          AND NEW.task_id IS OLD.task_id
+          AND NEW.created_at = OLD.created_at
+          AND (
+            (NEW.state = 'consumed' AND NEW.ai_run_id IS NOT NULL)
+            OR (NEW.state = 'released' AND NEW.ai_run_id IS NULL)
+          )
+        )
         BEGIN
-          SELECT RAISE(ABORT, 'usage ledger is append-only');
+          SELECT RAISE(ABORT, 'invalid usage ledger state transition');
         END
         """
     ).execute_if(dialect="sqlite"),

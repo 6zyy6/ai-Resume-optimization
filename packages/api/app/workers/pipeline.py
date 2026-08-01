@@ -37,7 +37,7 @@ class TaskAiCancellation(AiCancellation):
         )
 
     async def acknowledge_cancel(self, ai_run_id: str) -> None:
-        await self.task_service.acknowledge_ai_cancel(
+        await self.task_service.settle_ai_run(
             self.claim.owner_user_id,
             self.claim.task_id,
             ai_run_id,
