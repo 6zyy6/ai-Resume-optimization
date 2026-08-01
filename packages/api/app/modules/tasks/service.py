@@ -854,6 +854,7 @@ class TaskService:
         cost = Decimal(
             await session.scalar(
                 select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
+                    UsageLedger.usage_type == "ai_task",
                     UsageLedger.state.in_(("reserved", "consumed")),
                     UsageLedger.created_at >= day_start,
                 )

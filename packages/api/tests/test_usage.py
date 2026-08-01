@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from app.main import app
 from app.db.models import Task, UsageLedger, User
+from app.db.repositories import SqlAlchemyUsageRepository
 from app.db.task3_repositories import SqlUsageRepository
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
@@ -402,6 +403,44 @@ async def test_in_memory_decision_counts_reserved_cost_but_summary_hides_it(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("state", ("consumed", "reserved"))
+async def test_in_memory_ai_cost_ignores_other_usage_types(
+    usage_harness,
+    state,
+):
+    service, repository = usage_harness
+    now = service.clock.now()
+    repository.rows.append(
+        UsageRecord(
+            id=f"usg_other_{state}",
+            owner_user_id="usr_other_usage",
+            usage_type="file_export",
+            quantity=1,
+            cost_cny=Decimal("100.00"),
+            trace_id=f"tr_other_{state}",
+            state=state,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    summary = await service.summary("usr_ai_decision")
+    decision = await service.decide_ai_task("usr_ai_decision")
+    admitted = await service.admit_ai_task(
+        "usr_ai_admission",
+        "tr_ai_admission",
+        "ai-admission",
+        cost_cny=Decimal("100.00"),
+    )
+
+    assert await repository.daily_cost(service._day_start()) == Decimal("0")
+    assert summary.global_cost_cny == Decimal("0")
+    assert decision.allowed is True
+    assert admitted.allowed is True
+    assert await repository.admission_cost(service._day_start()) == Decimal("100.00")
+
+
+@pytest.mark.anyio
 async def test_atomic_admission_replays_same_key_with_same_semantic_input(
     usage_harness,
 ):
@@ -541,6 +580,69 @@ async def test_sql_decision_counts_reserved_cost_but_summary_hides_it(
     assert decision.allowed is False
     assert decision.reason == "AI_LIMIT_REACHED"
     assert summary.global_cost_cny == Decimal("0")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("state", ("consumed", "reserved"))
+async def test_sql_ai_cost_ignores_other_usage_types_across_admission_paths(
+    sql_session_factory,
+    state,
+):
+    clock = FakeClock()
+    now = clock.now()
+    async with sql_session_factory.begin() as session:
+        session.add_all(
+            [
+                User(id="usr_other_cost"),
+                User(id="usr_legacy_ai"),
+                User(id="usr_task_ai"),
+            ]
+        )
+        await session.flush()
+        await SqlAlchemyUsageRepository(session).append(
+            {
+                "id": f"usg_other_cost_{state}",
+                "owner_user_id": "usr_other_cost",
+                "usage_type": "file_export",
+                "quantity": 1,
+                "cost_cny": Decimal("100.00"),
+                "trace_id": f"tr_other_cost_{state}",
+                "state": state,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    repository = SqlUsageRepository(sql_session_factory)
+    usage_service = UsageService(repository, clock)
+
+    summary = await usage_service.summary("usr_legacy_ai")
+    decision = await usage_service.decide_ai_task("usr_legacy_ai")
+    legacy = await usage_service.admit_ai_task(
+        "usr_legacy_ai",
+        "tr_legacy_ai",
+        "legacy-ai",
+        cost_cny=Decimal("1.00"),
+    )
+    task = await TaskService(sql_session_factory, clock=clock).create_task(
+        "usr_task_ai",
+        task_type="parse_jd",
+        queue="ai.interactive",
+        trace_id="tr_task_ai",
+        idempotency_key="task-ai",
+        admission=TaskAdmission.ai(Decimal("1.00")),
+    )
+    await TaskService(sql_session_factory, clock=clock).consume_ai_reservation(
+        "usr_task_ai",
+        task.id,
+        "run_task_ai",
+    )
+
+    assert summary.global_cost_cny == Decimal("0")
+    assert decision.allowed is True
+    assert legacy.allowed is True
+    assert task.status == "queued"
+    assert await repository.daily_cost(now.replace(hour=0)) == Decimal("1.00")
+    assert await repository.admission_cost(now.replace(hour=0)) == Decimal("2.00")
 
 
 async def _seed_global_cost_boundary(

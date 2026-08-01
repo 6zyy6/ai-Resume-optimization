@@ -150,7 +150,9 @@ class InMemoryUsageRepository:
             (
                 row.cost_cny
                 for row in self.rows
-                if row.state == "consumed" and row.created_at >= since
+                if row.usage_type == "ai_task"
+                and row.state == "consumed"
+                and row.created_at >= since
             ),
             start=Decimal("0"),
         )
@@ -160,7 +162,9 @@ class InMemoryUsageRepository:
             (
                 row.cost_cny
                 for row in self.rows
-                if row.state == "reserved" and row.created_at >= since
+                if row.usage_type == "ai_task"
+                and row.state == "reserved"
+                and row.created_at >= since
             ),
             start=Decimal("0"),
         )
