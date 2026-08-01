@@ -166,6 +166,12 @@ class InMemoryUsageRepository:
         cost_cny: Decimal,
         body_hash: str,
     ) -> "UsageDecision":
+        if cost_cny < 0:
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost cannot be negative",
+                422,
+            )
         async with self._admission_lock:
             idempotency_ref = (owner_user_id, idempotency_key)
             existing = self.idempotency.get(idempotency_ref)
@@ -178,8 +184,9 @@ class InMemoryUsageRepository:
                         409,
                     )
                 return decision
-            decision = evaluate_usage(
+            decision = evaluate_admission_usage(
                 await self.daily_cost(day_start),
+                cost_cny,
                 await self.count_ai_tasks(owner_user_id, day_start),
                 await self.running_ai_tasks(owner_user_id),
                 retry_after,

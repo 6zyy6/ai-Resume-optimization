@@ -130,6 +130,12 @@ class TaskService:
             raise TypeError("admission must be a TaskAdmission")
         if queue not in QUEUE_NAMES:
             raise TaskServiceError("TASK_QUEUE_INVALID", "Unsupported task queue", 422)
+        if admission.cost_cny < 0:
+            raise TaskServiceError(
+                "TASK_ADMISSION_INVALID",
+                "AI task cost cannot be negative",
+                422,
+            )
         if (
             admission.usage_type not in SUPPORTED_ADMISSION_USAGE_TYPES
             or (

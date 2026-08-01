@@ -49,11 +49,12 @@ from app.modules.privacy.service import (
     PrivacyService,
     PrivacyTask,
 )
-from app.modules.tasks.service import TaskService
+from app.modules.tasks.service import TaskAdmission, TaskService
 from app.modules.usage.service import (
     InMemoryUsageRepository,
     UsageAdmissionError,
     UsageService,
+    admission_body_hash,
 )
 from app.modules.users.service import IdentityRecord, UserAccount
 from app.workers.execution import TaskExecutor, resolve_operation
@@ -386,6 +387,110 @@ async def test_sql_usage_adapter_persists_append_only_ledger(sql_session_factory
 
 
 @pytest.mark.anyio
+async def test_sql_decision_excludes_released_usage_from_daily_limit(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_released_daily"))
+        await session.flush()
+        session.add(
+            UsageLedger(
+                id="usg_released_daily",
+                owner_user_id="usr_released_daily",
+                usage_type="ai_task",
+                quantity=20,
+                cost_cny=Decimal("0"),
+                trace_id="tr_released_daily",
+                state="released",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    repository = SqlUsageRepository(sql_session_factory)
+    service = UsageService(
+        repository,
+        type("Clock", (), {"now": lambda _: now})(),
+    )
+
+    decision = await service.decide_ai_task("usr_released_daily")
+
+    assert decision.allowed is True
+    assert await repository.count_ai_tasks("usr_released_daily", now) == 0
+
+
+@pytest.mark.anyio
+async def test_sql_usage_reports_task_service_running_task_and_cancel_release(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_running_summary"))
+    clock = type("Clock", (), {"now": lambda _: now})()
+    task_service = TaskService(sql_session_factory, clock=clock)
+    usage_service = UsageService(SqlUsageRepository(sql_session_factory), clock)
+    task = await task_service.create_task(
+        "usr_running_summary",
+        task_type="parse_jd",
+        queue="ai.interactive",
+        trace_id="tr_running_summary",
+        idempotency_key="running-summary",
+        admission=TaskAdmission.ai(),
+    )
+
+    running = await usage_service.summary("usr_running_summary")
+    cancelled = await task_service.request_cancel("usr_running_summary", task.id)
+    after_cancel = await usage_service.summary("usr_running_summary")
+    async with sql_session_factory() as session:
+        reservation_state = await session.scalar(
+            select(UsageLedger.state).where(UsageLedger.task_id == task.id)
+        )
+
+    assert running.ai_tasks_running == 1
+    assert cancelled.status == "cancelled"
+    assert reservation_state == "released"
+    assert after_cancel.ai_tasks_running == 0
+
+
+@pytest.mark.anyio
+async def test_sql_legacy_admission_counts_task_service_concurrency(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_mixed_concurrency"))
+    clock = type("Clock", (), {"now": lambda _: now})()
+    task_service = TaskService(sql_session_factory, clock=clock)
+    usage_service = UsageService(SqlUsageRepository(sql_session_factory), clock)
+    for index in range(2):
+        await task_service.create_task(
+            "usr_mixed_concurrency",
+            task_type="parse_jd",
+            queue="ai.interactive",
+            trace_id=f"tr_mixed_{index}",
+            idempotency_key=f"mixed-{index}",
+            admission=TaskAdmission.ai(),
+        )
+
+    decision = await usage_service.decide_ai_task("usr_mixed_concurrency")
+    admission = await usage_service.admit_ai_task(
+        "usr_mixed_concurrency",
+        "tr_mixed_third",
+        "mixed-third",
+    )
+    summary = await usage_service.summary("usr_mixed_concurrency")
+    async with sql_session_factory() as session:
+        task_count = await session.scalar(select(func.count()).select_from(Task))
+
+    assert decision.allowed is False
+    assert decision.reason == "AI_CONCURRENCY_LIMIT_REACHED"
+    assert admission.allowed is False
+    assert admission.reason == "AI_CONCURRENCY_LIMIT_REACHED"
+    assert summary.ai_tasks_running == 2
+    assert task_count == 2
+
+
+@pytest.mark.anyio
 async def test_sql_atomic_admission_serializes_requests_at_daily_boundary(
     sql_session_factory,
 ):
@@ -582,6 +687,43 @@ async def test_sql_admission_rejects_projected_cost_above_global_limit(
     assert decision.task_id is None
     assert task_count == 0
     assert ledger_count == 1
+
+
+@pytest.mark.anyio
+async def test_sql_admission_rejects_negative_cost_without_writes(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_sql_negative"))
+    repository = SqlUsageRepository(sql_session_factory)
+
+    with pytest.raises(UsageAdmissionError) as caught:
+        await repository.admit_ai_task(
+            "usr_sql_negative",
+            "tr_sql_negative",
+            "sql-negative-key",
+            now,
+            now.replace(hour=0, minute=0, second=0, microsecond=0),
+            16 * 60 * 60,
+            "generic",
+            False,
+            Decimal("-1.00"),
+            admission_body_hash("generic", False, Decimal("-1.00")),
+        )
+
+    assert caught.value.code == "USAGE_COST_INVALID"
+    assert caught.value.status_code == 422
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(UsageLedger))
+            == 0
+        )
+        assert (
+            await session.scalar(select(func.count()).select_from(IdempotencyRecord))
+            == 0
+        )
 
 
 async def merged_admission_harness(

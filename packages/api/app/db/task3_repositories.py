@@ -357,6 +357,7 @@ class SqlUsageRepository:
                     select(func.coalesce(func.sum(UsageLedger.quantity), 0)).where(
                         UsageLedger.owner_user_id.in_(owner_ids),
                         UsageLedger.usage_type == "ai_task",
+                        UsageLedger.state.in_(("reserved", "consumed")),
                         UsageLedger.created_at >= since,
                     )
                 )
@@ -389,7 +390,7 @@ class SqlUsageRepository:
                 await session.scalar(
                     select(func.count()).select_from(Task).where(
                         Task.owner_user_id.in_(owner_ids),
-                        Task.type == "ai_task",
+                        Task.usage_type == "ai_task",
                         Task.status.in_(("queued", "running")),
                     )
                 )
@@ -419,6 +420,12 @@ class SqlUsageRepository:
         cost_cny: Decimal,
         body_hash: str,
     ) -> UsageDecision:
+        if cost_cny < 0:
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost cannot be negative",
+                422,
+            )
         route = "/internal/ai-task-admissions"
         async with self.sessions() as session:
             if session.bind is not None and session.bind.dialect.name == "sqlite":
@@ -482,7 +489,7 @@ class SqlUsageRepository:
                     await session.scalar(
                         select(func.count()).select_from(Task).where(
                             Task.owner_user_id.in_(owner_ids),
-                            Task.type == "ai_task",
+                            Task.usage_type == "ai_task",
                             Task.status.in_(("queued", "running")),
                         )
                     )

@@ -244,6 +244,47 @@ async def test_atomic_admission_at_global_stop_creates_no_task_or_ledger_row(
 
 
 @pytest.mark.anyio
+async def test_in_memory_admission_rejects_projected_cost_above_global_limit(
+    usage_harness,
+):
+    service, repository = usage_harness
+    repository.set_daily_cost(Decimal("99.50"))
+
+    decision = await service.admit_ai_task(
+        "usr_1",
+        "tr_projected",
+        "projected-key",
+        cost_cny=Decimal("1.00"),
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "AI_LIMIT_REACHED"
+    assert repository.tasks == {}
+    assert repository.rows == []
+
+
+@pytest.mark.anyio
+async def test_in_memory_admission_rejects_negative_cost_without_writes(
+    usage_harness,
+):
+    service, repository = usage_harness
+
+    with pytest.raises(UsageAdmissionError) as caught:
+        await service.admit_ai_task(
+            "usr_1",
+            "tr_negative",
+            "negative-key",
+            cost_cny=Decimal("-1.00"),
+        )
+
+    assert caught.value.code == "USAGE_COST_INVALID"
+    assert caught.value.status_code == 422
+    assert repository.tasks == {}
+    assert repository.rows == []
+    assert repository.idempotency == {}
+
+
+@pytest.mark.anyio
 async def test_atomic_admission_replays_same_key_with_same_semantic_input(
     usage_harness,
 ):
@@ -429,6 +470,34 @@ async def test_task_admission_rejects_projected_cost_above_global_limit(
     assert caught.value.code == "AI_LIMIT_REACHED"
     assert task_count == 0
     assert ledger_count == 2
+
+
+@pytest.mark.anyio
+async def test_task_admission_rejects_negative_cost_without_writes(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_negative_task_cost"))
+    service = TaskService(sql_session_factory, clock=FakeClock())
+
+    with pytest.raises(TaskServiceError) as caught:
+        await service.create_task(
+            "usr_negative_task_cost",
+            task_type="parse_jd",
+            queue="ai.interactive",
+            trace_id="tr_negative_task_cost",
+            idempotency_key="negative-task-cost",
+            admission=TaskAdmission.ai(Decimal("-1.00")),
+        )
+
+    assert caught.value.code == "TASK_ADMISSION_INVALID"
+    assert caught.value.status_code == 422
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(UsageLedger))
+            == 0
+        )
 
 
 @pytest.mark.anyio
