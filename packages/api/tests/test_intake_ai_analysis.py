@@ -52,7 +52,6 @@ from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.service import (
     IntakeError,
     IntakeService,
-    _number_tokens,
     _validated_candidates,
 )
 from app.modules.tasks.service import TaskAdmission
@@ -473,7 +472,7 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
     def candidates(input):
         valid = {
             "kind": "result",
-            "value": "课程项目提升50%",
+            "value": valid_slice,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 3, "end": 14},
             "source_hash": hashlib.sha256(valid_slice.encode()).hexdigest(),
@@ -516,7 +515,7 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
 
     assert result == answer_id
     assert _run(_candidate_values(sessions, answer_id)) == [
-        ("result", "课程项目提升50%", 3, 14, "accept_or_edit"),
+        ("result", valid_slice, 3, 14, "accept_or_edit"),
         ("result", "😀课程项目", 2, 7, "accept_or_edit"),
     ]
     assert _run(_analysis_state(sessions, answer_id)) == (
@@ -533,7 +532,7 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
     assert _run(_model_count(sessions, AiTraceEvent)) == 7
     trace_payload = _run(_trace_payload(sessions))
     assert answer_text not in trace_payload
-    assert "课程项目提升50%" not in trace_payload
+    assert valid_slice not in trace_payload
 
 
 def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
@@ -542,16 +541,16 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
     """A mixed answer is substantive, but its negative clause is not a positive fact."""
     client, sessions, application = intake_analysis_app
     answer_text = "没有实习，但完成了课程项目"
-    positive = answer_text[5:13]
+    positive = answer_text[6:13]
     negative = answer_text[0:4]
 
     def candidates(input):
         return [
             {
                 "kind": "experience",
-                "value": "完成课程项目",
+                "value": positive,
                 "source_answer_id": input.payload.answer_id,
-                "source_range": {"start": 5, "end": 13},
+                "source_range": {"start": 6, "end": 13},
                 "source_hash": hashlib.sha256(positive.encode()).hexdigest(),
                 "risk_flags": [],
             },
@@ -565,7 +564,7 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
             },
             {
                 "kind": "experience",
-                "value": "完成课程项目",
+                "value": answer_text,
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 0, "end": len(answer_text)},
                 "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
@@ -590,7 +589,7 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
     )
 
     assert _run(_candidate_values(sessions, answer_id)) == [
-        ("experience", "完成课程项目", 5, 13, "accept_or_edit")
+        ("experience", positive, 6, 13, "accept_or_edit")
     ]
 
 
@@ -612,7 +611,7 @@ def test_negative_candidate_slices_never_become_positive_candidates(
     intake_analysis_app,
     negative_slice,
 ):
-    """A prefixed negation must not be lost when validating a positive-looking value."""
+    """An exact negative source span must never become a positive fact."""
     client, sessions, application = intake_analysis_app
     answer_text = f"补充说明：{negative_slice}，但完成了汇报"
     start = answer_text.index(negative_slice)
@@ -621,7 +620,7 @@ def test_negative_candidate_slices_never_become_positive_candidates(
     def candidates(input):
         return [{
             "kind": "role",
-            "value": "负责项目",
+            "value": negative_slice,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": start, "end": end},
             "source_hash": hashlib.sha256(negative_slice.encode()).hexdigest(),
@@ -665,15 +664,17 @@ def test_any_explicit_negative_marker_blocks_automatic_candidates(
     client, sessions, application = intake_analysis_app
     answer_text = f"补充说明：{negative_slice}，但完成了课程项目"
     start = answer_text.index(negative_slice)
-    end = start + len(negative_slice)
+    candidate_start = answer_text.index(value, start)
+    candidate_end = candidate_start + len(value)
+    candidate_slice = answer_text[candidate_start:candidate_end]
 
     def candidates(input):
         return [{
             "kind": "role",
             "value": value,
             "source_answer_id": input.payload.answer_id,
-            "source_range": {"start": start, "end": end},
-            "source_hash": hashlib.sha256(negative_slice.encode()).hexdigest(),
+            "source_range": {"start": candidate_start, "end": candidate_end},
+            "source_hash": hashlib.sha256(candidate_slice.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -718,20 +719,162 @@ def test_any_explicit_negative_marker_blocks_automatic_candidates(
     ],
 )
 def test_negative_marker_inside_candidate_lexeme_is_not_rejected(term):
-    valid, invalid = _validate_candidate_slice(f"我完成了{term}", term)
+    answer = f"我完成了{term}"
+    start = answer.index(term)
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        term,
+        start=start,
+        end=start + len(term),
+    )
 
     assert len(valid) == 1
     assert invalid == []
 
 
-def test_candidate_without_shared_cjk_core_is_rejected():
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("没有负责项目", "负责项目"),
+        ("并未实际参与项目", "参与项目"),
+        ("我不负责项目", "负责项目"),
+        ("我无实际项目经验", "项目经验"),
+        ("我未获得奖项", "获得奖项"),
+    ],
+)
+def test_source_range_cannot_crop_a_negative_prefix(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("我从未在任何课程社团或实习中真正独立直接负责项目", "负责项目"),
+        ("我未曾以任何形式真正负责项目", "负责项目"),
+        ("我不再以任何身份继续负责项目", "负责项目"),
+        ("I did not independently lead the project", "lead the project"),
+        ("I never independently owned delivery", "owned delivery"),
+        ("I wasn't directly responsible", "responsible"),
+    ],
+)
+def test_same_clause_negation_has_no_distance_or_language_bypass(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "负责项目，但这并不是我的职责",
+        "负责项目，这不是我的职责",
+        "负责项目，并非由我完成",
+        "负责项目，后续工作与我无关",
+    ],
+)
+def test_same_sentence_responsibility_disclaimer_rejects_candidate(answer):
+    evidence = "负责项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=0,
+        end=len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_positive_span_after_adversative_is_not_tainted_by_prior_negation():
+    answer = "没有实习，但完成了课程项目。"
+    evidence = "完成了课程项目"
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert len(valid) == 1
+    assert invalid == []
+
+
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("完成课程项目", "独立完成课程项目"),
+        ("完成课程项目", "完成课程项目并负责汇报"),
+        ("完成课程项目", "完成高质量课程项目"),
+        ("完成课程项目", "完成课程项目获得好评"),
+        ("熟悉Python", "熟悉Java"),
+        ("掌握SQL", "掌握AWS"),
+        ("下降-5%", "下降5%"),
+        ("服务兩人", "服务二人"),
+        ("增长双倍", "增长二倍"),
+        ("排名Ⅱ", "排名二"),
+    ],
+)
+def test_candidate_value_must_equal_its_evidence_slice(source, value):
+    valid, invalid = _validate_candidate_slice(source, value)
+
+    assert valid == []
+    assert invalid == [(0, "source_value_mismatch")]
+
+
+def test_edit_only_candidate_cannot_bypass_exact_evidence():
+    valid, invalid = _validate_candidate_slice(
+        "负责课程项目",
+        "独立负责课程项目",
+        risk_flags=("conflict",),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "source_value_mismatch")]
+
+
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("  完成   项目。 ", "完成 项目"),
+        ("熟悉Ｐｙｔｈｏｎ！", "熟悉Python"),
+    ],
+)
+def test_evidence_comparison_allows_only_documented_text_normalization(source, value):
+    valid, invalid = _validate_candidate_slice(source, value)
+
+    assert len(valid) == 1
+    assert invalid == []
+
+
+def test_candidate_without_exact_source_value_is_rejected():
     valid, invalid = _validate_candidate_slice(
         "我完成了课程项目",
         "负责用户调研",
     )
 
     assert valid == []
-    assert invalid == [(0, "unsupported_lexical")]
+    assert invalid == [(0, "source_value_mismatch")]
 
 
 def test_negation_alignment_preserves_4900_direct_negative_combinations():
@@ -771,6 +914,8 @@ def test_negation_alignment_preserves_4900_direct_negative_combinations():
                     valid, _ = _validate_candidate_slice(
                         f"{marker}{candidate}",
                         candidate,
+                        start=len(marker),
+                        end=len(marker) + len(candidate),
                     )
                     rejected += not valid
 
@@ -780,13 +925,13 @@ def test_negation_alignment_preserves_4900_direct_negative_combinations():
 @pytest.mark.parametrize(
     ("source", "value", "expected_count"),
     [
-        ("服务了1,000人", "服务了1000人", 1),
+        ("服务了1,000人", "服务了1000人", 0),
         ("提升.5%", "提升.5%", 1),
         ("下降-5%", "下降5%", 0),
         ("提升5%", "提升.5%", 0),
     ],
 )
-def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
+def test_numeric_candidate_value_requires_exact_source_evidence(
     intake_analysis_app,
     source,
     value,
@@ -822,7 +967,7 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
 
     assert _run(_model_count(sessions, FactCandidate)) == expected_count
     if expected_count == 0:
-        assert "unsupported_numeric" in _run(_trace_payload(sessions))
+        assert "source_value_mismatch" in _run(_trace_payload(sessions))
 
 
 @pytest.mark.parametrize(
@@ -846,9 +991,9 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
         ("服务十余人", "服务二十余人", 0),
         ("GPA四点五", "GPA四点五", 1),
         ("GPA四点五", "GPA三点五", 0),
-        ("月薪两万", "月薪二万", 1),
-        ("服务两人", "服务二人", 1),
-        ("服务一〇人", "服务一零人", 1),
+        ("月薪两万", "月薪二万", 0),
+        ("服务两人", "服务二人", 0),
+        ("服务一〇人", "服务一零人", 0),
         ("服务十多人", "服务二十多人", 0),
         ("增长三成", "增长五成", 0),
         ("提升五％", "提升十％", 0),
@@ -864,9 +1009,9 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
         ("月薪壹萬", "月薪贰萬", 0),
         ("服务俩人", "服务俩人", 1),
         ("增长双倍", "增长双倍", 1),
-        ("完成廿项", "完成二十项", 1),
-        ("完成卅项", "完成三十项", 1),
-        ("月薪壹萬", "月薪一万", 1),
+        ("完成廿项", "完成二十项", 0),
+        ("完成卅项", "完成三十项", 0),
+        ("月薪壹萬", "月薪一万", 0),
         ("负责团队协作", "服务几人", 0),
         ("负责团队协作", "提升百分之几", 0),
         ("负责团队协作", "获得第几名", 0),
@@ -876,7 +1021,7 @@ def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
         ("推动数字化项目", "推动数字化项目", 1),
     ],
 )
-def test_chinese_numeric_tokens_require_exact_source_support(
+def test_chinese_numeric_value_requires_exact_source_evidence(
     intake_analysis_app,
     source,
     value,
@@ -911,10 +1056,10 @@ def test_chinese_numeric_tokens_require_exact_source_support(
 
     assert _run(_model_count(sessions, FactCandidate)) == expected_count
     if expected_count == 0:
-        assert "unsupported_numeric" in _run(_trace_payload(sessions))
+        assert "source_value_mismatch" in _run(_trace_payload(sessions))
 
 
-def test_simplified_chinese_numeric_fuzz_keeps_1920_mismatches_distinct():
+def test_simplified_chinese_numeric_fuzz_rejects_1920_value_mismatches():
     numbers = (
         "零",
         "一",
@@ -965,9 +1110,13 @@ def test_simplified_chinese_numeric_fuzz_keeps_1920_mismatches_distinct():
         other = numbers[(index + 1) % len(numbers)]
         for suffix in suffixes:
             for stem in stems:
-                source_tokens = _number_tokens(f"{stem}{number}{suffix}")
-                candidate_tokens = _number_tokens(f"{stem}{other}{suffix}")
-                mismatches += not candidate_tokens.issubset(source_tokens)
+                valid, invalid = _validate_candidate_slice(
+                    f"{stem}{number}{suffix}",
+                    f"{stem}{other}{suffix}",
+                )
+                mismatches += not valid and invalid == [
+                    (0, "source_value_mismatch")
+                ]
 
     assert mismatches == 1_920
 
@@ -1973,7 +2122,16 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def _validate_candidate_slice(source, value):
+def _validate_candidate_slice(
+    source,
+    value,
+    *,
+    start=0,
+    end=None,
+    risk_flags=(),
+):
+    end = len(source) if end is None else end
+    source_slice = source[start:end]
     answer_id = "ians_guard_unit"
     answer = IntakeAnswer(
         id=answer_id,
@@ -1989,9 +2147,9 @@ def _validate_candidate_slice(source, value):
             "kind": "experience",
             "value": value,
             "source_answer_id": answer_id,
-            "source_range": {"start": 0, "end": len(source)},
-            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
-            "risk_flags": [],
+            "source_range": {"start": start, "end": end},
+            "source_hash": hashlib.sha256(source_slice.encode()).hexdigest(),
+            "risk_flags": risk_flags,
         },
         strict=False,
     )
