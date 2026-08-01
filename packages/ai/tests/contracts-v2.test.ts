@@ -134,13 +134,12 @@ describe("V2 workflow contracts", () => {
     expect(Value.Check(WorkflowInputSchema, input)).toBe(true);
   });
 
-  it("requires a canonical source hash on every intake fact candidate", () => {
+  it("keeps intake source hashing out of the model output contract", () => {
     const candidate = {
       kind: "skill",
       value: "Python",
       source_answer_id: "answer_1",
       source_range: { start: 4, end: 10 },
-      source_hash: "d".repeat(64),
       risk_flags: [],
     };
     const output = {
@@ -151,10 +150,12 @@ describe("V2 workflow contracts", () => {
 
     expect(Value.Check(WORKFLOW_OUTPUT_SCHEMAS.analyze_intake_answer, output))
       .toBe(true);
-    const { source_hash: _, ...withoutHash } = candidate;
     expect(Value.Check(
       WORKFLOW_OUTPUT_SCHEMAS.analyze_intake_answer,
-      { ...output, fact_candidates: [withoutHash] },
+      {
+        ...output,
+        fact_candidates: [{ ...candidate, source_hash: "d".repeat(64) }],
+      },
     )).toBe(false);
   });
 

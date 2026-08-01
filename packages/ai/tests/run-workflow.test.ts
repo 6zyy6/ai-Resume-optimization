@@ -7,6 +7,7 @@ import type {
   TraceEvent,
   WorkflowInput,
 } from "../src/contracts.js";
+import { resolvePrompt } from "../src/workflows/prompt-registry.js";
 import { validateRuntimeOutput } from "../src/workflows/postflight.js";
 import { createFixtureRuntime, runWorkflow } from "../src/workflows/run-workflow.js";
 
@@ -37,7 +38,7 @@ function input(workflowType: WorkflowInput["workflow_type"]): WorkflowInput {
 
 function output(workflowType: WorkflowInput["workflow_type"]): unknown {
   switch (workflowType) {
-    case "analyze_intake_answer": return { fact_candidates: [{ kind: "skill", value: "Python", source_answer_id: "answer_1", source_range: { start: 2, end: 8 }, source_hash: "d".repeat(64), risk_flags: [] }], missing_slots: [], question_candidate: { reason: "补充成果", slot: "impact", text: "结果如何？", related_fact_refs: ["fact_1"] } };
+    case "analyze_intake_answer": return { fact_candidates: [{ kind: "skill", value: "Python", source_answer_id: "answer_1", source_range: { start: 2, end: 8 }, risk_flags: [] }], missing_slots: [], question_candidate: { reason: "补充成果", slot: "impact", text: "结果如何？", related_fact_refs: ["fact_1"] } };
     case "compose_resume_draft": return { sections: [{ type: "experience", title: "实习", bullets: [{ text: "使用 Python 开发服务", atomic_claims: [{ text: "使用 Python", fact_refs: ["fact_1"], claim_order: 0 }], risk_flags: [] }] }] };
     case "parse_jd": return { requirements: [{ category: "must_have", priority: 1, value: "Python", source_range: { start: 0, end: 6 }, explicitness: "explicit", confidence_band: "high" }] };
     case "match_resume_to_jd": return { matches: [{ requirement_ref: "requirement_1", category: "direct", fact_refs: ["fact_1"], resume_target_paths: ["sections[0]"], reason_code: "fact_match" }] };
@@ -96,6 +97,14 @@ function usageEvent(
 }
 
 describe("runWorkflow", () => {
+  it("asks intake analysis for complete positive atomic-clause evidence", () => {
+    const prompt = resolvePrompt(input("analyze_intake_answer")).text;
+
+    expect(prompt).toContain("complete positive atomic clause");
+    expect(prompt).toContain("value and source_range");
+    expect(prompt).not.toContain("source_hash must");
+  });
+
   it.each([
     "analyze_intake_answer",
     "compose_resume_draft",

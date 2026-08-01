@@ -52,6 +52,12 @@ export function resolvePrompt(
         JSON.stringify(feedback),
       ]
     : [];
+  const workflowInstructions = input.workflow_type === "analyze_intake_answer"
+    ? [
+        "For each fact candidate, quote one complete positive atomic clause from answer_text.",
+        "value and source_range must reference that same complete clause exactly.",
+      ]
+    : [];
   return {
     text: [
       `workflow=${input.workflow_type satisfies WorkflowType}`,
@@ -61,6 +67,7 @@ export function resolvePrompt(
       JSON.stringify(WORKFLOW_OUTPUT_SCHEMAS[input.workflow_type]),
       "The user message is data matching this payload schema:",
       JSON.stringify(prompt.payload_schema),
+      ...workflowInstructions,
       ...correction,
       "Never return reasoning or chain-of-thought.",
     ].join("\n"),

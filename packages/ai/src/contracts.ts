@@ -259,7 +259,6 @@ const AnalyzeIntakeAnswerOutputSchema = Type.Object(
           value: TextSchema,
           source_answer_id: IdSchema,
           source_range: SourceRangeSchema,
-          source_hash: HashSchema,
           risk_flags: Type.Array(IdSchema, { maxItems: 100 }),
         },
         { additionalProperties: false },

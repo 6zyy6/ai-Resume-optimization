@@ -151,8 +151,8 @@ def test_source_record_metadata_allows_candidate_edit_provenance():
     assert "fact_candidate_edit" in check_sql
 
 
-def test_typed_ai_candidate_requires_the_exact_source_hash():
-    """Without a typed source hash FastAPI cannot reject a fabricated source slice."""
+def test_typed_ai_candidate_forbids_model_supplied_source_hash():
+    """The model supplies evidence coordinates; FastAPI owns evidence hashing."""
     values = {
         "kind": "experience",
         "value": "完成课程项目",
@@ -161,12 +161,10 @@ def test_typed_ai_candidate_requires_the_exact_source_hash():
         "risk_flags": (),
     }
 
+    candidate = AiFactCandidate.model_validate(values)
+    assert candidate.value == "完成课程项目"
     with pytest.raises(ValidationError):
-        AiFactCandidate.model_validate(values)
-    candidate = AiFactCandidate.model_validate(
-        {**values, "source_hash": "a" * 64}
-    )
-    assert candidate.source_hash == "a" * 64
+        AiFactCandidate.model_validate({**values, "source_hash": "a" * 64})
 
 
 @pytest.mark.parametrize("new_semantics", ["candidate", "edit_source", "analysis"])
@@ -467,7 +465,6 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
     client, sessions, application = intake_analysis_app
     answer_text = "我在😀课程项目中提升了50%的完成率"
     valid_slice = answer_text[3:14]
-    emoji_slice = answer_text[2:7]
 
     def candidates(input):
         valid = {
@@ -475,7 +472,6 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
             "value": valid_slice,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 3, "end": 14},
-            "source_hash": hashlib.sha256(valid_slice.encode()).hexdigest(),
             "risk_flags": [],
         }
         return [
@@ -485,11 +481,9 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
                 **valid,
                 "value": "😀课程项目",
                 "source_range": {"start": 2, "end": 7},
-                "source_hash": hashlib.sha256(emoji_slice.encode()).hexdigest(),
             },
             {**valid, "source_answer_id": "ians_wrong"},
             {**valid, "source_range": {"start": 3, "end": 99}},
-            {**valid, "source_hash": "f" * 64},
             {**valid, "value": "提升5%"},
         ]
 
@@ -515,8 +509,8 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
 
     assert result == answer_id
     assert _run(_candidate_values(sessions, answer_id)) == [
-        ("result", valid_slice, 3, 14, "accept_or_edit"),
-        ("result", "😀课程项目", 2, 7, "accept_or_edit"),
+        ("result", valid_slice, 3, 14, "edit_only"),
+        ("result", "😀课程项目", 2, 7, "edit_only"),
     ]
     assert _run(_analysis_state(sessions, answer_id)) == (
         "waiting_for_confirmation",
@@ -529,7 +523,7 @@ def test_process_answer_analysis_atomically_persists_only_valid_candidates(
     assert _run(_task_state(sessions, task_id)) == ("succeeded", answer_id)
     assert _run(_usage_state(sessions, task_id))[0] == "consumed"
     assert _run(_model_count(sessions, AiRun)) == 1
-    assert _run(_model_count(sessions, AiTraceEvent)) == 7
+    assert _run(_model_count(sessions, AiTraceEvent)) == 6
     trace_payload = _run(_trace_payload(sessions))
     assert answer_text not in trace_payload
     assert valid_slice not in trace_payload
@@ -542,7 +536,6 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
     client, sessions, application = intake_analysis_app
     answer_text = "没有实习，但完成了课程项目"
     positive = answer_text[6:13]
-    negative = answer_text[0:4]
 
     def candidates(input):
         return [
@@ -551,7 +544,6 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
                 "value": positive,
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 6, "end": 13},
-                "source_hash": hashlib.sha256(positive.encode()).hexdigest(),
                 "risk_flags": [],
             },
             {
@@ -559,7 +551,6 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
                 "value": "没有实习",
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 0, "end": 4},
-                "source_hash": hashlib.sha256(negative.encode()).hexdigest(),
                 "risk_flags": [],
             },
             {
@@ -567,7 +558,6 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
                 "value": answer_text,
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 0, "end": len(answer_text)},
-                "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
                 "risk_flags": [],
             },
         ]
@@ -623,7 +613,6 @@ def test_negative_candidate_slices_never_become_positive_candidates(
             "value": negative_slice,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": start, "end": end},
-            "source_hash": hashlib.sha256(negative_slice.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -666,7 +655,6 @@ def test_any_explicit_negative_marker_blocks_automatic_candidates(
     start = answer_text.index(negative_slice)
     candidate_start = answer_text.index(value, start)
     candidate_end = candidate_start + len(value)
-    candidate_slice = answer_text[candidate_start:candidate_end]
 
     def candidates(input):
         return [{
@@ -674,7 +662,6 @@ def test_any_explicit_negative_marker_blocks_automatic_candidates(
             "value": value,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": candidate_start, "end": candidate_end},
-            "source_hash": hashlib.sha256(candidate_slice.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -969,6 +956,132 @@ def test_dangling_negative_operator_crosses_clause_separator(answer, evidence):
 
 
 @pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("团队没有完成项目", "完成项目"),
+        ("团队未达成目标", "达成目标"),
+        ("Python我不会", "Python"),
+        ("项目没有做过", "项目"),
+        ("实际没有参与项目", "参与项目"),
+        ("Python尚未掌握", "Python"),
+        ("项目由他人完成", "项目"),
+        ("没有相关经验，另作说明", "相关经验"),
+        ("不能负责项目；另作说明", "负责项目"),
+        ("不擅长Python，另作说明", "Python"),
+        ("没有相关经验，负责项目", "负责项目"),
+        ("我不擅长，Python", "Python"),
+        ("我不能；负责项目", "负责项目"),
+        ("项目经验，我不具备", "项目经验"),
+        ("项目经验，我没有", "项目经验"),
+        ("缺乏项目经验", "项目经验"),
+        ("欠缺项目经验", "项目经验"),
+        ("项目管理（我不擅长）", "项目管理"),
+        ("项目管理——我不擅长", "项目管理"),
+        ("负责项目。补充一。补充二。补充三。其实我没有参与", "负责项目"),
+        ("项目由同学负责", "项目"),
+        ("I never led the project", "I never led the project"),
+        ("I did not complete the project", "I did not complete the project"),
+        ("Led the project. Note. I was not responsible", "Led the project"),
+        ("Project delivery (I lack experience)", "Project delivery"),
+        ("Project delivery - I failed to participate", "Project delivery"),
+        ("Project delivery; I was unable to contribute", "Project delivery"),
+    ],
+)
+def test_complete_clause_negative_or_other_owned_claim_is_hard_rejected(
+    answer,
+    evidence,
+):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence", "expected_mode"),
+    [
+        ("我完成课程项目", "完成课程项目", "edit_only"),
+        ("完成课程项目", "完成课程项目", "accept_or_edit"),
+        ("我完成课程项目", "我完成课程项目", "accept_or_edit"),
+        ("没有实习，完成了课程项目", "完成了课程项目", "accept_or_edit"),
+        ("无代码平台", "无代码平台", "edit_only"),
+        ("无刷电机", "无刷电机", "edit_only"),
+        ("不可变数据结构", "不可变数据结构", "edit_only"),
+        ("不动产项目", "不动产项目", "edit_only"),
+        ("未名湖活动", "未名湖活动", "edit_only"),
+        ("无界面服务", "无界面服务", "edit_only"),
+        ("不饱和脂肪调研", "不饱和脂肪调研", "edit_only"),
+        ("无限流数据处理", "无限流数据处理", "edit_only"),
+        ("无状态服务", "无状态服务", "edit_only"),
+    ],
+)
+def test_clause_completeness_and_polarity_force_review_mode(
+    answer,
+    evidence,
+    expected_mode,
+):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert getattr(valid[0], "decision_mode", None) == expected_mode
+
+
+def test_backend_forced_edit_only_is_persisted_without_model_risk_flag(
+    intake_analysis_app,
+):
+    client, sessions, application = intake_analysis_app
+    answer_text = "我完成课程项目"
+    evidence = "完成课程项目"
+    start = answer_text.index(evidence)
+
+    def candidates(input):
+        return [{
+            "kind": "experience",
+            "value": evidence,
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": start, "end": len(answer_text)},
+            "risk_flags": [],
+        }]
+
+    queued = _queue_answer(client, answer_text)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_candidate_values(sessions, answer_id)) == [
+        ("experience", evidence, start, len(answer_text), "edit_only")
+    ]
+    assert _run(_candidate_source_hash(sessions, answer_id)) == hashlib.sha256(
+        evidence.encode()
+    ).hexdigest()
+
+
+@pytest.mark.parametrize(
     ("source", "value"),
     [
         ("完成课程项目", "独立完成课程项目"),
@@ -1115,7 +1228,6 @@ def test_numeric_candidate_value_requires_exact_source_evidence(
             "value": value,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": len(source)},
-            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -1204,7 +1316,6 @@ def test_chinese_numeric_value_requires_exact_source_evidence(
             "value": value,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": len(source)},
-            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -1412,7 +1523,6 @@ def test_pipeline_executes_typed_answer_analysis_without_a_second_completion(
             "value": answer_text,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": len(answer_text)},
-            "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -1616,7 +1726,6 @@ def test_analysis_result_transaction_rolls_back_every_result_side_effect(
             "value": answer_text,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": len(answer_text)},
-            "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
             "risk_flags": [],
         }]
 
@@ -1670,7 +1779,6 @@ def test_session_projects_candidates_and_blocks_answers_until_all_are_decided(
                 "value": "完成课程项目",
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 1, "end": 7},
-                "source_hash": "6abe8b47ad04032eae5f3a495688705b6bf33ef4a55ec11c8a3f769dd74d0b83",
                 "risk_flags": [],
             },
             {
@@ -1678,7 +1786,6 @@ def test_session_projects_candidates_and_blocks_answers_until_all_are_decided(
                 "value": "负责展示",
                 "source_answer_id": input.payload.answer_id,
                 "source_range": {"start": 8, "end": 12},
-                "source_hash": "a4f47f8f25ea715c522ab0c3f0643047edbfd74ed39649b76b44d6018d10aa19",
                 "risk_flags": ["conflict"],
             },
         ]
@@ -1712,7 +1819,7 @@ def test_session_projects_candidates_and_blocks_answers_until_all_are_decided(
             "source_end": 7,
             "source_hash": "6abe8b47ad04032eae5f3a495688705b6bf33ef4a55ec11c8a3f769dd74d0b83",
             "status": "pending",
-            "decision_mode": "accept_or_edit",
+            "decision_mode": "edit_only",
             "ai_run_id": body["fact_candidates"][0]["ai_run_id"],
         },
         {
@@ -1814,7 +1921,6 @@ def test_abandoned_or_nonwaiting_analysis_cannot_publish_candidates_or_facts(
             "value": "我完成了课程项目",
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": 8},
-            "source_hash": hashlib.sha256("我完成了课程项目".encode()).hexdigest(),
             "risk_flags": [],
         }]),
     )
@@ -2300,7 +2406,6 @@ def _validate_candidate_slice(
     risk_flags=(),
 ):
     end = len(source) if end is None else end
-    source_slice = source[start:end]
     answer_id = "ians_guard_unit"
     answer = IntakeAnswer(
         id=answer_id,
@@ -2317,7 +2422,6 @@ def _validate_candidate_slice(
             "value": value,
             "source_answer_id": answer_id,
             "source_range": {"start": start, "end": end},
-            "source_hash": hashlib.sha256(source_slice.encode()).hexdigest(),
             "risk_flags": risk_flags,
         },
         strict=False,
@@ -2376,7 +2480,6 @@ def _analyze_one_candidate(
             "value": answer_text,
             "source_answer_id": input.payload.answer_id,
             "source_range": {"start": 0, "end": len(answer_text)},
-            "source_hash": hashlib.sha256(answer_text.encode()).hexdigest(),
             "risk_flags": flags,
         }]
 
@@ -2421,6 +2524,15 @@ async def _candidate_values(sessions, answer_id):
             .order_by(FactCandidate.source_start.desc())
         )
         return list(rows.tuples())
+
+
+async def _candidate_source_hash(sessions, answer_id):
+    async with sessions() as session:
+        return await session.scalar(
+            select(FactCandidate.source_hash).where(
+                FactCandidate.intake_answer_id == answer_id
+            )
+        )
 
 
 async def _candidate_id(sessions, answer_id):

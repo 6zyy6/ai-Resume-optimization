@@ -155,46 +155,8 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:负责|参与|完成|承担|做过|参加)(?:过)?(?:这个|该|相关)?"
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
-CONTEXT_RESET = re.compile(
-    r"[。.!！?？\n\r]|不过|然而|可是|但|却",
-    re.IGNORECASE,
-)
-SENTENCE_BOUNDARY = re.compile(r"[。.!！?？\n\r]")
-SOFT_CLAUSE_BOUNDARY = re.compile(
-    r"[，,、：:；;]|并(?!未|不|非|没)",
-    re.IGNORECASE,
-)
-LEADING_NEGATIVE_OPERATOR = re.compile(
-    r"^(?:(?:我|本人)(?:其实|确实|从来|从|尚|并|完全)*|"
-    r"(?:其实|确实|从来|从|尚|并|完全)*)"
-    r"(?:并非|没有|没|不|未|无|否认)"
-)
-NON_NEGATIVE_LEXEME_STARTS = (
-    "无人机",
-    "无障碍",
-    "无损",
-    "无监督",
-    "无服务器",
-    "无锡",
-    "无法兰",
-    "未来",
-    "未成年人",
-    "未登录",
-    "未央区",
-    "不断",
-    "不同",
-    "不稳定",
-    "不锈钢",
-    "不间断",
-    "不确定性",
-    "不对称",
-)
-ENGLISH_NEGATION = re.compile(
-    r"\b(?:not|never|no|without|cannot|cant|can't|dont|don't|"
-    r"doesnt|doesn't|didnt|didn't|isnt|isn't|arent|aren't|"
-    r"wasnt|wasn't|werent|weren't|havent|haven't|hasnt|hasn't|"
-    r"hadnt|hadn't|wont|won't|wouldnt|wouldn't|couldnt|couldn't|"
-    r"shouldnt|shouldn't)\b",
+ATOMIC_CLAUSE_BOUNDARY = re.compile(
+    r"[。.!！?？\n\r，,；;]|不过|然而|可是|但|却|并(?!未|不|非|没)",
     re.IGNORECASE,
 )
 RESPONSIBILITY_DISCLAIMERS = (
@@ -212,6 +174,40 @@ RESPONSIBILITY_DENIAL = re.compile(
     r"(?:不是|并非)(?:由)?(?:我|本人).*?(?:负责|完成|参与|做)|"
     r"(?:我|本人).*?(?:没有|没|未|不).*?(?:负责|完成|参与|做)"
 )
+CHINESE_EXPLICIT_NEGATIVE = re.compile(
+    r"没有|从来没|从未|不曾|未曾|并未|尚未|未能|不再|不能|不会|"
+    r"不擅长|不太了解|不了解|不具备|不熟悉|不清楚|不知道|"
+    r"并非|不是|否认|缺乏|欠缺|"
+    r"无法(?:负责|参与|完成|承担|组织|主导|获得|掌握|达成|做)|"
+    r"不确定(?:是否|能否|有没有|可否)|"
+    r"(?:没|不|未|无)(?:真正|实际|直接|具体|独立|主动|相关)*"
+    r"(?:负责|参与|完成|承担|组织|主导|获得|具备|熟悉|擅长|了解|"
+    r"掌握|达成|做过|参加)|"
+    r"无(?:真正|实际|直接|具体|独立|主动|相关)*(?:项目|经验|经历|实习|能力|技能)"
+)
+OTHER_OWNER = re.compile(
+    r"由(?:他人|别人|同学|同事|队友|团队成员)(?:负责|完成|参与|承担|主导|做)"
+)
+CHINESE_TAIL_DENIAL = re.compile(
+    r"(?:我|本人).*?(?:没有|没|未|不|缺乏|欠缺).*?"
+    r"(?:负责|完成|参与|承担|主导|做|掌握|具备|熟悉|擅长|了解)|"
+    r"(?:我|本人)(?:没有|没|不具备)$"
+)
+ENGLISH_EXPLICIT_NEGATIVE = re.compile(
+    r"\b(?:not|never|no|without|cannot|cant|can't|dont|don't|"
+    r"doesnt|doesn't|didnt|didn't|isnt|isn't|arent|aren't|"
+    r"wasnt|wasn't|werent|weren't|havent|haven't|hasnt|hasn't|"
+    r"hadnt|hadn't|wont|won't|wouldnt|wouldn't|couldnt|couldn't|"
+    r"shouldnt|shouldn't|lack|lacks|lacked|lacking|unable)\b|"
+    r"\bfailed\s+to\b",
+    re.IGNORECASE,
+)
+ENGLISH_TAIL_DENIAL = re.compile(
+    r"\b(?:i|we)\b.*?(?:not|never|lack(?:ed|s|ing)?|failed\s+to|unable\s+to)"
+    r".*?\b(?:responsible|participate|contribute|complete|lead|own|do|"
+    r"experience)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -225,6 +221,13 @@ class IntakeError(Exception):
 class SavedIntake:
     response: dict[str, Any]
     status_code: int
+
+
+@dataclass(frozen=True)
+class ValidatedCandidate:
+    candidate: Any
+    decision_mode: str
+    source_hash: str
 
 
 class IntakeService:
@@ -634,8 +637,9 @@ class IntakeService:
                     )
                 ).tuples()
             )
-            for candidate in valid:
-                key = _candidate_key(candidate)
+            for validated in valid:
+                candidate = validated.candidate
+                key = _candidate_key(candidate, validated.source_hash)
                 if key in existing_keys:
                     continue
                 existing_keys.add(key)
@@ -648,11 +652,12 @@ class IntakeService:
                         value_encrypted=candidate.value,
                         source_start=candidate.source_range.start,
                         source_end=candidate.source_range.end,
-                        source_hash=candidate.source_hash,
+                        source_hash=validated.source_hash,
                         status="pending",
                         decision_mode=(
                             "edit_only"
-                            if "conflict" in candidate.risk_flags
+                            if validated.decision_mode == "edit_only"
+                            or "conflict" in candidate.risk_flags
                             else "accept_or_edit"
                         ),
                         ai_run_id=ai_run.id,
@@ -1851,49 +1856,56 @@ def _validated_analysis_snapshot(
 def _validated_candidates(
     answer: IntakeAnswer,
     result: AnalyzeIntakeResult,
-) -> tuple[list[Any], list[tuple[int, str]]]:
+) -> tuple[list[ValidatedCandidate], list[tuple[int, str]]]:
     answer_text = answer.answer_encrypted or ""
-    valid: list[Any] = []
+    valid: list[ValidatedCandidate] = []
     invalid: list[tuple[int, str]] = []
     seen: set[tuple[str, str, int, int, str]] = set()
     for index, candidate in enumerate(result.fact_candidates):
         start = candidate.source_range.start
         end = candidate.source_range.end
         reason = None
+        decision_mode = "accept_or_edit"
         source_slice = ""
+        source_hash = ""
         if candidate.source_answer_id != answer.id:
             reason = "source_answer_mismatch"
         elif not (0 <= start < end <= len(answer_text)):
             reason = "source_range_invalid"
         else:
             source_slice = answer_text[start:end]
-            if hashlib.sha256(source_slice.encode()).hexdigest() != candidate.source_hash:
-                reason = "source_hash_mismatch"
-            elif _evidence_text(candidate.value) != _evidence_text(source_slice):
+            source_hash = hashlib.sha256(source_slice.encode()).hexdigest()
+            if _evidence_text(candidate.value) != _evidence_text(source_slice):
                 reason = "source_value_mismatch"
-            elif (
-                _answer_state(source_slice, False) != "answered"
-                or _source_context_negates_candidate(answer_text, start, end)
-            ):
-                reason = "negative_source"
-        key = _candidate_key(candidate)
+            else:
+                decision_mode = _candidate_decision_mode(
+                    answer_text,
+                    start,
+                    end,
+                )
+                if (
+                    _answer_state(source_slice, False) != "answered"
+                    or decision_mode is None
+                ):
+                    reason = "negative_source"
+        key = _candidate_key(candidate, source_hash)
         if reason is None and key in seen:
             reason = "duplicate_candidate"
         if reason is not None:
             invalid.append((index, reason))
             continue
         seen.add(key)
-        valid.append(candidate)
+        valid.append(ValidatedCandidate(candidate, decision_mode, source_hash))
     return valid, invalid
 
 
-def _candidate_key(candidate) -> tuple[str, str, int, int, str]:
+def _candidate_key(candidate, source_hash: str) -> tuple[str, str, int, int, str]:
     return (
         candidate.kind,
         candidate.value,
         candidate.source_range.start,
         candidate.source_range.end,
-        candidate.source_hash,
+        source_hash,
     )
 
 
@@ -1902,53 +1914,134 @@ def _evidence_text(value: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _source_context_negates_candidate(
+def _candidate_decision_mode(
     answer: str,
     start: int,
     end: int,
-) -> bool:
-    prefix = _context_text(answer[:start])
-    boundaries = list(CONTEXT_RESET.finditer(prefix))
-    scoped_prefix = prefix[boundaries[-1].end() if boundaries else 0 :]
-    soft_boundaries = [
-        boundary
-        for boundary in SOFT_CLAUSE_BOUNDARY.finditer(scoped_prefix)
-        if scoped_prefix[boundary.end() :].strip()
-        or boundary.group() in "，,、；;"
-    ]
-    if soft_boundaries:
-        boundary = soft_boundaries[-1]
-        prior_clause = scoped_prefix[: boundary.start()]
-        clause_prefix = scoped_prefix[boundary.end() :]
-    else:
-        prior_clause = ""
-        clause_prefix = scoped_prefix
-    evidence = _context_text(answer[start:end])
-    leading_clause = CONTEXT_RESET.split(evidence, maxsplit=1)[0]
-    tail = _context_text(answer[end:])
-    tail_boundaries = list(SENTENCE_BOUNDARY.finditer(tail))
-    tail_window = tail[: tail_boundaries[2].start()] if len(tail_boundaries) > 2 else tail
-    compact_prefix = re.sub(r"[\s、]+", "", clause_prefix)
-    compact_prior = re.sub(r"[\s、]+", "", prior_clause)
+) -> str | None:
+    clause_start, clause_end, spans_boundary = _atomic_clause_range(
+        answer,
+        start,
+        end,
+    )
+    clause = answer[clause_start:clause_end]
+    semantic_scope = answer[start:end] if spans_boundary else clause
+    tail = _context_text(answer[clause_end:])
 
-    return (
-        _has_leading_negative_operator(compact_prefix)
-        or bool(ENGLISH_NEGATION.search(clause_prefix))
-        or bool(re.search(r"(?:不是|并非)(?:由)?(?:我|本人)$", compact_prefix))
-        or compact_prior.endswith(("没有", "没", "不", "未", "无"))
-        or _has_leading_negative_operator(leading_clause)
-        or any(
-            marker in evidence + tail_window
-            for marker in RESPONSIBILITY_DISCLAIMERS
-        )
-        or bool(RESPONSIBILITY_DENIAL.search(tail_window))
+    if (
+        _has_explicit_negative(semantic_scope)
+        or _prior_clause_has_dangling_negative(answer[:clause_start])
+        or _prior_negative_carries(answer, clause_start, clause)
+        or _tail_denies_candidate(tail)
+    ):
+        return None
+
+    clause_trimmed_start, clause_trimmed_end = _trimmed_range(
+        answer,
+        clause_start,
+        clause_end,
+    )
+    candidate_trimmed_start, candidate_trimmed_end = _trimmed_range(
+        answer,
+        start,
+        end,
+    )
+    complete_clause = (
+        not spans_boundary
+        and candidate_trimmed_start == clause_trimmed_start
+        and candidate_trimmed_end == clause_trimmed_end
+    )
+    if not complete_clause or re.search(r"[没不未无]", _context_text(clause)):
+        return "edit_only"
+    return "accept_or_edit"
+
+
+def _atomic_clause_range(
+    answer: str,
+    start: int,
+    end: int,
+) -> tuple[int, int, bool]:
+    boundaries = list(ATOMIC_CLAUSE_BOUNDARY.finditer(answer))
+    spans_boundary = any(
+        boundary.start() < end and boundary.end() > start
+        for boundary in boundaries
+    )
+    prior = [boundary for boundary in boundaries if boundary.end() <= start]
+    following = [boundary for boundary in boundaries if boundary.start() >= end]
+    clause_start = prior[-1].end() if prior else 0
+    clause_end = following[0].start() if following else len(answer)
+    return clause_start, clause_end, spans_boundary
+
+
+def _trimmed_range(value: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and (
+        value[start].isspace() or unicodedata.category(value[start]) == "Cf"
+    ):
+        start += 1
+    while end > start and (
+        value[end - 1].isspace()
+        or unicodedata.category(value[end - 1]) == "Cf"
+    ):
+        end -= 1
+    return start, end
+
+
+def _has_explicit_negative(value: str) -> bool:
+    context = _context_text(value)
+    compact = re.sub(r"[\s、]+", "", context)
+    return bool(
+        CHINESE_EXPLICIT_NEGATIVE.search(compact)
+        or OTHER_OWNER.search(compact)
+        or ENGLISH_EXPLICIT_NEGATIVE.search(context)
     )
 
 
-def _has_leading_negative_operator(value: str) -> bool:
-    compact = re.sub(r"[\s、]+", "", value)
-    return not compact.startswith(NON_NEGATIVE_LEXEME_STARTS) and bool(
-        LEADING_NEGATIVE_OPERATOR.search(compact)
+def _prior_clause_has_dangling_negative(prefix: str) -> bool:
+    compact = re.sub(r"[\s，,；;、：:]+", "", _context_text(prefix))
+    return compact.endswith(("没有", "没", "不", "未", "无"))
+
+
+def _prior_negative_carries(
+    answer: str,
+    clause_start: int,
+    clause: str,
+) -> bool:
+    boundaries = [
+        boundary
+        for boundary in ATOMIC_CLAUSE_BOUNDARY.finditer(answer[:clause_start])
+        if boundary.end() <= clause_start
+    ]
+    if not boundaries or boundaries[-1].end() != clause_start:
+        return False
+    separator = boundaries[-1].group()
+    if separator not in ("，", ",", "；", ";") and not separator.startswith("并"):
+        return False
+    prior_start = boundaries[-2].end() if len(boundaries) > 1 else 0
+    prior_clause = answer[prior_start:boundaries[-1].start()]
+    normalized_prior = _context_text(prior_clause)
+    leading_candidate_negative = re.match(
+        r"^(?:(?:我|本人|我们|团队)(?:其实|确实|尚|并|完全)*|"
+        r"(?:其实|确实|尚|并|完全)*)"
+        r"(?:没有|没|不|未|无|不能|不会|缺乏|欠缺)",
+        normalized_prior,
+    )
+    if not leading_candidate_negative or not _has_explicit_negative(prior_clause):
+        return False
+    normalized_clause = _context_text(clause)
+    return not bool(
+        re.match(r"^(?:我|本人|我们|团队)", normalized_clause)
+        or re.search(r"(?:已|曾|成功|独立|实际)?.*?(?:完成|负责|参与|实现|获得|达成)了", normalized_clause)
+        or re.match(r"^(?:I|we)\b", normalized_clause, re.IGNORECASE)
+    )
+
+
+def _tail_denies_candidate(tail: str) -> bool:
+    return (
+        any(marker in tail for marker in RESPONSIBILITY_DISCLAIMERS)
+        or bool(RESPONSIBILITY_DENIAL.search(tail))
+        or bool(CHINESE_TAIL_DENIAL.search(tail))
+        or bool(OTHER_OWNER.search(tail))
+        or bool(ENGLISH_TAIL_DENIAL.search(tail))
     )
 
 
