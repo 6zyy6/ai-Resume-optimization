@@ -158,7 +158,7 @@ NEGATIVE_CLAIM = re.compile(
 CHINESE_ACTION_PREDICATE = (
     r"负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|帮助|指导|评审|协助|支持|培训|分析|服务|维护|"
-    r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|做"
+    r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|牵头|执行|做"
 )
 CHINESE_COORDINATION = r"并且|同时|还|且|并|以及|(?<!参)与|、"
 ATOMIC_CLAUSE_BOUNDARY = re.compile(
@@ -253,7 +253,7 @@ ENGLISH_TAIL_DENIAL = re.compile(
     re.IGNORECASE,
 )
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
-    rf"(?:{CHINESE_ACTION_PREDICATE})(?:不了(?!解)|不来|不成)"
+    rf"(?:{CHINESE_ACTION_PREDICATE})(?:不了(?!解)|不来|不成|不下)"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -1981,7 +1981,7 @@ def _candidate_decision_mode(
     semantic_scope = answer[start:end] if spans_boundary else clause
     tail = _context_text(answer[clause_end:])
     main_assertion = _main_assertion_kind(semantic_scope)
-    tail_relation = _tail_relation(tail)
+    tail_relation = _tail_relation(answer[start:end], tail)
 
     if (
         main_assertion == "hard"
@@ -2063,6 +2063,7 @@ def _has_positive_assertion(value: str) -> bool:
 
 def _main_assertion_kind(value: str) -> str:
     context = _context_text(value)
+    context = _strip_chinese_leading_adverbial(context)
     compact = re.sub(r"[\s、]+", "", context)
     if CHINESE_POSTPOSITIVE_INABILITY.search(context):
         return "hard"
@@ -2075,17 +2076,21 @@ def _main_assertion_kind(value: str) -> str:
             maxsplit=1,
             flags=re.IGNORECASE,
         )[0]
-        if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
-            return "hard"
-        if re.match(
+        positive = re.match(
             r"^(?:i|we)\s+(?:(?:successfully|independently|personally)\s+)*"
             r"(?:lead|led|complete(?:d)?|own(?:ed)?|handle(?:d)?|deliver(?:ed)?|"
             r"participate(?:d)?|contribute(?:d)?|work(?:ed)?\s+on|support(?:ed)?|"
             r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?)\b",
             main_scope,
             re.IGNORECASE,
-        ):
+        )
+        if positive is not None:
+            direct_object = main_scope[positive.end() :].lstrip()
+            if re.match(r"^(?:nobody|nothing|no\s+one|no\b)", direct_object, re.I):
+                return "hard"
             return "positive"
+        if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
+            return "hard"
         return "unknown"
 
     if _has_positive_assertion(context):
@@ -2133,11 +2138,26 @@ def _main_assertion_kind(value: str) -> str:
 
 
 def _has_unresolved_coordination(value: str) -> bool:
-    return bool(
-        re.search(
-            r"(?:并且|以及|(?<!参)与|、)(?=\S)",
-            _context_text(value),
-        )
+    context = _context_text(value)
+    if re.search(r"(?:并且|以及|(?<!参)与|、)(?=\S)", context):
+        return True
+    for match in re.finditer(r"同时|还|且|并", context):
+        if match.start() == 0:
+            continue
+        prefix = context[: match.start()]
+        assertion = CHINESE_POSITIVE_ASSERTION.match(prefix)
+        if assertion is not None and prefix[assertion.end() :].strip():
+            return True
+    return False
+
+
+def _strip_chinese_leading_adverbial(value: str) -> str:
+    return re.sub(
+        r"^(?:在|于)[^，,。.!！?？；;]{1,16}?"
+        r"(?:中|期间|阶段|过程中|场景下|情况下)",
+        "",
+        value,
+        count=1,
     )
 
 
@@ -2332,14 +2352,12 @@ def _tail_denies_candidate(tail: str) -> bool:
     )
 
 
-def _tail_relation(tail: str) -> str:
+def _tail_relation(candidate_scope: str, tail: str) -> str:
     context = _context_text(tail)
     if not context:
         return "none"
-    if _tail_denies_candidate(context):
-        return "same_fact"
     if context[0] not in "。.!！?？\n\r":
-        return "none"
+        return "same_fact" if _tail_denies_candidate(context) else "none"
     units = [
         _tail_unit_text(unit)
         for unit in re.split(r"[。.!！?？\n\r]", context)
@@ -2348,9 +2366,55 @@ def _tail_relation(tail: str) -> str:
     if not units:
         return "none"
     immediate = units[0]
+    candidate_labels, candidate_entities = _claim_entities(candidate_scope)
+    tail_labels, tail_entities = _claim_entities(immediate)
+    if candidate_labels and tail_labels:
+        if candidate_labels.isdisjoint(tail_labels):
+            return "new_topic"
+        return "same_fact" if _tail_has_responsibility_denial(immediate) else "unknown"
+    if candidate_entities and tail_entities:
+        if candidate_entities.isdisjoint(tail_entities):
+            return "new_topic"
+        return "same_fact" if _tail_has_responsibility_denial(immediate) else "unknown"
+    if _tail_denies_candidate(context):
+        return "same_fact"
     if _tail_starts_new_topic(immediate):
         return "new_topic"
     return "unknown"
+
+
+def _claim_entities(value: str) -> tuple[set[str], set[str]]:
+    context = _context_text(value)
+    labels = {
+        label.upper()
+        for pattern in (
+            r"(?<![A-Za-z])([A-Za-z])(?![A-Za-z])\s*(?:项目|工作|任务)",
+            r"(?:项目|工作|任务)\s*([A-Za-z])(?![A-Za-z])",
+            r"\bproject\s+([A-Za-z])\b",
+            r"\bcompleted\s+([A-Za-z])\b",
+        )
+        for label in re.findall(pattern, context, re.IGNORECASE)
+    }
+    entities: set[str] = set()
+    if re.search(r"[\u4e00-\u9fff]", context):
+        entities = {
+            entity.upper()
+            for entity in re.findall(
+                r"(?<![A-Za-z])(?:[A-Z]{2,}|[A-Z][a-z]{2,}|"
+                r"[A-Za-z]+(?:\+\+|#))(?![A-Za-z])",
+                context,
+            )
+        }
+    return labels, entities
+
+
+def _tail_has_responsibility_denial(value: str) -> bool:
+    return bool(
+        any(marker in value for marker in RESPONSIBILITY_DISCLAIMERS)
+        or RESPONSIBILITY_DENIAL.search(value)
+        or _has_other_owner(value)
+        or ENGLISH_TAIL_DENIAL.search(value)
+    )
 
 
 def _tail_unit_text(value: str) -> str:
