@@ -821,20 +821,59 @@ def test_negative_or_uncertain_context_cannot_publish_exact_span(answer, evidenc
 
 
 @pytest.mark.parametrize(
-    "answer",
+    ("answer", "evidence"),
     [
-        "负责项目，但这并不是我的职责",
-        "负责项目，这不是我的职责",
-        "负责项目，并非由我完成",
-        "负责项目，后续工作与我无关",
-        "负责项目，但不是我做的",
-        "负责项目，并非本人完成",
-        "负责项目。并不是我的职责",
+        ("我不擅长项目管理", "项目管理"),
+        ("我不会负责项目", "负责项目"),
+        ("我不能负责项目", "负责项目"),
+        ("我没做过项目管理", "项目管理"),
+        ("我不太了解项目管理", "项目管理"),
+        ("我从来没负责项目", "负责项目"),
+        ("我尚未实际负责项目", "负责项目"),
+        ("我并不了解项目管理", "项目管理"),
+        ("没 有负责项目", "负责项目"),
+        ("没、有负责项目", "负责项目"),
+        ("不 擅长Python", "擅长Python"),
+        ("不擅长Python", "不擅长Python"),
+        ("不会Python", "不会Python"),
+        ("不能负责项目", "不能负责项目"),
+        ("不太了解SQL", "不太了解SQL"),
+        ("尚未实际参与项目", "尚未实际参与项目"),
     ],
 )
-def test_same_sentence_responsibility_disclaimer_rejects_candidate(answer):
-    evidence = "负责项目"
+def test_structural_negative_operators_cannot_be_cropped(answer, evidence):
+    start = answer.index(evidence)
 
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("负责项目，但这并不是我的职责", "负责项目"),
+        ("负责项目，这不是我的职责", "负责项目"),
+        ("负责项目，并非由我完成", "负责项目"),
+        ("负责项目，后续工作与我无关", "负责项目"),
+        ("负责项目，但不是我做的", "负责项目"),
+        ("负责项目，并非本人完成", "负责项目"),
+        ("负责项目。并不是我的职责", "负责项目"),
+        ("负责项目，但项目不是我负责的", "负责项目"),
+        ("完成项目，其实我没有参与", "完成项目"),
+        ("负责项目。补充说明。并不是我的职责", "负责项目"),
+    ],
+)
+def test_same_sentence_responsibility_disclaimer_rejects_candidate(
+    answer,
+    evidence,
+):
     valid, invalid = _validate_candidate_slice(
         answer,
         evidence,
@@ -844,6 +883,21 @@ def test_same_sentence_responsibility_disclaimer_rejects_candidate(answer):
 
     assert valid == []
     assert invalid == [(0, "negative_source")]
+
+
+def test_unrelated_later_negative_fact_does_not_taint_candidate():
+    answer = "负责项目。补充说明。没有获得奖项"
+    evidence = "负责项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=0,
+        end=len(evidence),
+    )
+
+    assert len(valid) == 1
+    assert invalid == []
 
 
 def test_positive_span_after_adversative_is_not_tainted_by_prior_negation():
@@ -860,6 +914,58 @@ def test_positive_span_after_adversative_is_not_tainted_by_prior_negation():
 
     assert len(valid) == 1
     assert invalid == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("研究不确定性建模并完成模型优化", "模型优化"),
+        ("在无法兰管道项目中完成结构设计", "结构设计"),
+        ("没有实习，完成了课程项目", "完成了课程项目"),
+        ("解决用户不知道流程的问题并完成帮助文档", "帮助文档"),
+        ("针对不对称加密场景完成性能优化", "性能优化"),
+        ("不确定性建模", "不确定性建模"),
+        ("无法兰管道", "无法兰管道"),
+        ("无人机研发", "无人机研发"),
+        ("不对称加密", "不对称加密"),
+    ],
+)
+def test_complete_positive_clause_is_not_tainted_by_prior_lexemes(
+    answer,
+    evidence,
+):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert len(valid) == 1
+    assert invalid == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("我没有，负责项目的经验", "负责项目"),
+        ("没、有负责项目", "负责项目"),
+    ],
+)
+def test_dangling_negative_operator_crosses_clause_separator(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
 
 
 @pytest.mark.parametrize(

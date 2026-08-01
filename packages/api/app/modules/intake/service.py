@@ -160,17 +160,34 @@ CONTEXT_RESET = re.compile(
     re.IGNORECASE,
 )
 SENTENCE_BOUNDARY = re.compile(r"[。.!！?？\n\r]")
-CHINESE_NEGATIVE_CONTEXT = re.compile(
-    r"完全没有|并没有|没有|从未|不曾|未曾|并未|未能|不再|"
-    r"不是|并非|否认|无法|不确定|不清楚|不知道"
+SOFT_CLAUSE_BOUNDARY = re.compile(
+    r"[，,、：:；;]|并(?!未|不|非|没)",
+    re.IGNORECASE,
 )
-SINGLE_NEGATION_PREFIX = re.compile(
-    r"(?:^|我|本人)[没不未无](?:真正|实际|直接|具体|独立|主动|相关)?$"
+LEADING_NEGATIVE_OPERATOR = re.compile(
+    r"^(?:(?:我|本人)(?:其实|确实|从来|从|尚|并|完全)*|"
+    r"(?:其实|确实|从来|从|尚|并|完全)*)"
+    r"(?:并非|没有|没|不|未|无|否认)"
 )
-NEGATED_EVIDENCE_START = re.compile(
-    r"^(?:我|本人)?[没不未无](?:真正|实际|直接|具体|独立|主动|相关)*"
-    r"(?:负责|参与|完成|承担|组织|主导|获得|具备|熟悉|项目|经验|经历|实习|"
-    r"工作|任务|活动|课程|比赛|调研|设计|汇报)"
+NON_NEGATIVE_LEXEME_STARTS = (
+    "无人机",
+    "无障碍",
+    "无损",
+    "无监督",
+    "无服务器",
+    "无锡",
+    "无法兰",
+    "未来",
+    "未成年人",
+    "未登录",
+    "未央区",
+    "不断",
+    "不同",
+    "不稳定",
+    "不锈钢",
+    "不间断",
+    "不确定性",
+    "不对称",
 )
 ENGLISH_NEGATION = re.compile(
     r"\b(?:not|never|no|without|cannot|cant|can't|dont|don't|"
@@ -190,6 +207,10 @@ RESPONSIBILITY_DISCLAIMERS = (
     "并非我完成",
     "不是本人完成",
     "与我无关",
+)
+RESPONSIBILITY_DENIAL = re.compile(
+    r"(?:不是|并非)(?:由)?(?:我|本人).*?(?:负责|完成|参与|做)|"
+    r"(?:我|本人).*?(?:没有|没|未|不).*?(?:负责|完成|参与|做)"
 )
 
 
@@ -1888,38 +1909,57 @@ def _source_context_negates_candidate(
 ) -> bool:
     prefix = _context_text(answer[:start])
     boundaries = list(CONTEXT_RESET.finditer(prefix))
-    clause_prefix = prefix[boundaries[-1].end() if boundaries else 0 :]
+    scoped_prefix = prefix[boundaries[-1].end() if boundaries else 0 :]
+    soft_boundaries = [
+        boundary
+        for boundary in SOFT_CLAUSE_BOUNDARY.finditer(scoped_prefix)
+        if scoped_prefix[boundary.end() :].strip()
+        or boundary.group() in "，,、；;"
+    ]
+    if soft_boundaries:
+        boundary = soft_boundaries[-1]
+        prior_clause = scoped_prefix[: boundary.start()]
+        clause_prefix = scoped_prefix[boundary.end() :]
+    else:
+        prior_clause = ""
+        clause_prefix = scoped_prefix
     evidence = _context_text(answer[start:end])
     leading_clause = CONTEXT_RESET.split(evidence, maxsplit=1)[0]
     tail = _context_text(answer[end:])
     tail_boundaries = list(SENTENCE_BOUNDARY.finditer(tail))
-    tail_window = tail[: tail_boundaries[1].start()] if len(tail_boundaries) > 1 else tail
-    trimmed_prefix = clause_prefix.rstrip()
+    tail_window = tail[: tail_boundaries[2].start()] if len(tail_boundaries) > 2 else tail
+    compact_prefix = re.sub(r"[\s、]+", "", clause_prefix)
+    compact_prior = re.sub(r"[\s、]+", "", prior_clause)
 
     return (
-        bool(CHINESE_NEGATIVE_CONTEXT.search(clause_prefix))
+        _has_leading_negative_operator(compact_prefix)
         or bool(ENGLISH_NEGATION.search(clause_prefix))
-        or bool(SINGLE_NEGATION_PREFIX.search(trimmed_prefix))
-        or (
-            bool(trimmed_prefix)
-            and trimmed_prefix[-1] in "没不未无"
-        )
-        or bool(CHINESE_NEGATIVE_CONTEXT.search(leading_clause))
-        or bool(NEGATED_EVIDENCE_START.search(leading_clause.lstrip()))
+        or bool(re.search(r"(?:不是|并非)(?:由)?(?:我|本人)$", compact_prefix))
+        or compact_prior.endswith(("没有", "没", "不", "未", "无"))
+        or _has_leading_negative_operator(leading_clause)
         or any(
             marker in evidence + tail_window
             for marker in RESPONSIBILITY_DISCLAIMERS
         )
+        or bool(RESPONSIBILITY_DENIAL.search(tail_window))
+    )
+
+
+def _has_leading_negative_operator(value: str) -> bool:
+    compact = re.sub(r"[\s、]+", "", value)
+    return not compact.startswith(NON_NEGATIVE_LEXEME_STARTS) and bool(
+        LEADING_NEGATIVE_OPERATOR.search(compact)
     )
 
 
 def _context_text(value: str) -> str:
     normalized = unicodedata.normalize("NFC", value).replace("’", "'")
-    return "".join(
+    visible = "".join(
         character
         for character in normalized
         if unicodedata.category(character) != "Cf"
     )
+    return re.sub(r"\s+", " ", visible).strip()
 
 
 def _clear_analysis_snapshot(outbox: Outbox | None) -> None:
