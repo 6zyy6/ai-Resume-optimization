@@ -1099,6 +1099,125 @@ def test_unrelated_negative_clause_does_not_poison_complete_positive_fact(
 
 
 @pytest.mark.parametrize(
+    "answer",
+    [
+        "导师完成",
+        "张三负责",
+        "李老师主导",
+        "供应商承担",
+        "Alice participated",
+        "尚欠经验",
+        "难以胜任",
+        "I am inexperienced",
+        "I barely know Python",
+        "I avoid leading projects",
+    ],
+)
+def test_active_other_owner_or_explicit_inexperience_is_hard_rejected(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("我完全没有相关经验，负责项目", "负责"),
+        ("我确实不擅长，Python", "Python"),
+        ("没有任何相关经验，负责项目", "负责项目"),
+        ("I cannot, lead project", "lead"),
+    ],
+)
+def test_dangling_negative_operator_cannot_be_cropped_after_modifier(
+    answer,
+    evidence,
+):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "完成项目。其实不是我做的",
+        "完成项目。并非本人完成",
+        "完成项目。实际由同学完成",
+    ],
+)
+def test_referential_tail_denial_rejects_prior_candidate(answer):
+    evidence = "完成项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_mode"),
+    [
+        ("我参与由同学完成的项目", "accept_or_edit"),
+        ("解决用户不擅长表达的问题并完成帮助文档", "edit_only"),
+        ("项目由我们共同完成", "accept_or_edit"),
+        ("项目由本人独立完成", "accept_or_edit"),
+        ("The project was completed by our team", "accept_or_edit"),
+        ("A teammate and I completed the project", "accept_or_edit"),
+    ],
+)
+def test_main_positive_assertion_or_modified_self_owner_is_accepted(
+    answer,
+    expected_mode,
+):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == expected_mode
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("我完成A项目。我不负责B项目", "我完成A项目"),
+        ("我完成A项目。另一份工作不是我的职责", "我完成A项目"),
+        ("不熟悉Java并掌握Python", "掌握Python"),
+        ("完成项目并未获得奖项", "完成项目"),
+        ("解决用户不擅长表达的问题并完成帮助文档", "完成帮助文档"),
+    ],
+)
+def test_new_topic_or_coordinated_negative_does_not_poison_positive_fact(
+    answer,
+    evidence,
+):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),
