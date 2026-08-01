@@ -15,6 +15,7 @@ from app.modules.tasks.state import TERMINAL_STATUSES, TaskStateError, require_t
 from app.modules.usage.service import (
     GLOBAL_AI_COST_ADVISORY_LOCK_ID,
     evaluate_admission_usage,
+    is_valid_cost_cny,
 )
 from app.workers.execution import QUEUE_NAMES
 
@@ -130,10 +131,10 @@ class TaskService:
             raise TypeError("admission must be a TaskAdmission")
         if queue not in QUEUE_NAMES:
             raise TaskServiceError("TASK_QUEUE_INVALID", "Unsupported task queue", 422)
-        if admission.cost_cny < 0:
+        if not is_valid_cost_cny(admission.cost_cny):
             raise TaskServiceError(
                 "TASK_ADMISSION_INVALID",
-                "AI task cost cannot be negative",
+                "AI task cost must be a finite non-negative Decimal",
                 422,
             )
         if (

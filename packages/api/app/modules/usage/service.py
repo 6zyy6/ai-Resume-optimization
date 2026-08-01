@@ -17,6 +17,14 @@ GLOBAL_COST_LIMIT_CNY = Decimal("100.00")
 GLOBAL_AI_COST_ADVISORY_LOCK_ID = 73467231
 
 
+def is_valid_cost_cny(cost_cny: object) -> bool:
+    return (
+        isinstance(cost_cny, Decimal)
+        and cost_cny.is_finite()
+        and cost_cny >= 0
+    )
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
@@ -88,6 +96,12 @@ class InMemoryUsageRepository:
         created_at: datetime,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageRecord:
+        if not is_valid_cost_cny(cost_cny):
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost must be a finite non-negative Decimal",
+                422,
+            )
         row = UsageRecord(
             id=new_id("usg"),
             owner_user_id=owner_user_id,
@@ -147,6 +161,17 @@ class InMemoryUsageRepository:
             start=Decimal("0"),
         )
 
+    async def _admission_cost(self, since: datetime) -> Decimal:
+        reserved = sum(
+            (
+                row.cost_cny
+                for row in self.rows
+                if row.state == "reserved" and row.created_at >= since
+            ),
+            start=Decimal("0"),
+        )
+        return await self.daily_cost(since) + reserved
+
     def set_running_ai_tasks(self, owner_user_id: str, count: int) -> None:
         self._running_ai_tasks[owner_user_id] = count
 
@@ -166,10 +191,10 @@ class InMemoryUsageRepository:
         cost_cny: Decimal,
         body_hash: str,
     ) -> "UsageDecision":
-        if cost_cny < 0:
+        if not is_valid_cost_cny(cost_cny):
             raise UsageAdmissionError(
                 "USAGE_COST_INVALID",
-                "AI task cost cannot be negative",
+                "AI task cost must be a finite non-negative Decimal",
                 422,
             )
         async with self._admission_lock:
@@ -185,7 +210,7 @@ class InMemoryUsageRepository:
                     )
                 return decision
             decision = evaluate_admission_usage(
-                await self.daily_cost(day_start),
+                await self._admission_cost(day_start),
                 cost_cny,
                 await self.count_ai_tasks(owner_user_id, day_start),
                 await self.running_ai_tasks(owner_user_id),
@@ -348,6 +373,12 @@ class UsageService:
         is_retry: bool = False,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageDecision:
+        if not is_valid_cost_cny(cost_cny):
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost must be a finite non-negative Decimal",
+                422,
+            )
         return await self.repository.admit_ai_task(
             owner_user_id,
             trace_id,
@@ -368,6 +399,12 @@ class UsageService:
         *,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageRecord:
+        if not is_valid_cost_cny(cost_cny):
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost must be a finite non-negative Decimal",
+                422,
+            )
         return await self.repository.append_ai_task(
             owner_user_id,
             trace_id,

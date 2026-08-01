@@ -61,6 +61,15 @@ from app.workers.execution import TaskExecutor, resolve_operation
 from app.workers.pipeline import configure_pipeline_operations
 
 
+INVALID_COSTS = (
+    pytest.param(Decimal("NaN"), id="nan"),
+    pytest.param(Decimal("Infinity"), id="positive-infinity"),
+    pytest.param(Decimal("-Infinity"), id="negative-infinity"),
+    pytest.param(Decimal("-1.00"), id="negative"),
+    pytest.param(0, id="non-decimal"),
+)
+
+
 class StaticKeys:
     def get_key(self, purpose: str) -> bytes:
         return f"test-{purpose}".encode().ljust(32, b"x")
@@ -387,6 +396,47 @@ async def test_sql_usage_adapter_persists_append_only_ledger(sql_session_factory
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("invalid_cost", INVALID_COSTS)
+@pytest.mark.parametrize("entrypoint", ("record", "append"))
+async def test_sql_usage_writes_reject_invalid_cost_without_rows(
+    sql_session_factory,
+    invalid_cost,
+    entrypoint,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_sql_invalid_write"))
+    repository = SqlUsageRepository(sql_session_factory)
+    service = UsageService(
+        repository,
+        type("Clock", (), {"now": lambda _: now})(),
+    )
+
+    with pytest.raises(UsageAdmissionError) as caught:
+        if entrypoint == "record":
+            await service.record_ai_task(
+                "usr_sql_invalid_write",
+                "tr_sql_invalid_record",
+                cost_cny=invalid_cost,
+            )
+        else:
+            await repository.append_ai_task(
+                "usr_sql_invalid_write",
+                "tr_sql_invalid_append",
+                now,
+                invalid_cost,
+            )
+
+    assert caught.value.code == "USAGE_COST_INVALID"
+    assert caught.value.status_code == 422
+    async with sql_session_factory() as session:
+        assert (
+            await session.scalar(select(func.count()).select_from(UsageLedger))
+            == 0
+        )
+
+
+@pytest.mark.anyio
 async def test_sql_decision_excludes_released_usage_from_daily_limit(
     sql_session_factory,
 ):
@@ -690,8 +740,10 @@ async def test_sql_admission_rejects_projected_cost_above_global_limit(
 
 
 @pytest.mark.anyio
-async def test_sql_admission_rejects_negative_cost_without_writes(
+@pytest.mark.parametrize("invalid_cost", INVALID_COSTS)
+async def test_sql_admission_rejects_invalid_cost_without_writes(
     sql_session_factory,
+    invalid_cost,
 ):
     now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
     async with sql_session_factory.begin() as session:
@@ -708,8 +760,8 @@ async def test_sql_admission_rejects_negative_cost_without_writes(
             16 * 60 * 60,
             "generic",
             False,
-            Decimal("-1.00"),
-            admission_body_hash("generic", False, Decimal("-1.00")),
+            invalid_cost,
+            "invalid-cost-body-hash",
         )
 
     assert caught.value.code == "USAGE_COST_INVALID"

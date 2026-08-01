@@ -28,6 +28,7 @@ from app.modules.usage.service import (
     UsageDecision,
     UsageRecord,
     evaluate_admission_usage,
+    is_valid_cost_cny,
 )
 from app.modules.users.service import (
     ConsentRecord,
@@ -321,6 +322,12 @@ class SqlUsageRepository:
         created_at: datetime,
         cost_cny: Decimal = Decimal("0"),
     ) -> UsageRecord:
+        if not is_valid_cost_cny(cost_cny):
+            raise UsageAdmissionError(
+                "USAGE_COST_INVALID",
+                "AI task cost must be a finite non-negative Decimal",
+                422,
+            )
         async with self.sessions.begin() as session:
             owner_user_id = await canonical_user_id(session, owner_user_id)
             row = UsageLedger(
@@ -420,10 +427,10 @@ class SqlUsageRepository:
         cost_cny: Decimal,
         body_hash: str,
     ) -> UsageDecision:
-        if cost_cny < 0:
+        if not is_valid_cost_cny(cost_cny):
             raise UsageAdmissionError(
                 "USAGE_COST_INVALID",
-                "AI task cost cannot be negative",
+                "AI task cost must be a finite non-negative Decimal",
                 422,
             )
         route = "/internal/ai-task-admissions"

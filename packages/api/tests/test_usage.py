@@ -19,6 +19,15 @@ from app.modules.usage.service import (
 )
 
 
+INVALID_COSTS = (
+    pytest.param(Decimal("NaN"), id="nan"),
+    pytest.param(Decimal("Infinity"), id="positive-infinity"),
+    pytest.param(Decimal("-Infinity"), id="negative-infinity"),
+    pytest.param(Decimal("-1.00"), id="negative"),
+    pytest.param(0, id="non-decimal"),
+)
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.value = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
@@ -187,6 +196,36 @@ async def test_recording_ai_usage_appends_an_auditable_row(usage_harness):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("invalid_cost", INVALID_COSTS)
+@pytest.mark.parametrize("entrypoint", ("record", "append"))
+async def test_in_memory_usage_writes_reject_invalid_cost_without_rows(
+    usage_harness,
+    invalid_cost,
+    entrypoint,
+):
+    service, repository = usage_harness
+
+    with pytest.raises(UsageAdmissionError) as caught:
+        if entrypoint == "record":
+            await service.record_ai_task(
+                "usr_1",
+                "tr_invalid_record",
+                cost_cny=invalid_cost,
+            )
+        else:
+            await repository.append_ai_task(
+                "usr_1",
+                "tr_invalid_append",
+                service.clock.now(),
+                invalid_cost,
+            )
+
+    assert caught.value.code == "USAGE_COST_INVALID"
+    assert caught.value.status_code == 422
+    assert repository.rows == []
+
+
+@pytest.mark.anyio
 async def test_atomic_admission_allows_only_one_request_at_nineteen_daily_tasks(
     usage_harness,
 ):
@@ -264,17 +303,19 @@ async def test_in_memory_admission_rejects_projected_cost_above_global_limit(
 
 
 @pytest.mark.anyio
-async def test_in_memory_admission_rejects_negative_cost_without_writes(
+@pytest.mark.parametrize("invalid_cost", INVALID_COSTS)
+async def test_in_memory_admission_rejects_invalid_cost_without_writes(
     usage_harness,
+    invalid_cost,
 ):
     service, repository = usage_harness
 
     with pytest.raises(UsageAdmissionError) as caught:
         await service.admit_ai_task(
             "usr_1",
-            "tr_negative",
-            "negative-key",
-            cost_cny=Decimal("-1.00"),
+            "tr_invalid",
+            "invalid-key",
+            cost_cny=invalid_cost,
         )
 
     assert caught.value.code == "USAGE_COST_INVALID"
@@ -282,6 +323,61 @@ async def test_in_memory_admission_rejects_negative_cost_without_writes(
     assert repository.tasks == {}
     assert repository.rows == []
     assert repository.idempotency == {}
+
+
+@pytest.mark.anyio
+async def test_in_memory_admission_counts_reserved_cost_across_owners(
+    usage_harness,
+):
+    service, repository = usage_harness
+
+    first = await service.admit_ai_task(
+        "usr_cost_a",
+        "tr_cost_a",
+        "cost-a",
+        cost_cny=Decimal("60.00"),
+    )
+    second = await service.admit_ai_task(
+        "usr_cost_b",
+        "tr_cost_b",
+        "cost-b",
+        cost_cny=Decimal("60.00"),
+    )
+
+    assert first.allowed is True
+    assert second.allowed is False
+    assert second.reason == "AI_LIMIT_REACHED"
+    assert len(repository.tasks) == 1
+    assert [row.cost_cny for row in repository.rows] == [Decimal("60.00")]
+
+
+@pytest.mark.anyio
+async def test_in_memory_admission_adds_reserved_cost_to_override_baseline(
+    usage_harness,
+):
+    service, repository = usage_harness
+    repository.set_daily_cost(Decimal("99.00"))
+
+    first = await service.admit_ai_task(
+        "usr_override_a",
+        "tr_override_a",
+        "override-a",
+        cost_cny=Decimal("1.00"),
+    )
+    summary = await service.summary("usr_override_a")
+    second = await service.admit_ai_task(
+        "usr_override_b",
+        "tr_override_b",
+        "override-b",
+        cost_cny=Decimal("1.00"),
+    )
+
+    assert first.allowed is True
+    assert summary.global_cost_cny == Decimal("99.00")
+    assert second.allowed is False
+    assert second.reason == "AI_LIMIT_REACHED"
+    assert len(repository.tasks) == 1
+    assert [row.cost_cny for row in repository.rows] == [Decimal("1.00")]
 
 
 @pytest.mark.anyio
@@ -473,8 +569,10 @@ async def test_task_admission_rejects_projected_cost_above_global_limit(
 
 
 @pytest.mark.anyio
-async def test_task_admission_rejects_negative_cost_without_writes(
+@pytest.mark.parametrize("invalid_cost", INVALID_COSTS)
+async def test_task_admission_rejects_invalid_cost_without_writes(
     sql_session_factory,
+    invalid_cost,
 ):
     async with sql_session_factory.begin() as session:
         session.add(User(id="usr_negative_task_cost"))
@@ -487,7 +585,7 @@ async def test_task_admission_rejects_negative_cost_without_writes(
             queue="ai.interactive",
             trace_id="tr_negative_task_cost",
             idempotency_key="negative-task-cost",
-            admission=TaskAdmission.ai(Decimal("-1.00")),
+            admission=TaskAdmission.ai(invalid_cost),
         )
 
     assert caught.value.code == "TASK_ADMISSION_INVALID"
