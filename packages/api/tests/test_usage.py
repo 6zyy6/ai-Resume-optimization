@@ -358,7 +358,12 @@ async def test_sql_usage_summary_hides_reserved_quantity_and_cost(
     assert summary.global_cost_cny == Decimal("1.25")
 
 
-async def _seed_global_cost_boundary(sql_session_factory, owner_ids):
+async def _seed_global_cost_boundary(
+    sql_session_factory,
+    owner_ids,
+    *,
+    consumed_cost=Decimal("99.00"),
+):
     now = FakeClock().now()
     async with sql_session_factory.begin() as session:
         session.add_all(User(id=owner_id) for owner_id in owner_ids)
@@ -370,7 +375,7 @@ async def _seed_global_cost_boundary(sql_session_factory, owner_ids):
                     owner_user_id=owner_ids[0],
                     usage_type="ai_task",
                     quantity=1,
-                    cost_cny=Decimal("99.00"),
+                    cost_cny=consumed_cost,
                     trace_id="tr_global_consumed_99",
                     state="consumed",
                     task_id=None,
@@ -392,6 +397,38 @@ async def _seed_global_cost_boundary(sql_session_factory, owner_ids):
             ]
         )
     return now
+
+
+@pytest.mark.anyio
+async def test_task_admission_rejects_projected_cost_above_global_limit(
+    sql_session_factory,
+):
+    await _seed_global_cost_boundary(
+        sql_session_factory,
+        ("usr_projected_cost",),
+        consumed_cost=Decimal("99.50"),
+    )
+    service = TaskService(sql_session_factory, clock=FakeClock())
+
+    with pytest.raises(TaskServiceError) as caught:
+        await service.create_task(
+            "usr_projected_cost",
+            task_type="parse_jd",
+            queue="ai.interactive",
+            trace_id="tr_projected_cost",
+            idempotency_key="projected-cost",
+            admission=TaskAdmission.ai(Decimal("1.00")),
+        )
+
+    async with sql_session_factory() as session:
+        task_count = await session.scalar(select(func.count()).select_from(Task))
+        ledger_count = await session.scalar(
+            select(func.count()).select_from(UsageLedger)
+        )
+
+    assert caught.value.code == "AI_LIMIT_REACHED"
+    assert task_count == 0
+    assert ledger_count == 2
 
 
 @pytest.mark.anyio

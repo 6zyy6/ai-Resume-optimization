@@ -273,6 +273,25 @@ def evaluate_usage(
     return UsageDecision(True, None, None)
 
 
+def evaluate_admission_usage(
+    cost: Decimal,
+    requested_cost: Decimal,
+    daily_tasks: int,
+    running_tasks: int,
+    retry_after: int,
+    is_retry: bool,
+) -> UsageDecision:
+    if cost + requested_cost > GLOBAL_COST_LIMIT_CNY:
+        return UsageDecision(False, "AI_LIMIT_REACHED", retry_after)
+    return evaluate_usage(
+        cost,
+        daily_tasks,
+        running_tasks,
+        retry_after,
+        is_retry,
+    )
+
+
 @dataclass(frozen=True)
 class UsageSummary:
     ai_tasks_used: int

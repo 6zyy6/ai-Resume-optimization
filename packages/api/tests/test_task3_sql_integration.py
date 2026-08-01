@@ -460,6 +460,130 @@ async def test_sql_atomic_admission_detects_idempotency_semantic_mismatch(
     assert await repository.count_ai_tasks("usr_1", now) == 1
 
 
+@pytest.mark.anyio
+async def test_sql_admission_excludes_released_and_creates_bound_reservations(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    owner_ids = ("usr_released_seed", "usr_reserve", "usr_consume")
+    async with sql_session_factory.begin() as session:
+        session.add_all(User(id=owner_id) for owner_id in owner_ids)
+        await session.flush()
+        session.add(
+            UsageLedger(
+                id="usg_released_global_limit",
+                owner_user_id="usr_released_seed",
+                usage_type="ai_task",
+                quantity=20,
+                cost_cny=Decimal("100.00"),
+                trace_id="tr_released_global_limit",
+                state="released",
+                task_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    repository = SqlUsageRepository(sql_session_factory)
+    service = UsageService(
+        repository,
+        type("Clock", (), {"now": lambda _: now})(),
+    )
+
+    released_decision = await service.admit_ai_task(
+        "usr_reserve",
+        "tr_reserve",
+        "reserve-key",
+        cost_cny=Decimal("1.00"),
+    )
+
+    assert released_decision.allowed is True
+    assert released_decision.task_id is not None
+    async with sql_session_factory() as session:
+        task = await session.get(Task, released_decision.task_id)
+        reservation = await session.scalar(
+            select(UsageLedger).where(
+                UsageLedger.owner_user_id == "usr_reserve",
+                UsageLedger.task_id == released_decision.task_id,
+            )
+        )
+    assert reservation is not None
+    assert task is not None
+    assert task.usage_type == "ai_task"
+    assert reservation.state == "reserved"
+    assert reservation.cost_cny == Decimal("1.00")
+
+    released = await TaskService(sql_session_factory).release_ai_reservation(
+        "usr_reserve",
+        released_decision.task_id,
+    )
+    consumed_decision = await service.admit_ai_task(
+        "usr_consume",
+        "tr_consume",
+        "consume-key",
+        cost_cny=Decimal("1.00"),
+    )
+    assert consumed_decision.allowed is True
+    assert consumed_decision.task_id is not None
+    consumed = await TaskService(sql_session_factory).consume_ai_reservation(
+        "usr_consume",
+        consumed_decision.task_id,
+        "run_consume",
+    )
+
+    assert released.state == "released"
+    assert released.task_id == released_decision.task_id
+    assert consumed.state == "consumed"
+    assert consumed.task_id == consumed_decision.task_id
+    assert consumed.ai_run_id == "run_consume"
+
+
+@pytest.mark.anyio
+async def test_sql_admission_rejects_projected_cost_above_global_limit(
+    sql_session_factory,
+):
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_sql_projected"))
+        await session.flush()
+        session.add(
+            UsageLedger(
+                id="usg_sql_projected_995",
+                owner_user_id="usr_sql_projected",
+                usage_type="ai_task",
+                quantity=1,
+                cost_cny=Decimal("99.50"),
+                trace_id="tr_sql_projected_995",
+                state="consumed",
+                task_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    service = UsageService(
+        SqlUsageRepository(sql_session_factory),
+        type("Clock", (), {"now": lambda _: now})(),
+    )
+
+    decision = await service.admit_ai_task(
+        "usr_sql_projected",
+        "tr_sql_projected",
+        "sql-projected-key",
+        cost_cny=Decimal("1.00"),
+    )
+
+    async with sql_session_factory() as session:
+        task_count = await session.scalar(select(func.count()).select_from(Task))
+        ledger_count = await session.scalar(
+            select(func.count()).select_from(UsageLedger)
+        )
+
+    assert decision.allowed is False
+    assert decision.reason == "AI_LIMIT_REACHED"
+    assert decision.task_id is None
+    assert task_count == 0
+    assert ledger_count == 1
+
+
 async def merged_admission_harness(
     sql_session_factory,
 ):

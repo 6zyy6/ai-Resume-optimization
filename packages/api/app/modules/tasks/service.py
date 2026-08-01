@@ -12,7 +12,10 @@ from app.db.models import Outbox, Task, TaskEvent, UsageLedger
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.state import TERMINAL_STATUSES, TaskStateError, require_transition
-from app.modules.usage.service import GLOBAL_AI_COST_ADVISORY_LOCK_ID, evaluate_usage
+from app.modules.usage.service import (
+    GLOBAL_AI_COST_ADVISORY_LOCK_ID,
+    evaluate_admission_usage,
+)
 from app.workers.execution import QUEUE_NAMES
 
 
@@ -841,16 +844,18 @@ class TaskService:
             or 0
         )
         retry_after = int((day_start + timedelta(days=1) - now).total_seconds())
-        decision = evaluate_usage(
-            Decimal(
-                await session.scalar(
-                    select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
-                        UsageLedger.state.in_(("reserved", "consumed")),
-                        UsageLedger.created_at >= day_start
-                    )
+        cost = Decimal(
+            await session.scalar(
+                select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
+                    UsageLedger.state.in_(("reserved", "consumed")),
+                    UsageLedger.created_at >= day_start,
                 )
-                or 0
-            ),
+            )
+            or 0
+        )
+        decision = evaluate_admission_usage(
+            cost,
+            admission.cost_cny,
             daily_tasks,
             running_tasks,
             retry_after,
