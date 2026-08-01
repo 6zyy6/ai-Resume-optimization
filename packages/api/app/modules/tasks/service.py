@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
@@ -12,7 +12,7 @@ from app.db.models import Outbox, Task, TaskEvent, UsageLedger
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.tasks.state import TERMINAL_STATUSES, TaskStateError, require_transition
-from app.modules.usage.service import evaluate_usage
+from app.modules.usage.service import GLOBAL_AI_COST_ADVISORY_LOCK_ID, evaluate_usage
 from app.workers.execution import QUEUE_NAMES
 
 
@@ -810,6 +810,13 @@ class TaskService:
     ) -> UsageLedger | None:
         if admission.usage_type is None:
             return None
+        if session.bind is not None and session.bind.dialect.name == "postgresql":
+            await session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    f"{GLOBAL_AI_COST_ADVISORY_LOCK_ID})"
+                )
+            )
         owners = await authorized_owner_ids(session, owner_user_id)
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         daily_tasks = int(
@@ -838,7 +845,7 @@ class TaskService:
             Decimal(
                 await session.scalar(
                     select(func.coalesce(func.sum(UsageLedger.cost_cny), 0)).where(
-                        UsageLedger.state == "consumed",
+                        UsageLedger.state.in_(("reserved", "consumed")),
                         UsageLedger.created_at >= day_start
                     )
                 )

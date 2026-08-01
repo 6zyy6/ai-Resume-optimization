@@ -23,6 +23,7 @@ from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.auth.service import SessionRecord
 from app.modules.privacy.service import PrivacyExportArtifact, PrivacyTask
 from app.modules.usage.service import (
+    GLOBAL_AI_COST_ADVISORY_LOCK_ID,
     UsageAdmissionError,
     UsageDecision,
     UsageRecord,
@@ -425,7 +426,12 @@ class SqlUsageRepository:
             else:
                 await session.begin()
                 if session.bind is not None and session.bind.dialect.name == "postgresql":
-                    await session.execute(text("SELECT pg_advisory_xact_lock(73467231)"))
+                    await session.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            f"{GLOBAL_AI_COST_ADVISORY_LOCK_ID})"
+                        )
+                    )
             try:
                 owner_user_id = await canonical_user_id(session, owner_user_id)
                 owner_ids = await authorized_owner_ids(session, owner_user_id)
