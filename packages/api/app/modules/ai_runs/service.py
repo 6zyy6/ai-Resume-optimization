@@ -55,7 +55,86 @@ _USAGE_KEYS = frozenset(
         "cost_usd",
     }
 )
-_MACHINE_IDENTIFIER = re.compile(r"[a-zA-Z0-9_$.:/\[\]-]+")
+_APPROVED_PROVIDERS = frozenset(
+    {
+        "anthropic",
+        "deepseek",
+        "faux",
+        "google",
+        "openai",
+        "qwen-token-plan-cn",
+        "test-faux",
+    }
+)
+_APPROVED_MODEL_PREFIXES = (
+    "claude-",
+    "deepseek-",
+    "faux-",
+    "gemini-",
+    "gpt-",
+    "qwen-",
+)
+_APPROVED_STATUSES = frozenset(
+    {"cancelled", "error", "failed", "ok", "queued", "running", "succeeded"}
+)
+_APPROVED_STOP_REASONS = frozenset(
+    {"aborted", "error", "length", "stop", "tool_use"}
+)
+_APPROVED_TOOL_NAMES = frozenset(
+    {
+        "emit_fact_check_result",
+        "emit_question",
+        "emit_resume_suggestion",
+        "get_confirmed_facts",
+        "get_jd_requirements",
+        "unknown",
+    }
+)
+_APPROVED_CODES = frozenset(
+    {
+        "INVALID_JSON",
+        "OUTPUT_REFERENCE_INVALID",
+        "OUTPUT_SCHEMA_INVALID",
+        "UNSUPPORTED_CLAIM",
+        "absolute_claim",
+        "already_terminal",
+        "cost_limit_exceeded",
+        "fact_validation_failed",
+        "input_schema_invalid",
+        "invalid_json",
+        "model_route_unavailable",
+        "owner_instance_lost",
+        "output_reference_invalid",
+        "output_schema_invalid",
+        "prompt_version_unavailable",
+        "provider_429",
+        "provider_error",
+        "provider_timeout",
+        "provider_unavailable",
+        "route_missing",
+        "runtime_failed",
+        "safe_flag",
+        "schema_validation_failed",
+        "timeout_exceeded",
+        "token_limit_exceeded",
+        "tool_limit_exceeded",
+        "turn_limit_exceeded",
+        "unknown_id",
+        "unknown_tool",
+        "unsupported_award",
+        "unsupported_numeric",
+        "unsupported_role",
+        "unsupported_tool",
+    }
+)
+_JSON_PATH = re.compile(
+    r"\$(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[(?:0|[1-9]\d*)\]))*"
+)
+_CANONICAL_HASH = re.compile(r"[a-f0-9]{16,64}")
+_PROTECTED_HASH = re.compile(r"sha256:[a-f0-9]{16}")
+_PROMPT_TEMPLATE_VERSION = re.compile(
+    r"[a-z][a-z0-9-]{0,63}@[0-9]+(?:\.[0-9]+)*"
+)
 
 
 class AiRunService:
@@ -178,7 +257,7 @@ def _safe_details(event: TraceEvent) -> dict[str, JsonValue] | None:
             safe[key] = [
                 normalized
                 for item in value
-                if (normalized := _machine_identifier(item, 128))
+                if (normalized := _safe_string_field(key, item))
             ]
         elif key in _NUMBER_DETAIL_KEYS and _is_finite_number(value):
             safe[key] = value
@@ -190,19 +269,47 @@ def _safe_details(event: TraceEvent) -> dict[str, JsonValue] | None:
                 for usage_key, usage_value in value.items()
                 if usage_key in _USAGE_KEYS and _is_finite_number(usage_value)
             }
-        elif (normalized := _machine_identifier(value)) is not None:
+        elif (normalized := _safe_string_field(key, value)) is not None:
             safe[key] = normalized
     return safe or None
 
 
-def _machine_identifier(value: object, max_length: int = 256) -> str | None:
-    if (
-        not isinstance(value, str)
-        or len(value) > max_length
-        or _MACHINE_IDENTIFIER.fullmatch(value) is None
-    ):
+def _safe_string_field(key: str, value: object) -> str | None:
+    if not isinstance(value, str) or not value:
         return None
-    return value
+    if key == "provider":
+        return value if value in _APPROVED_PROVIDERS else None
+    if key in {"model", "response_model"}:
+        if value.startswith(_APPROVED_MODEL_PREFIXES):
+            return value[:256]
+        return _short_hash(value)
+    if key == "response_id":
+        return _short_hash(value)
+    if key == "status":
+        return value if value in _APPROVED_STATUSES else None
+    if key == "stop_reason":
+        return value if value in _APPROVED_STOP_REASONS else None
+    if key == "tool_name":
+        return value if value in _APPROVED_TOOL_NAMES else None
+    if key == "schema_path":
+        return value if _JSON_PATH.fullmatch(value) is not None else None
+    if key in {"error_code", "fallback_reason", "risk_flags"}:
+        return value if value in _APPROVED_CODES else None
+    if key in {"input_hash", "source_event_type_hash"}:
+        if _CANONICAL_HASH.fullmatch(value) is not None:
+            return value
+        return _short_hash(value)
+    if key == "prompt_template_version":
+        if _PROMPT_TEMPLATE_VERSION.fullmatch(value) is not None:
+            return value
+        return _short_hash(value)
+    return None
+
+
+def _short_hash(value: str) -> str:
+    if _PROTECTED_HASH.fullmatch(value) is not None:
+        return value
+    return f"sha256:{hashlib.sha256(value.encode()).hexdigest()[:16]}"
 
 
 def _is_finite_number(value: object) -> bool:

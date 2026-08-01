@@ -729,12 +729,47 @@ class TaskService:
         task_id: str,
         claim_token: str,
         error_code: str,
+        *,
+        release_unused_ai_reservation: bool = False,
     ) -> Task:
         async with self.sessions.begin() as session:
             task = await self._claimed_task(
                 session, owner_user_id, task_id, claim_token
             )
+            if release_unused_ai_reservation:
+                await self._release_unused_ai_reservation_in_session(session, task)
             await self._finish(session, task, "failed", error_code=error_code)
+            return task
+
+    async def finalize_unused_ai_reservation(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+    ) -> Task | None:
+        async with self.sessions.begin() as session:
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.owner_user_id == owner_user_id,
+                    Task.claim_token == claim_token,
+                    Task.status.in_(("cancelled", "failed")),
+                    Task.active_ai_run_id.is_(None),
+                )
+                .with_for_update()
+            )
+            if task is None:
+                return None
+            released = await self._release_unused_ai_reservation_in_session(
+                session,
+                task,
+            )
+            if not released:
+                return task
+            task.claim_token = None
+            task.claim_lease_expires_at = None
+            await session.flush()
             return task
 
     async def list_events(
@@ -916,9 +951,9 @@ class TaskService:
         self,
         session: AsyncSession,
         task: Task,
-    ) -> None:
+    ) -> bool:
         if task.usage_type != "ai_task" or task.active_ai_run_id is not None:
-            return
+            return False
         reservation = await session.scalar(
             select(UsageLedger)
             .where(
@@ -933,6 +968,8 @@ class TaskService:
             reservation.state = "released"
             reservation.updated_at = self.clock.now()
             await session.flush()
+            return True
+        return False
 
     async def _claimed_task(
         self,

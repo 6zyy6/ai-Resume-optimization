@@ -58,6 +58,78 @@ const SAFE_DETAIL_KEYS = new Set([
   "source_event_type_hash",
   "usage",
 ]);
+const APPROVED_PROVIDERS = new Set([
+  "anthropic",
+  "deepseek",
+  "faux",
+  "google",
+  "openai",
+  "qwen-token-plan-cn",
+  "test-faux",
+]);
+const APPROVED_MODEL_PREFIXES = [
+  "claude-",
+  "deepseek-",
+  "faux-",
+  "gemini-",
+  "gpt-",
+  "qwen-",
+];
+const APPROVED_STATUSES = new Set([
+  "cancelled",
+  "error",
+  "failed",
+  "ok",
+  "queued",
+  "running",
+  "succeeded",
+]);
+const APPROVED_STOP_REASONS = new Set([
+  "aborted",
+  "error",
+  "length",
+  "stop",
+  "tool_use",
+]);
+const APPROVED_CODES = new Set([
+  "INVALID_JSON",
+  "OUTPUT_REFERENCE_INVALID",
+  "OUTPUT_SCHEMA_INVALID",
+  "UNSUPPORTED_CLAIM",
+  "absolute_claim",
+  "already_terminal",
+  "cost_limit_exceeded",
+  "fact_validation_failed",
+  "input_schema_invalid",
+  "invalid_json",
+  "model_route_unavailable",
+  "owner_instance_lost",
+  "output_reference_invalid",
+  "output_schema_invalid",
+  "prompt_version_unavailable",
+  "provider_429",
+  "provider_error",
+  "provider_timeout",
+  "provider_unavailable",
+  "route_missing",
+  "runtime_failed",
+  "safe_flag",
+  "schema_validation_failed",
+  "timeout_exceeded",
+  "token_limit_exceeded",
+  "tool_limit_exceeded",
+  "turn_limit_exceeded",
+  "unknown_id",
+  "unknown_tool",
+  "unsupported_award",
+  "unsupported_numeric",
+  "unsupported_role",
+  "unsupported_tool",
+]);
+const JSON_PATH = /^\$(?:(?:\.[A-Za-z_][A-Za-z0-9_]*)|(?:\[(?:0|[1-9]\d*)\]))*$/;
+const CANONICAL_HASH = /^[a-f0-9]{16,64}$/;
+const PROTECTED_HASH = /^sha256:[a-f0-9]{16}$/;
+const PROMPT_TEMPLATE_VERSION = /^[a-z][a-z0-9-]{0,63}@[0-9]+(?:\.[0-9]+)*$/;
 
 function emptyUsage(): TraceUsage {
   return {
@@ -75,16 +147,52 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function safeString(value: unknown, maxLength = 256): string | undefined {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maxLength ||
-    !/^[a-zA-Z0-9_$.:/[\]-]+$/.test(value)
-  ) {
+function shortHash(value: string): string {
+  if (PROTECTED_HASH.test(value)) {
+    return value;
+  }
+  return `sha256:${hash(value).slice(0, 16)}`;
+}
+
+function safeStringField(key: string, value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0) {
     return undefined;
   }
-  return value;
+  if (key === "provider") {
+    return APPROVED_PROVIDERS.has(value) ? value : undefined;
+  }
+  if (key === "model" || key === "response_model") {
+    return APPROVED_MODEL_PREFIXES.some((prefix) => value.startsWith(prefix))
+      ? value.slice(0, 256)
+      : shortHash(value);
+  }
+  if (key === "response_id") {
+    return shortHash(value);
+  }
+  if (key === "status") {
+    return APPROVED_STATUSES.has(value) ? value : undefined;
+  }
+  if (key === "stop_reason") {
+    return APPROVED_STOP_REASONS.has(value) ? value : undefined;
+  }
+  if (key === "tool_name") {
+    return ALLOWED_TOOL_NAMES.includes(value as never) || value === "unknown"
+      ? value
+      : undefined;
+  }
+  if (key === "schema_path") {
+    return JSON_PATH.test(value) ? value : undefined;
+  }
+  if (["error_code", "fallback_reason", "risk_flags"].includes(key)) {
+    return APPROVED_CODES.has(value) ? value : undefined;
+  }
+  if (key === "input_hash" || key === "source_event_type_hash") {
+    return CANONICAL_HASH.test(value) ? value : shortHash(value);
+  }
+  if (key === "prompt_template_version") {
+    return PROMPT_TEMPLATE_VERSION.test(value) ? value : shortHash(value);
+  }
+  return undefined;
 }
 
 function safeDetails(
@@ -100,7 +208,7 @@ function safeDetails(
     }
     if (key === "risk_flags" && Array.isArray(value)) {
       safe[key] = value
-        .map((entry) => safeString(entry, 128))
+        .map((entry) => safeStringField(key, entry))
         .filter((entry): entry is string => Boolean(entry));
     } else if (
       ["duration_ms", "latency_ms", "input_length", "output_length"].includes(
@@ -131,7 +239,7 @@ function safeDetails(
         ),
       );
     } else {
-      const normalized = safeString(value);
+      const normalized = safeStringField(key, value);
       if (normalized !== undefined) {
         safe[key] = normalized;
       }

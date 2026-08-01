@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import hashlib
 import inspect as python_inspect
 import json
 from pathlib import Path
@@ -623,6 +624,12 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
     assert [event.event_seq for event in events] == [1, 2]
     assert events[0].payload == {
         "provider": "deepseek",
+        "model": (
+            "sha256:"
+            + hashlib.sha256(
+                b"FULL JD / Resume John john@example.com"
+            ).hexdigest()[:16]
+        ),
         "risk_flags": ["safe_flag"],
         "duration_ms": 12,
         "usage": {
@@ -648,6 +655,134 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
     assert "FULL_JD" not in persisted_text
     assert "Resume_John" not in persisted_text
     assert "john_example.com" not in persisted_text
+
+
+async def test_trace_string_fields_apply_irreversible_field_level_privacy_policy(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_trace_privacy"))
+    tasks = TaskService(sql_session_factory)
+    task = await tasks.create_task(
+        "usr_trace_privacy",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_receipt",
+        idempotency_key="trace-field-privacy",
+        admission=TaskAdmission.ai(),
+    )
+    receipt = _receipt(task.id, "parse")
+    sensitive_values = (
+        "13800138000",
+        "11010519491231002X",
+        "john.doe",
+        "john-doe",
+        "john_doe",
+        "john@example.com",
+    )
+    string_fields = (
+        "provider",
+        "model",
+        "response_model",
+        "response_id",
+        "stop_reason",
+        "tool_name",
+        "status",
+        "schema_path",
+        "error_code",
+        "fallback_reason",
+        "input_hash",
+        "prompt_template_version",
+        "source_event_type_hash",
+    )
+    template = receipt.run.events[0]
+    privacy_events = [
+        template.model_copy(
+            update={
+                "event_seq": index,
+                "details": {
+                    **{field: value for field in string_fields},
+                    "risk_flags": [value],
+                },
+            }
+        )
+        for index, value in enumerate(sensitive_values, start=1)
+    ]
+    response_id_hash = (
+        "sha256:"
+        + hashlib.sha256(b"response_123").hexdigest()[:16]
+    )
+    safe_details = {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "response_model": "deepseek-chat-202607",
+        "response_id": response_id_hash,
+        "stop_reason": "stop",
+        "tool_name": "emit_question",
+        "schema_valid": True,
+        "status": "ok",
+        "schema_path": "$.atomic_claims[0].fact_refs",
+        "error_code": "UNSUPPORTED_CLAIM",
+        "fallback_reason": "provider_unavailable",
+        "risk_flags": ["unsupported_numeric", "safe_flag"],
+        "input_hash": "a" * 64,
+        "prompt_template_version": "jd-parse@2",
+        "source_event_type_hash": "b" * 16,
+    }
+    privacy_events.append(
+        template.model_copy(
+            update={
+                "event_seq": len(privacy_events) + 1,
+                "details": safe_details,
+            }
+        )
+    )
+    protected = receipt.model_copy(
+        update={
+            "run": receipt.run.model_copy(update={"events": tuple(privacy_events)})
+        }
+    )
+
+    async with sql_session_factory.begin() as session:
+        await AiRunService().persist_in_session(
+            session,
+            "usr_trace_privacy",
+            protected,
+            workflow_stage="parse",
+        )
+    async with sql_session_factory() as session:
+        stored_events = list(
+            (
+                await session.scalars(
+                    select(AiTraceEvent)
+                    .where(AiTraceEvent.ai_run_id == protected.run.ai_run_id)
+                    .order_by(AiTraceEvent.event_seq)
+                )
+            ).all()
+        )
+
+    serialized = json.dumps(
+        [event.payload for event in stored_events],
+        ensure_ascii=False,
+    )
+    for value in sensitive_values:
+        assert value not in serialized
+    for event in stored_events[:-1]:
+        payload = event.payload or {}
+        for field in (
+            "model",
+            "response_model",
+            "response_id",
+            "input_hash",
+            "source_event_type_hash",
+        ):
+            protected_value = payload[field]
+            assert isinstance(protected_value, str)
+            assert protected_value.startswith("sha256:")
+            assert len(protected_value) == 23
+        assert payload.get("risk_flags") == []
+
+    assert stored_events[-1].payload == safe_details
 
 
 async def test_receipt_requires_at_least_one_terminal_trace_event(

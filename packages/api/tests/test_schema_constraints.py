@@ -26,12 +26,13 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session as SyncSession
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.schema import CreateTable
 
 from app.contracts import FactStatus
 from app.db import repositories as repository_module
 from app.db.models import (
+    AiRun,
     AiTraceEvent,
     Base,
     Fact,
@@ -180,6 +181,89 @@ def test_postgresql_ai_run_ddl_preserves_cost_precision_and_template_width():
 
     assert "provider_cost NUMERIC(38, 18)" in ddl
     assert "prompt_template_version VARCHAR(128)" in ddl
+
+
+def test_migrated_sqlite_ai_run_preserves_exact_provider_cost_with_orm_replay(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "exact-provider-cost.db"
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0011")
+    command.upgrade(config, "0012")
+    engine = create_engine(f"sqlite:///{database_path}")
+    created_at = "2026-08-01 08:00:00"
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, status, locale, created_at) "
+                "VALUES ('usr_exact_cost', 'active', 'zh-CN', :created_at)"
+            ),
+            {"created_at": created_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO tasks "
+                "(id, owner_user_id, type, status, priority, trace_id, attempts, "
+                "max_attempts, queued_at, stage, progress, cancellation_requested) "
+                "VALUES ('tsk_exact_cost', 'usr_exact_cost', 'ai', 'running', 0, "
+                "'tr_exact_cost', 1, 3, :created_at, 'running', 0, 0)"
+            ),
+            {"created_at": created_at},
+        )
+
+    exact_cost = Decimal("0.123456789012345678")
+    with SyncSession(engine) as session:
+        session.add(
+            AiRun(
+                id="run_exact_cost",
+                owner_user_id="usr_exact_cost",
+                trace_id="tr_exact_cost",
+                task_id="tsk_exact_cost",
+                workflow_type="parse_jd",
+                workflow_version="2",
+                workflow_stage="parse",
+                status="failed",
+                error_code="provider_unavailable",
+                provider="deepseek",
+                requested_model="deepseek-chat",
+                response_model="deepseek-chat-202607",
+                provider_cost=exact_cost,
+                prompt_template_version="jd-parse@2",
+                input_hash="exact_input_hash",
+            )
+        )
+        session.commit()
+
+    with SyncSession(engine) as session:
+        first = session.scalar(select(AiRun).where(AiRun.id == "run_exact_cost"))
+    with SyncSession(engine) as session:
+        replay = session.scalar(select(AiRun).where(AiRun.id == "run_exact_cost"))
+    with engine.connect() as connection:
+        storage_type, stored_value = connection.execute(
+            text(
+                "SELECT typeof(provider_cost), provider_cost "
+                "FROM ai_runs WHERE id = 'run_exact_cost'"
+            )
+        ).one()
+        migrated_type = next(
+            row[2]
+            for row in connection.execute(text("PRAGMA table_info(ai_runs)"))
+            if row[1] == "provider_cost"
+        )
+    engine.dispose()
+
+    assert first is not None and first.provider_cost == exact_cost
+    assert replay is not None and replay.provider_cost == exact_cost
+    assert storage_type == "text"
+    assert Decimal(stored_value) == exact_cost
+    assert migrated_type == Base.metadata.tables["ai_runs"].c.provider_cost.type.compile(
+        dialect=sqlite.dialect()
+    )
 
 
 def test_migration_0012_marks_legacy_usage_as_consumed(tmp_path, monkeypatch):

@@ -131,7 +131,12 @@ class TaskExecutor:
                     "failed",
                     "cancelled",
                 }:
-                    return _task_result(current)
+                    return await self._terminal_result(
+                        owner_user_id,
+                        task_id,
+                        claim.token,
+                        current,
+                    )
                 task = await self.service.complete_task(
                     owner_user_id,
                     task_id,
@@ -146,8 +151,14 @@ class TaskExecutor:
                     "failed",
                     "cancelled",
                 }:
-                    return _task_result(current)
-                if should_retry(error) and claim.attempts < claim.max_attempts:
+                    return await self._terminal_result(
+                        owner_user_id,
+                        task_id,
+                        claim.token,
+                        current,
+                    )
+                retryable = should_retry(error)
+                if retryable and claim.attempts < claim.max_attempts:
                     await self.service.release_claim_for_retry(
                         owner_user_id,
                         task_id,
@@ -162,8 +173,24 @@ class TaskExecutor:
                     task_id,
                     claim.token,
                     type(error).__name__,
+                    release_unused_ai_reservation=not retryable,
                 )
                 return _task_result(task)
+
+    async def _terminal_result(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+        task: Any,
+    ) -> dict[str, Any]:
+        await self.service.finalize_unused_ai_reservation(
+            owner_user_id,
+            task_id,
+            claim_token,
+        )
+        current = await self.service.get_task(owner_user_id, task_id)
+        return _task_result(current or task)
 
 
 def _task_result(task: Any) -> dict[str, Any]:

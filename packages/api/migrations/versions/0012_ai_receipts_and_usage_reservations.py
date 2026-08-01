@@ -19,6 +19,12 @@ END
 """
 
 
+def _provider_cost_type():
+    if op.get_bind().dialect.name == "sqlite":
+        return sa.String(length=64)
+    return sa.Numeric(38, 18)
+
+
 def _drop_usage_update_guard() -> None:
     dialect = op.get_bind().dialect.name
     if dialect == "sqlite":
@@ -192,7 +198,7 @@ def upgrade() -> None:
         batch_op.alter_column(
             "provider_cost",
             existing_type=sa.Numeric(18, 6),
-            type_=sa.Numeric(38, 18),
+            type_=_provider_cost_type(),
             nullable=False,
         )
         batch_op.alter_column(
@@ -265,12 +271,19 @@ def downgrade() -> None:
     ).first()
     if non_consumed is not None:
         raise RuntimeError("cannot downgrade usage ledger with non-consumed rows")
-    precise_cost = bind.execute(
-        sa.text(
+    if bind.dialect.name == "sqlite":
+        precision_query = (
+            "SELECT id FROM ai_runs "
+            "WHERE INSTR(provider_cost, '.') > 0 "
+            "AND LENGTH(RTRIM(SUBSTR(provider_cost, "
+            "INSTR(provider_cost, '.') + 1), '0')) > 6 LIMIT 1"
+        )
+    else:
+        precision_query = (
             "SELECT id FROM ai_runs "
             "WHERE provider_cost != ROUND(provider_cost, 6) LIMIT 1"
         )
-    ).first()
+    precise_cost = bind.execute(sa.text(precision_query)).first()
     if precise_cost is not None:
         raise RuntimeError("cannot downgrade AI run provider cost without precision loss")
     wide_template = bind.execute(
@@ -311,7 +324,7 @@ def downgrade() -> None:
         )
         batch_op.alter_column(
             "provider_cost",
-            existing_type=sa.Numeric(38, 18),
+            existing_type=_provider_cost_type(),
             type_=sa.Numeric(18, 6),
             nullable=False,
         )

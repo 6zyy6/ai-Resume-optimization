@@ -7,7 +7,7 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
-from app.db.models import Base, Fact, TaskEvent, User
+from app.db.models import Base, Fact, TaskEvent, UsageLedger, User
 from app.main import create_app
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
@@ -146,6 +146,166 @@ async def test_executor_retries_only_transient_failures(sql_session_factory):
     assert should_retry(HttpServiceError(400)) is False
     assert retry_delay(1, jitter=lambda: 0) == 1
     assert retry_delay(2, jitter=lambda: 0) == 2
+
+
+@pytest.mark.anyio
+async def test_executor_finalizes_cancelled_running_task_that_never_started_pi(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_cancelled_without_run",
+        idempotency_key="cancelled-without-run",
+        admission=TaskAdmission.ai(),
+    )
+
+    async def cancel_before_pi(_claim) -> str:
+        await service.request_cancel("usr_recovery", task.id)
+        return "unused"
+
+    result = await TaskExecutor(service).execute(
+        "usr_recovery",
+        task.id,
+        lambda _: cancel_before_pi,
+    )
+    stored = await service.get_task("usr_recovery", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result["status"] == "cancelled"
+    assert stored is not None
+    assert stored.claim_token is None
+    assert stored.active_ai_run_id is None
+    assert reservation is not None
+    assert reservation.state == "released"
+    assert reservation.ai_run_id is None
+
+
+@pytest.mark.anyio
+async def test_executor_never_releases_cancelled_task_registered_during_post_race(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_cancelled_with_run",
+        idempotency_key="cancelled-with-run",
+        admission=TaskAdmission.ai(),
+    )
+
+    async def cancel_then_register(claim) -> str:
+        await service.request_cancel("usr_recovery", task.id)
+        should_continue = await service.register_ai_run(
+            "usr_recovery",
+            task.id,
+            claim.token,
+            "run_post_race",
+        )
+        assert should_continue is False
+        return "unused"
+
+    result = await TaskExecutor(service).execute(
+        "usr_recovery",
+        task.id,
+        lambda _: cancel_then_register,
+    )
+    stored = await service.get_task("usr_recovery", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result["status"] == "cancelled"
+    assert stored is not None
+    assert stored.active_ai_run_id == "run_post_race"
+    assert reservation is not None
+    assert reservation.state == "consumed"
+    assert reservation.ai_run_id == "run_post_race"
+
+
+@pytest.mark.anyio
+async def test_non_retryable_pre_pi_failure_releases_unused_reservation(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_pre_pi_validation",
+        idempotency_key="pre-pi-validation",
+        admission=TaskAdmission.ai(),
+    )
+
+    async def invalid_before_pi(_claim) -> str:
+        raise ValueError("PRE_PI_VALIDATION")
+
+    result = await TaskExecutor(service).execute(
+        "usr_recovery",
+        task.id,
+        lambda _: invalid_before_pi,
+    )
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result == {
+        "id": task.id,
+        "status": "failed",
+        "result_ref": None,
+        "error_code": "ValueError",
+    }
+    assert reservation is not None
+    assert reservation.state == "released"
+
+
+@pytest.mark.anyio
+async def test_transport_ambiguity_does_not_release_unused_reservation(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_ambiguous_timeout",
+        idempotency_key="ambiguous-timeout",
+        admission=TaskAdmission.ai(),
+    )
+
+    async def ambiguous_transport(_claim) -> str:
+        raise TimeoutError("Pi may have accepted the run")
+
+    result = await TaskExecutor(
+        service,
+        sleep=lambda _: None,
+        jitter=lambda: 0,
+    ).execute(
+        "usr_recovery",
+        task.id,
+        lambda _: ambiguous_transport,
+    )
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "TimeoutError"
+    assert reservation is not None
+    assert reservation.state == "reserved"
 
 
 @pytest.mark.anyio

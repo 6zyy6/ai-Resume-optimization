@@ -209,6 +209,116 @@ describe("event ledger", () => {
     expect(serialized).toContain("safe_flag");
   });
 
+  it("never preserves PII-shaped values in any string trace field", () => {
+    const ledger = createEventLedger({
+      ai_run_id: "run_pii",
+      trace_id: "trace_pii",
+      task_id: "task_pii",
+    });
+    const sensitiveValues = [
+      "13800138000",
+      "11010519491231002X",
+      "john.doe",
+      "john-doe",
+      "john_doe",
+      "john@example.com",
+    ];
+    const stringFields = [
+      "provider",
+      "model",
+      "response_model",
+      "response_id",
+      "stop_reason",
+      "tool_name",
+      "status",
+      "schema_path",
+      "error_code",
+      "fallback_reason",
+      "input_hash",
+      "prompt_template_version",
+      "source_event_type_hash",
+    ];
+
+    for (const value of sensitiveValues) {
+      ledger.append("model_fallback", {
+        ...Object.fromEntries(stringFields.map((field) => [field, value])),
+        risk_flags: [value],
+      });
+    }
+
+    const serialized = JSON.stringify(ledger.events);
+    for (const value of sensitiveValues) {
+      expect(serialized).not.toContain(value);
+    }
+    for (const event of ledger.events) {
+      expect(event.details?.model).toMatch(/^sha256:[a-f0-9]{16}$/);
+      expect(event.details?.response_model).toMatch(/^sha256:[a-f0-9]{16}$/);
+      expect(event.details?.response_id).toMatch(/^sha256:[a-f0-9]{16}$/);
+      expect(event.details?.input_hash).toMatch(/^sha256:[a-f0-9]{16}$/);
+      expect(event.details?.source_event_type_hash).toMatch(
+        /^sha256:[a-f0-9]{16}$/,
+      );
+      expect(event.details?.risk_flags).toEqual([]);
+    }
+
+    const firstPass = ledger.events.map((event) => event.details);
+    for (const details of firstPass) {
+      ledger.append("model_fallback", details);
+    }
+    expect(ledger.events.slice(firstPass.length).map((event) => event.details))
+      .toEqual(firstPass);
+  });
+
+  it("retains approved audit identifiers under the field-level policy", () => {
+    const ledger = createEventLedger({
+      ai_run_id: "run_safe",
+      trace_id: "trace_safe",
+      task_id: "task_safe",
+    });
+
+    const responseIdHash = "sha256:8f2a854afb5c4231";
+    const deepseek = ledger.append("model_fallback", {
+      provider: "deepseek",
+      model: "deepseek-chat",
+      response_model: "deepseek-chat-202607",
+      response_id: responseIdHash,
+      stop_reason: "stop",
+      tool_name: "emit_question",
+      schema_valid: true,
+      status: "ok",
+      schema_path: "$.atomic_claims[0].fact_refs",
+      error_code: "UNSUPPORTED_CLAIM",
+      fallback_reason: "provider_unavailable",
+      risk_flags: ["unsupported_numeric", "safe_flag"],
+      input_hash: "a".repeat(64),
+      prompt_template_version: "jd-parse@2",
+      source_event_type_hash: "b".repeat(16),
+    });
+    const faux = ledger.append("message_end", {
+      provider: "faux",
+      model: "faux-1",
+    });
+
+    expect(deepseek.details).toEqual({
+      provider: "deepseek",
+      model: "deepseek-chat",
+      response_model: "deepseek-chat-202607",
+      response_id: responseIdHash,
+      stop_reason: "stop",
+      tool_name: "emit_question",
+      schema_valid: true,
+      status: "ok",
+      schema_path: "$.atomic_claims[0].fact_refs",
+      error_code: "UNSUPPORTED_CLAIM",
+      fallback_reason: "provider_unavailable",
+      risk_flags: ["unsupported_numeric", "safe_flag"],
+      input_hash: "a".repeat(64),
+      prompt_template_version: "jd-parse@2",
+      source_event_type_hash: "b".repeat(16),
+    });
+    expect(faux.details).toEqual({ provider: "faux", model: "faux-1" });
+  });
+
   it("maps nested Agent assistant deltas to first_token then message_update", () => {
     const ledger = createEventLedger({
       ai_run_id: "run_1",
