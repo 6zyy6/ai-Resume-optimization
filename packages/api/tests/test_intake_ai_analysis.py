@@ -1388,6 +1388,205 @@ def test_each_coordinated_atomic_clause_is_accepted(answer, evidence):
 
 
 @pytest.mark.parametrize(
+    "answer",
+    [
+        "完成不了项目",
+        "负责不了项目",
+        "参与不了项目",
+        "掌握不了Python",
+        "解决不了问题",
+        "开发不了项目",
+        "组织不了活动",
+        "做不了任务",
+        "I failed at leading projects",
+        "I know almost nothing about Python",
+        "张三在项目中完成",
+        "导师在实习期间负责",
+        "供应商在第一阶段完成",
+        "张三开发",
+        "导师实现",
+        "供应商推动",
+        "Alice helped",
+        "A vendor implemented",
+        "项目由我朋友完成",
+        "项目由本人助理负责",
+        "The project was completed by my friend's team",
+    ],
+)
+def test_postpositive_inability_or_adverbial_other_owner_is_hard_rejected(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("我压根没有相关经验，负责项目", "负责项目"),
+        ("没有丝毫相关经验，负责项目", "负责项目"),
+        ("I simply cannot, lead", "lead"),
+    ],
+)
+def test_dangling_emphatic_inability_cannot_be_cropped(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "完成项目。该任务由同学完成",
+        "完成项目。此项目由同学完成",
+        "完成项目。前述项目由同学完成",
+        "完成项目。后来发现由同学完成",
+    ],
+)
+def test_generalized_referential_tail_rejects_prior_candidate(answer):
+    evidence = "完成项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "支持不熟悉系统的用户",
+        "培训不会操作的学生",
+        "分析由导师完成的方案",
+        "服务不了解系统的用户",
+        "维护由供应商完成的系统",
+        "审核由同事完成的方案",
+        "项目由咱们共同完成",
+        "项目由本团队完成",
+        "The project was completed by the team and me",
+        "The project was completed by my engineering group",
+    ],
+)
+def test_nested_support_or_extended_self_owner_is_accepted(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "我完成A项目。后续项目不是我的职责",
+        "我完成A项目。项目C不是我的职责",
+        "I completed project A. The third project was not my responsibility",
+        "I completed project A. On another project, I was not responsible",
+    ],
+)
+def test_later_or_numbered_new_topic_does_not_poison_prior_fact(answer):
+    evidence = "我完成A项目" if answer.startswith("我") else "I completed project A"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_independent_english_numbered_tail_does_not_poison_prior_fact():
+    answer = "I completed A. I was not responsible for the third project"
+    evidence = "I completed A"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_participate_word_is_not_split_as_coordination():
+    answer = "参与完成项目"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "完成项目并且撰写报告",
+        "完成项目同时制定方案",
+        "完成项目还提交材料",
+        "完成项目以及负责汇报",
+        "完成项目、负责汇报",
+        "完成项目与负责汇报",
+    ],
+)
+def test_extended_multi_atomic_coordination_requires_edit(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("完成项目并且撰写报告", "完成项目"),
+        ("完成项目并且撰写报告", "撰写报告"),
+        ("完成项目同时制定方案", "完成项目"),
+        ("完成项目同时制定方案", "制定方案"),
+        ("完成项目还提交材料", "完成项目"),
+        ("完成项目还提交材料", "提交材料"),
+        ("完成项目以及负责汇报", "完成项目"),
+        ("完成项目以及负责汇报", "负责汇报"),
+        ("完成项目、负责汇报", "完成项目"),
+        ("完成项目、负责汇报", "负责汇报"),
+        ("完成项目与负责汇报", "完成项目"),
+        ("完成项目与负责汇报", "负责汇报"),
+    ],
+)
+def test_each_extended_coordinated_clause_is_accepted(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),
