@@ -135,7 +135,7 @@ class SourceRecord(OwnerMixin, Base):
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_source_record_owner"),
         CheckConstraint(
-            "source_type IN ('question_answer', 'imported_resume', 'user_edit', 'user_confirmation')",
+            "source_type IN ('question_answer', 'imported_resume', 'user_edit', 'user_confirmation', 'fact_candidate_edit')",
             name="ck_source_record_type",
         ),
     )
@@ -282,6 +282,7 @@ class IntakeSession(OwnerMixin, Base):
 class IntakeAnswer(OwnerMixin, Base):
     __tablename__ = "intake_answers"
     __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uq_intake_answer_owner"),
         ForeignKeyConstraint(
             ["session_id", "owner_user_id"],
             ["intake_sessions.id", "intake_sessions.owner_user_id"],
@@ -292,14 +293,38 @@ class IntakeAnswer(OwnerMixin, Base):
             ["facts.id", "facts.owner_user_id"],
             name="fk_intake_answer_fact_owner",
         ),
+        ForeignKeyConstraint(
+            ["analysis_task_id", "owner_user_id"],
+            ["tasks.id", "tasks.owner_user_id"],
+            name="fk_intake_answer_analysis_task_owner",
+        ),
         UniqueConstraint(
             "session_id",
             "question_id",
             name="uq_intake_answer_question",
         ),
+        UniqueConstraint(
+            "analysis_task_id",
+            "owner_user_id",
+            name="uq_intake_answer_analysis_task_owner",
+        ),
         CheckConstraint(
             "state IN ('answered', 'negative', 'skipped')",
             name="ck_intake_answer_state",
+        ),
+        CheckConstraint(
+            "analysis_status IN ('idle', 'queued', 'running', 'waiting_for_confirmation', 'failed', 'completed')",
+            name="ck_intake_answer_analysis_status",
+        ),
+        CheckConstraint(
+            "next_question_source IS NULL OR next_question_source IN ('rule', 'model', 'fallback')",
+            name="ck_intake_answer_next_question_source",
+        ),
+        Index(
+            "ix_intake_answers_analysis_claim",
+            "owner_user_id",
+            "analysis_status",
+            "analysis_task_id",
         ),
     )
 
@@ -309,6 +334,104 @@ class IntakeAnswer(OwnerMixin, Base):
     answer_encrypted: Mapped[str | None] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(32), nullable=False)
     fact_id: Mapped[str | None] = mapped_column(String(64))
+    analysis_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="idle",
+    )
+    analysis_task_id: Mapped[str | None] = mapped_column(String(64))
+    analysis_input_version: Mapped[int | None] = mapped_column(Integer)
+    analysis_input_hash: Mapped[str | None] = mapped_column(String(64))
+    next_question_source: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    )
+
+
+class FactCandidate(OwnerMixin, Base):
+    __tablename__ = "fact_candidates"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uq_fact_candidate_owner"),
+        ForeignKeyConstraint(
+            ["intake_answer_id", "owner_user_id"],
+            ["intake_answers.id", "intake_answers.owner_user_id"],
+            name="fk_fact_candidate_answer_owner",
+        ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_fact_candidate_ai_run_owner",
+        ),
+        ForeignKeyConstraint(
+            ["decision_source_id", "owner_user_id"],
+            ["source_records.id", "source_records.owner_user_id"],
+            name="fk_fact_candidate_decision_source_owner",
+        ),
+        ForeignKeyConstraint(
+            ["fact_id", "owner_user_id"],
+            ["facts.id", "facts.owner_user_id"],
+            name="fk_fact_candidate_fact_owner",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'accepted', 'edited', 'rejected')",
+            name="ck_fact_candidate_status",
+        ),
+        CheckConstraint(
+            "decision_mode IN ('accept_or_edit', 'edit_only')",
+            name="ck_fact_candidate_decision_mode",
+        ),
+        CheckConstraint(
+            "source_start >= 0 AND source_end > source_start",
+            name="ck_fact_candidate_source_range",
+        ),
+        CheckConstraint(
+            "(status = 'pending' AND decided_at IS NULL AND decided_by IS NULL "
+            "AND decision_source_id IS NULL AND fact_id IS NULL) OR "
+            "(status = 'accepted' AND decision_mode = 'accept_or_edit' "
+            "AND decided_at IS NOT NULL AND decided_by IS NOT NULL "
+            "AND decision_source_id IS NULL AND fact_id IS NOT NULL) OR "
+            "(status = 'edited' AND decided_at IS NOT NULL "
+            "AND decided_by IS NOT NULL AND decision_source_id IS NOT NULL "
+            "AND fact_id IS NOT NULL) OR "
+            "(status = 'rejected' AND decided_at IS NOT NULL "
+            "AND decided_by IS NOT NULL AND decision_source_id IS NULL "
+            "AND fact_id IS NULL)",
+            name="ck_fact_candidate_decision_state",
+        ),
+        UniqueConstraint(
+            "intake_answer_id",
+            "kind",
+            "value_encrypted",
+            "source_start",
+            "source_end",
+            "source_hash",
+            name="uq_fact_candidate_answer_value_source",
+        ),
+        Index(
+            "ix_fact_candidates_session_response",
+            "owner_user_id",
+            "intake_answer_id",
+            "status",
+        ),
+        Index("ix_fact_candidates_ai_run_id", "ai_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    intake_answer_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    source_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    decision_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    ai_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_source_id: Mapped[str | None] = mapped_column(String(64))
+    fact_id: Mapped[str | None] = mapped_column(String(64))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,

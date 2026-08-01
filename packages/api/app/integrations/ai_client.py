@@ -239,6 +239,7 @@ class FactCandidate(StrictModel):
     value: TextString
     source_answer_id: IdString
     source_range: SourceRange
+    source_hash: HashString
     risk_flags: RiskList
 
 

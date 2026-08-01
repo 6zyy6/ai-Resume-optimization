@@ -134,6 +134,30 @@ describe("V2 workflow contracts", () => {
     expect(Value.Check(WorkflowInputSchema, input)).toBe(true);
   });
 
+  it("requires a canonical source hash on every intake fact candidate", () => {
+    const candidate = {
+      kind: "skill",
+      value: "Python",
+      source_answer_id: "answer_1",
+      source_range: { start: 4, end: 10 },
+      source_hash: "d".repeat(64),
+      risk_flags: [],
+    };
+    const output = {
+      fact_candidates: [candidate],
+      missing_slots: [],
+      question_candidate: null,
+    };
+
+    expect(Value.Check(WORKFLOW_OUTPUT_SCHEMAS.analyze_intake_answer, output))
+      .toBe(true);
+    const { source_hash: _, ...withoutHash } = candidate;
+    expect(Value.Check(
+      WORKFLOW_OUTPUT_SCHEMAS.analyze_intake_answer,
+      { ...output, fact_candidates: [withoutHash] },
+    )).toBe(false);
+  });
+
   it.each([
     { input: { ...makeParseJdInput(), owner_scope_hash: "john@example.com" } },
     { input: { ...makeParseJdInput(), input_hash: "arbitrary-string" } },

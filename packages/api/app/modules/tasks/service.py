@@ -38,10 +38,16 @@ class SystemClock:
 class TaskAdmission:
     usage_type: str | None
     cost_cny: Decimal = Decimal("0")
+    is_retry: bool = False
 
     @classmethod
-    def ai(cls, cost_cny: Decimal = Decimal("0")) -> "TaskAdmission":
-        return cls("ai_task", cost_cny)
+    def ai(
+        cls,
+        cost_cny: Decimal = Decimal("0"),
+        *,
+        is_retry: bool = False,
+    ) -> "TaskAdmission":
+        return cls("ai_task", cost_cny, is_retry)
 
     @classmethod
     def unmetered(cls) -> "TaskAdmission":
@@ -158,6 +164,7 @@ class TaskService:
             "payload": payload or {},
             "usage_type": admission.usage_type,
             "cost_cny": format(admission.cost_cny.normalize(), "f"),
+            "is_retry": admission.is_retry,
         }
         try:
             claim = await self.idempotency.claim(
@@ -699,6 +706,19 @@ class TaskService:
         )
         return task
 
+    async def fail_task_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+        error_code: str,
+        *,
+        release_unused_ai_reservation: bool = False,
+    ) -> Task:
+        if release_unused_ai_reservation:
+            await self._release_unused_ai_reservation_in_session(session, task)
+        await self._finish(session, task, "failed", error_code=error_code)
+        return task
+
     async def release_claim_for_retry(
         self,
         owner_user_id: str,
@@ -867,7 +887,7 @@ class TaskService:
             daily_tasks,
             running_tasks,
             retry_after,
-            False,
+            admission.is_retry,
         )
         if not decision.allowed:
             raise TaskServiceError(

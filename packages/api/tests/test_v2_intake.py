@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,11 +12,17 @@ from app.db.models import (
     Base,
     BulletFactLink,
     Fact,
+    FactCandidate,
     FactSource,
+    IntakeAnswer,
+    IntakeSession,
     Outbox,
     Resume,
     ResumeVersion,
+    SourceRecord,
     Task,
+    TaskEvent,
+    UsageLedger,
     User,
     UserConsent,
     UserIdentity,
@@ -213,8 +220,8 @@ def test_restart_does_not_abandon_a_draft_task_in_progress(intake_client):
     assert _run(_table_count(sessions, "intake_sessions")) == 1
 
 
-def test_positive_answer_persists_source_and_unconfirmed_fact(intake_client):
-    """Removing source creation or defaulting facts to confirmed breaks evidence rules."""
+def test_positive_answer_queues_analysis_without_creating_facts(intake_client):
+    """Creating a Fact before candidate confirmation bypasses the review boundary."""
     client, sessions, _, _ = intake_client
     started = _start(client)
     session_id = started.json()["id"]
@@ -228,14 +235,22 @@ def test_positive_answer_persists_source_and_unconfirmed_fact(intake_client):
         key="answer-project",
     )
 
-    assert saved.status_code == 200
+    assert saved.status_code == 202
     body = saved.json()
     assert body["version"] == 1
-    assert body["current_question"]["id"] == "course_role"
-    assert body["fact_summaries"][0]["status"] == "unconfirmed"
-    assert _run(_table_count(sessions, "intake_answers")) == 1
-    assert _run(_model_count(sessions, Fact)) == 1
-    assert _run(_model_count(sessions, FactSource)) == 1
+    assert body["current_question"] is None
+    assert body["analysis_status"] == "queued"
+    assert body["analysis_task_id"]
+    assert body["fact_summaries"] == []
+    assert _run(_model_count(sessions, IntakeAnswer)) == 1
+    assert _run(_model_count(sessions, Task)) == 1
+    assert _run(_model_count(sessions, TaskEvent)) == 1
+    assert _run(_model_count(sessions, Outbox)) == 1
+    assert _run(_model_count(sessions, UsageLedger)) == 1
+    assert _run(_model_count(sessions, SourceRecord)) == 0
+    assert _run(_model_count(sessions, FactCandidate)) == 0
+    assert _run(_model_count(sessions, Fact)) == 0
+    assert _run(_model_count(sessions, FactSource)) == 0
 
 
 @pytest.mark.parametrize(
@@ -245,6 +260,7 @@ def test_positive_answer_persists_source_and_unconfirmed_fact(intake_client):
         ("没有相关经历。", False, "negative"),
         ("暂时没有类似经验", False, "negative"),
         ("不知道", False, "negative"),
+        ("不清楚", False, "negative"),
         (None, True, "skipped"),
     ],
 )
@@ -269,8 +285,17 @@ def test_negative_and_skipped_answers_never_create_positive_facts(
     )
 
     assert saved.status_code == 200
+    assert saved.json()["analysis_status"] == "idle"
+    assert saved.json()["analysis_task_id"] is None
     assert saved.json()["fact_summaries"] == []
+    assert _run(_model_count(sessions, Task)) == 0
+    assert _run(_model_count(sessions, TaskEvent)) == 0
+    assert _run(_model_count(sessions, Outbox)) == 0
+    assert _run(_model_count(sessions, UsageLedger)) == 0
+    assert _run(_model_count(sessions, SourceRecord)) == 0
+    assert _run(_model_count(sessions, FactCandidate)) == 0
     assert _run(_model_count(sessions, Fact)) == 0
+    assert _run(_model_count(sessions, FactSource)) == 0
     assert _run(_answer_state(sessions)) == expected_state
 
 
@@ -291,7 +316,7 @@ def test_answer_rejects_stale_version_without_mutating_session(intake_client):
     stale = _answer(
         client,
         session_id,
-        first.json()["current_question"]["id"],
+        "course_role",
         answer="我负责调研",
         base_version=0,
         key="version-stale",
@@ -304,7 +329,7 @@ def test_answer_rejects_stale_version_without_mutating_session(intake_client):
 
 def test_intake_fallback_finishes_after_eight_distinct_questions(intake_client):
     """The fallback must not trap a user by returning the same terminal prompt forever."""
-    client, _, _, _ = intake_client
+    client, sessions, application, _ = intake_client
     current = _start(client).json()
     question_ids: list[str] = []
 
@@ -341,7 +366,7 @@ def test_intake_first_follow_up_branches_by_experience(
     expected_question,
 ):
     """Different experience profiles must not all receive one fixed question sequence."""
-    client, _, _, _ = intake_client
+    client, sessions, application, _ = intake_client
     started = _start(client)
 
     saved = _answer(
@@ -353,8 +378,17 @@ def test_intake_first_follow_up_branches_by_experience(
         key=f"branch-{expected_question}",
     )
 
-    assert saved.status_code == 200
-    assert saved.json()["current_question"]["id"] == expected_question
+    assert saved.status_code == 202
+    continued = _run(
+        _fail_analysis_and_continue(
+            client,
+            sessions,
+            application,
+            started.json()["id"],
+            saved.json()["analysis_task_id"],
+        )
+    )
+    assert continued["current_question"]["id"] == expected_question
 
 
 def test_other_owner_cannot_read_or_answer_intake_session(intake_client):
@@ -383,33 +417,20 @@ def test_draft_worker_atomically_creates_resume_version_evidence_and_task_result
     client, sessions, application, _ = intake_client
     started = _start(client)
     session_id = started.json()["id"]
-    first = _answer(
-        client,
-        session_id,
-        "experience_radar",
-        answer="我持续完成了一个课程项目",
-        base_version=0,
-        key="draft-answer-1",
-    )
-    second = _answer(
-        client,
-        session_id,
-        first.json()["current_question"]["id"],
-        answer="我负责用户调研和方案设计",
-        base_version=1,
-        key="draft-answer-2",
-    )
-    fact_ids = [item["id"] for item in second.json()["fact_summaries"]]
-    for index, fact_id in enumerate(fact_ids):
-        confirmed = client.post(
-            f"/v1/facts/{fact_id}/confirm",
-            headers=_headers(f"confirm-{index}"),
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            [
+                "我持续完成了一个课程项目",
+                "我负责用户调研和方案设计",
+            ],
         )
-        assert confirmed.status_code == 200
+    )
 
     queued = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 2, "title": "产品经理基础简历"},
+        json={"base_version": 0, "title": "产品经理基础简历"},
         headers=_headers("draft-create"),
     )
 
@@ -445,18 +466,9 @@ def test_draft_requires_two_confirmed_sourced_facts(intake_client):
     client, sessions, _, _ = intake_client
     started = _start(client)
     session_id = started.json()["id"]
-    _answer(
-        client,
-        session_id,
-        "experience_radar",
-        answer="我做过一个项目",
-        base_version=0,
-        key="draft-unconfirmed",
-    )
-
     response = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 1, "title": "不应生成"},
+        json={"base_version": 0, "title": "不应生成"},
         headers=_headers("draft-rejected"),
     )
 
@@ -513,3 +525,70 @@ async def _set_intake_status(sessions, session_id: str, status: str) -> None:
             .where(IntakeSession.id == session_id)
             .values(status=status)
         )
+
+
+async def _fail_analysis_and_continue(
+    client,
+    sessions,
+    application,
+    session_id,
+    task_id,
+):
+    claim = await application.state.task_service.claim_task("usr_a", task_id)
+    await application.state.task_service.fail_task(
+        "usr_a",
+        task_id,
+        claim.token,
+        "provider_unavailable",
+    )
+    async with sessions.begin() as session:
+        answer = await session.scalar(
+            select(IntakeAnswer).where(IntakeAnswer.analysis_task_id == task_id)
+        )
+        answer.analysis_status = "failed"
+    response = client.post(
+        f"/v1/intake-sessions/{session_id}/analysis/continue",
+        json={"base_version": 1},
+        headers=_headers(f"continue-{task_id}"),
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+async def _seed_confirmed_intake_facts(sessions, session_id, values):
+    async with sessions.begin() as session:
+        intake = await session.scalar(
+            select(IntakeSession).where(IntakeSession.id == session_id)
+        )
+        fact_ids = []
+        for index, value in enumerate(values):
+            source = SourceRecord(
+                id=f"src_draft_{index}",
+                owner_user_id=intake.owner_user_id,
+                source_type="question_answer",
+                source_ref=f"draft-test:{index}",
+                content_encrypted=value,
+            )
+            fact = Fact(
+                id=f"fact_draft_{index}",
+                owner_user_id=intake.owner_user_id,
+                kind="experience",
+                value_encrypted=value,
+                status="unconfirmed",
+            )
+            session.add_all((source, fact))
+            await session.flush()
+            session.add(
+                FactSource(
+                    fact_id=fact.id,
+                    source_record_id=source.id,
+                    owner_user_id=intake.owner_user_id,
+                    source_range={"start": 0, "end": len(value)},
+                    source_hash=hashlib.sha256(value.encode()).hexdigest(),
+                )
+            )
+            await session.flush()
+            fact.status = "confirmed"
+            fact.confirmed_at = datetime.now(timezone.utc)
+            fact_ids.append(fact.id)
+        intake.fact_ids = fact_ids

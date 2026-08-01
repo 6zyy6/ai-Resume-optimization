@@ -6,6 +6,9 @@ from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.schemas import (
+    FactCandidateDecisionRequest,
+    FactCandidateDecisionResponse,
+    IntakeAnalysisActionRequest,
     IntakeAnswerRequest,
     IntakeDraftRequest,
     IntakeDraftResponse,
@@ -102,6 +105,7 @@ async def answer_intake(
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     authenticated: AuthenticatedSession = Depends(require_session),
     service: IntakeService = Depends(get_intake_service),
+    task_service: TaskService = Depends(get_task_service),
 ) -> IntakeSessionResponse:
     try:
         saved = await service.answer(
@@ -109,11 +113,94 @@ async def answer_intake(
             session_id,
             payload.model_dump(),
             _key(idempotency_key, request),
+            trace_id=get_request_context(request).trace_id,
+            task_service=task_service,
         )
     except IntakeError as error:
         _raise(request, error)
     response.status_code = saved.status_code
     return IntakeSessionResponse.model_validate(saved.response, strict=False)
+
+
+@router.post(
+    "/{session_id}/analysis/retry",
+    response_model=IntakeSessionResponse,
+)
+async def retry_answer_analysis(
+    session_id: str,
+    payload: IntakeAnalysisActionRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authenticated: AuthenticatedSession = Depends(require_session),
+    service: IntakeService = Depends(get_intake_service),
+    task_service: TaskService = Depends(get_task_service),
+) -> IntakeSessionResponse:
+    try:
+        saved = await service.retry_analysis(
+            authenticated.user_id,
+            session_id,
+            payload.model_dump(),
+            _key(idempotency_key, request),
+            trace_id=get_request_context(request).trace_id,
+            task_service=task_service,
+        )
+    except IntakeError as error:
+        _raise(request, error)
+    response.status_code = saved.status_code
+    return IntakeSessionResponse.model_validate(saved.response, strict=False)
+
+
+@router.post(
+    "/{session_id}/analysis/continue",
+    response_model=IntakeSessionResponse,
+)
+async def continue_answer_analysis(
+    session_id: str,
+    payload: IntakeAnalysisActionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authenticated: AuthenticatedSession = Depends(require_session),
+    service: IntakeService = Depends(get_intake_service),
+    task_service: TaskService = Depends(get_task_service),
+) -> IntakeSessionResponse:
+    try:
+        saved = await service.continue_analysis(
+            authenticated.user_id,
+            session_id,
+            payload.model_dump(),
+            _key(idempotency_key, request),
+            task_service=task_service,
+        )
+    except IntakeError as error:
+        _raise(request, error)
+    return IntakeSessionResponse.model_validate(saved.response, strict=False)
+
+
+@router.post(
+    "/{session_id}/fact-candidates/{candidate_id}/decision",
+    response_model=FactCandidateDecisionResponse,
+)
+async def decide_fact_candidate(
+    session_id: str,
+    candidate_id: str,
+    payload: FactCandidateDecisionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    authenticated: AuthenticatedSession = Depends(require_session),
+    service: IntakeService = Depends(get_intake_service),
+) -> FactCandidateDecisionResponse:
+    try:
+        result = await service.decide_candidate(
+            authenticated.user_id,
+            session_id,
+            candidate_id,
+            payload.model_dump(),
+            _key(idempotency_key, request),
+        )
+    except IntakeError as error:
+        _raise(request, error)
+    return FactCandidateDecisionResponse.model_validate(result, strict=False)
 
 
 @router.post(

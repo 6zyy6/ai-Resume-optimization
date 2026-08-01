@@ -39,6 +39,15 @@ class IntakeSessionResponse(BaseModel):
     answered_question_ids: list[str]
     skipped_question_ids: list[str]
     fact_summaries: list[IntakeFactSummary]
+    analysis_task_id: str | None
+    analysis_status: Literal[
+        "idle",
+        "queued",
+        "running",
+        "waiting_for_confirmation",
+        "failed",
+        "completed",
+    ]
     task_id: str | None
     resume_id: str | None
 
@@ -72,3 +81,33 @@ class IntakeDraftResponse(BaseModel):
     task_id: str
     status: Literal["queued"]
     version: int
+
+
+class FactCandidateDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    decision: Literal["accept", "edit", "reject"]
+    value: str | None = Field(default=None, min_length=1, max_length=1000)
+    base_version: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def value_matches_decision(self) -> "FactCandidateDecisionRequest":
+        if (self.decision == "edit") != (self.value is not None):
+            raise ValueError("Only edit requires a value")
+        return self
+
+
+class FactCandidateDecisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    candidate_id: str
+    status: Literal["accepted", "edited", "rejected"]
+    fact_summary: IntakeFactSummary | None
+    session_version: int
+    current_question: IntakeQuestionResponse | None
+
+
+class IntakeAnalysisActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    base_version: int = Field(ge=0)

@@ -6,22 +6,35 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
 from app.db.models import (
     BulletFactLink,
+    AiTraceEvent,
     Fact,
+    FactCandidate,
     FactSource,
     IntakeAnswer,
     IntakeSession,
     Resume,
     ResumeVersion,
     SourceRecord,
+    Task,
+    UsageLedger,
     VersionOperation,
 )
 from app.db.ownership import authorized_owner_ids, canonical_user_id
+from app.integrations.ai_client import (
+    AiCancellation,
+    AiClient,
+    AnalyzeIntakeRequest,
+    AnalyzeIntakeResult,
+    AnalyzeIntakePayload,
+    FactProjection,
+)
+from app.modules.ai_runs.service import AiRunService
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.resumes.service import canonical_snapshot
 from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
@@ -134,6 +147,7 @@ QUESTIONS = {
 }
 
 NEGATIVE_ANSWERS = frozenset({"没有", "不知道", "不清楚", "无", "跳过"})
+NUMBER_TOKEN = re.compile(r"(?<![\d.])\d+(?:\.\d+)?%?(?![\d.])")
 
 
 @dataclass
@@ -150,8 +164,14 @@ class SavedIntake:
 
 
 class IntakeService:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        ai_client: AiClient | None = None,
+    ) -> None:
         self.sessions = sessions
+        self.ai_client = ai_client
+        self.ai_runs = AiRunService()
         self.idempotency = IdempotencyService()
 
     async def start(
@@ -227,6 +247,9 @@ class IntakeService:
         session_id: str,
         values: dict[str, Any],
         idempotency_key: str,
+        *,
+        trace_id: str,
+        task_service: TaskService,
     ) -> SavedIntake:
         route = f"/v1/intake-sessions/{session_id}/answers"
         async with self.idempotency.transaction(self.sessions) as session:
@@ -272,25 +295,51 @@ class IntakeService:
                 )
             answer = (values.get("answer") or "").strip()
             state = _answer_state(answer, values["skipped"])
-            fact_id = None
-            if state == "answered":
-                fact_id = await self._create_fact(
-                    session,
-                    row,
-                    question_id=values["question_id"],
-                    answer=answer,
-                )
-            session.add(
-                IntakeAnswer(
-                    id=new_id("ians"),
-                    owner_user_id=row.owner_user_id,
-                    session_id=row.id,
-                    question_id=values["question_id"],
-                    answer_encrypted=answer or None,
-                    state=state,
-                    fact_id=fact_id,
-                )
+            answer_id = new_id("ians")
+            answer_row = IntakeAnswer(
+                id=answer_id,
+                owner_user_id=row.owner_user_id,
+                session_id=row.id,
+                question_id=values["question_id"],
+                answer_encrypted=answer or None,
+                state=state,
+                fact_id=None,
+                analysis_status="queued" if state == "answered" else "idle",
+                analysis_input_version=1 if state == "answered" else None,
+                analysis_input_hash=(
+                    hashlib.sha256(answer.encode()).hexdigest()
+                    if state == "answered"
+                    else None
+                ),
+                next_question_source="rule" if state != "answered" else None,
             )
+            session.add(answer_row)
+            if state == "answered":
+                try:
+                    task = await task_service.create_task_in_session(
+                        session,
+                        owner,
+                        task_type="analyze_intake_answer",
+                        queue="ai.interactive",
+                        trace_id=trace_id,
+                        idempotency_key=f"intake-answer-analysis:{answer_id}",
+                        admission=TaskAdmission.ai(),
+                        resource_type="intake_answer",
+                        resource_id=answer_id,
+                        payload={
+                            "intake_session_id": row.id,
+                            "intake_answer_id": answer_id,
+                            "analysis_input_version": 1,
+                            "analysis_input_hash": answer_row.analysis_input_hash,
+                        },
+                    )
+                except TaskServiceError as error:
+                    raise IntakeError(
+                        error.code,
+                        error.message,
+                        error.status_code,
+                    ) from error
+                answer_row.analysis_task_id = task.id
             row.answered_question_ids = [
                 *row.answered_question_ids,
                 values["question_id"],
@@ -300,19 +349,721 @@ class IntakeService:
                     *row.skipped_question_ids,
                     values["question_id"],
                 ]
-            if fact_id is not None:
-                row.fact_ids = [*row.fact_ids, fact_id]
-            row.current_question = _next_question(
-                values["question_id"],
-                answer,
-                state,
+            row.current_question = (
+                None
+                if state == "answered"
+                else _next_question(values["question_id"], answer, state)
             )
             row.version += 1
             row.updated_at = datetime.now(timezone.utc)
             await session.flush()
             response = await self._response(session, row)
+            status_code = 202 if state == "answered" else 200
+            await self.idempotency.complete(session, claim, status_code, response)
+            return SavedIntake(response, status_code)
+
+    async def process_answer_analysis(
+        self,
+        owner_id: str,
+        answer_id: str,
+        *,
+        task_id: str,
+        claim_token: str,
+        task_service: TaskService,
+        cancellation: AiCancellation | None = None,
+    ) -> str:
+        if self.ai_client is None:
+            raise RuntimeError("analyze_intake_answer requires an AI client")
+        async with self.sessions.begin() as session:
+            task = await task_service.claimed_task_in_session(
+                session,
+                owner_id,
+                task_id,
+                claim_token,
+            )
+            answer_row, intake = await self._analysis_resource(
+                session,
+                owner_id,
+                answer_id,
+                task_id,
+                lock=True,
+            )
+            _require_analysis_graph(task, answer_row, intake)
+            answer_row.analysis_status = "running"
+            request = await self._analysis_request(session, task, answer_row, intake)
+
+        try:
+            receipt = await self.ai_client.run(request, cancellation)
+        except Exception:
+            async with self.sessions.begin() as session:
+                answer_row, _ = await self._analysis_resource(
+                    session,
+                    owner_id,
+                    answer_id,
+                    task_id,
+                    lock=True,
+                )
+                answer_row.analysis_status = "failed"
+            raise
+
+        async with self.sessions.begin() as session:
+            task = await task_service.claimed_task_in_session(
+                session,
+                owner_id,
+                task_id,
+                claim_token,
+            )
+            answer_row, intake = await self._analysis_resource(
+                session,
+                owner_id,
+                answer_id,
+                task_id,
+                lock=True,
+            )
+            _require_analysis_graph(task, answer_row, intake)
+            if (
+                receipt.run.task_id != task.id
+                or receipt.run.trace_id != task.trace_id
+                or receipt.run.input_hash != answer_row.analysis_input_hash
+            ):
+                raise IntakeError(
+                    "AI_RECEIPT_MISMATCH",
+                    "AI receipt does not match the immutable answer input",
+                    502,
+                )
+            await session.execute(
+                update(IntakeAnswer)
+                .where(
+                    IntakeAnswer.id == answer_row.id,
+                    IntakeAnswer.owner_user_id == answer_row.owner_user_id,
+                )
+                .values(analysis_status=answer_row.analysis_status)
+            )
+            ai_run = await self.ai_runs.persist_in_session(
+                session,
+                answer_row.owner_user_id,
+                receipt,
+                workflow_stage="analysis",
+                result_ref=answer_row.id,
+            )
+            await task_service.consume_ai_reservation_in_session(
+                session,
+                answer_row.owner_user_id,
+                task.id,
+                ai_run.id,
+            )
+            if task.active_ai_run_id == ai_run.id:
+                await task_service.settle_ai_run_in_session(
+                    session,
+                    answer_row.owner_user_id,
+                    task.id,
+                    ai_run.id,
+                )
+            if receipt.run.status != "succeeded":
+                answer_row.analysis_status = "failed"
+                await task_service.fail_task_in_session(
+                    session,
+                    task,
+                    receipt.run.error_code or f"ai_{receipt.run.status}",
+                )
+                return answer_row.id
+            if not isinstance(receipt.result, AnalyzeIntakeResult):
+                raise IntakeError(
+                    "AI_SCHEMA_INVALID",
+                    "AI answer analysis result is missing",
+                    502,
+                )
+            valid, invalid = _validated_candidates(answer_row, receipt.result)
+            existing_keys = set(
+                (
+                    await session.execute(
+                        select(
+                            FactCandidate.kind,
+                            FactCandidate.value_encrypted,
+                            FactCandidate.source_start,
+                            FactCandidate.source_end,
+                            FactCandidate.source_hash,
+                        ).where(
+                            FactCandidate.intake_answer_id == answer_row.id,
+                            FactCandidate.owner_user_id == answer_row.owner_user_id,
+                        )
+                    )
+                ).tuples()
+            )
+            for candidate in valid:
+                key = _candidate_key(candidate)
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
+                session.add(
+                    FactCandidate(
+                        id=new_id("fc"),
+                        owner_user_id=answer_row.owner_user_id,
+                        intake_answer_id=answer_row.id,
+                        kind=candidate.kind,
+                        value_encrypted=candidate.value,
+                        source_start=candidate.source_range.start,
+                        source_end=candidate.source_range.end,
+                        source_hash=candidate.source_hash,
+                        status="pending",
+                        decision_mode=(
+                            "edit_only"
+                            if "conflict" in candidate.risk_flags
+                            else "accept_or_edit"
+                        ),
+                        ai_run_id=ai_run.id,
+                    )
+                )
+            await self._append_candidate_validation_events(
+                session,
+                answer_row.owner_user_id,
+                ai_run.id,
+                invalid,
+            )
+            next_question, source = _analysis_next_question(
+                answer_row,
+                receipt.result,
+            )
+            intake.current_question = next_question
+            intake.updated_at = datetime.now(timezone.utc)
+            answer_row.next_question_source = source
+            answer_row.analysis_status = (
+                "waiting_for_confirmation" if valid else "completed"
+            )
+            await task_service.complete_task_in_session(
+                session,
+                task,
+                answer_row.id,
+            )
+            await session.flush()
+            return answer_row.id
+
+    async def mark_answer_analysis_failed(
+        self,
+        owner_id: str,
+        answer_id: str,
+        task_id: str,
+    ) -> None:
+        async with self.sessions.begin() as session:
+            await session.execute(
+                update(IntakeAnswer)
+                .where(
+                    IntakeAnswer.id == answer_id,
+                    IntakeAnswer.owner_user_id == owner_id,
+                    IntakeAnswer.analysis_task_id == task_id,
+                    IntakeAnswer.analysis_status.in_(("queued", "running")),
+                )
+                .values(analysis_status="failed")
+            )
+
+    async def retry_analysis(
+        self,
+        owner_id: str,
+        session_id: str,
+        values: dict[str, Any],
+        idempotency_key: str,
+        *,
+        trace_id: str,
+        task_service: TaskService,
+    ) -> SavedIntake:
+        route = f"/v1/intake-sessions/{session_id}/analysis/retry"
+        async with self.idempotency.transaction(self.sessions) as session:
+            owner = await canonical_user_id(session, owner_id)
+            claim = await self._claim(
+                session,
+                owner,
+                route,
+                idempotency_key,
+                values,
+            )
+            if claim.is_replay:
+                return SavedIntake(
+                    claim.replay_response or {},
+                    claim.replay_status or 202,
+                )
+            intake = await self._session(session, owner_id, session_id, lock=True)
+            if intake is None:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            if intake.version != values["base_version"]:
+                raise IntakeError(
+                    "INTAKE_VERSION_CONFLICT",
+                    "Intake session has changed",
+                    409,
+                )
+            answer_row = await self._latest_analysis_answer(
+                session,
+                intake,
+                lock=True,
+            )
+            if answer_row is None or answer_row.analysis_status != "failed":
+                raise IntakeError(
+                    "INTAKE_ANALYSIS_NOT_FAILED",
+                    "Only a failed answer analysis can be retried",
+                    409,
+                )
+            old_task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == answer_row.analysis_task_id,
+                    Task.owner_user_id == answer_row.owner_user_id,
+                    Task.type == "analyze_intake_answer",
+                    Task.resource_type == "intake_answer",
+                    Task.resource_id == answer_row.id,
+                    Task.status.in_(("failed", "cancelled")),
+                )
+                .with_for_update()
+            )
+            if old_task is None:
+                raise IntakeError(
+                    "INTAKE_ANALYSIS_GRAPH_INVALID",
+                    "Failed answer analysis task is invalid",
+                    409,
+                )
+            _require_saved_answer_input(answer_row)
+            reservation = await session.scalar(
+                select(UsageLedger)
+                .where(
+                    UsageLedger.task_id == old_task.id,
+                    UsageLedger.owner_user_id == old_task.owner_user_id,
+                    UsageLedger.usage_type == "ai_task",
+                )
+                .with_for_update()
+            )
+            if reservation is not None and reservation.state == "reserved":
+                await task_service.release_ai_reservation_in_session(
+                    session,
+                    old_task.owner_user_id,
+                    old_task.id,
+                )
+            try:
+                task = await task_service.create_task_in_session(
+                    session,
+                    owner,
+                    task_type="analyze_intake_answer",
+                    queue="ai.interactive",
+                    trace_id=trace_id,
+                    idempotency_key=f"intake-answer-retry:{idempotency_key}",
+                    admission=TaskAdmission.ai(is_retry=True),
+                    resource_type="intake_answer",
+                    resource_id=answer_row.id,
+                    payload={
+                        "intake_session_id": intake.id,
+                        "intake_answer_id": answer_row.id,
+                        "analysis_input_version": answer_row.analysis_input_version,
+                        "analysis_input_hash": answer_row.analysis_input_hash,
+                    },
+                )
+            except TaskServiceError as error:
+                raise IntakeError(error.code, error.message, error.status_code) from error
+            answer_row.analysis_task_id = task.id
+            answer_row.analysis_status = "queued"
+            answer_row.next_question_source = None
+            intake.current_question = None
+            intake.version += 1
+            intake.updated_at = datetime.now(timezone.utc)
+            await session.flush()
+            response = await self._response(session, intake)
+            await self.idempotency.complete(session, claim, 202, response)
+            return SavedIntake(response, 202)
+
+    async def continue_analysis(
+        self,
+        owner_id: str,
+        session_id: str,
+        values: dict[str, Any],
+        idempotency_key: str,
+        *,
+        task_service: TaskService,
+    ) -> SavedIntake:
+        route = f"/v1/intake-sessions/{session_id}/analysis/continue"
+        async with self.idempotency.transaction(self.sessions) as session:
+            owner = await canonical_user_id(session, owner_id)
+            claim = await self._claim(
+                session,
+                owner,
+                route,
+                idempotency_key,
+                values,
+            )
+            if claim.is_replay:
+                return SavedIntake(
+                    claim.replay_response or {},
+                    claim.replay_status or 200,
+                )
+            intake = await self._session(session, owner_id, session_id, lock=True)
+            if intake is None:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            if intake.version != values["base_version"]:
+                raise IntakeError(
+                    "INTAKE_VERSION_CONFLICT",
+                    "Intake session has changed",
+                    409,
+                )
+            answer_row = await self._latest_analysis_answer(
+                session,
+                intake,
+                lock=True,
+            )
+            if answer_row is None or answer_row.analysis_status != "failed":
+                raise IntakeError(
+                    "INTAKE_ANALYSIS_NOT_FAILED",
+                    "Only a failed answer analysis can use rule continuation",
+                    409,
+                )
+            _require_saved_answer_input(answer_row)
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == answer_row.analysis_task_id,
+                    Task.owner_user_id == answer_row.owner_user_id,
+                    Task.type == "analyze_intake_answer",
+                    Task.resource_id == answer_row.id,
+                    Task.status.in_(("failed", "cancelled")),
+                )
+                .with_for_update()
+            )
+            if task is None:
+                raise IntakeError(
+                    "INTAKE_ANALYSIS_GRAPH_INVALID",
+                    "Failed answer analysis task is invalid",
+                    409,
+                )
+            reservation = await session.scalar(
+                select(UsageLedger)
+                .where(
+                    UsageLedger.task_id == task.id,
+                    UsageLedger.owner_user_id == task.owner_user_id,
+                    UsageLedger.usage_type == "ai_task",
+                )
+                .with_for_update()
+            )
+            if reservation is not None and reservation.state == "reserved":
+                await task_service.release_ai_reservation_in_session(
+                    session,
+                    task.owner_user_id,
+                    task.id,
+                )
+            intake.current_question = _next_question(
+                answer_row.question_id,
+                answer_row.answer_encrypted or "",
+                "answered",
+            )
+            intake.version += 1
+            intake.updated_at = datetime.now(timezone.utc)
+            answer_row.analysis_status = "completed"
+            answer_row.next_question_source = "fallback"
+            await session.flush()
+            response = await self._response(session, intake)
             await self.idempotency.complete(session, claim, 200, response)
             return SavedIntake(response, 200)
+
+    async def _latest_analysis_answer(
+        self,
+        session: AsyncSession,
+        intake: IntakeSession,
+        *,
+        lock: bool,
+    ) -> IntakeAnswer | None:
+        query = (
+            select(IntakeAnswer)
+            .where(
+                IntakeAnswer.session_id == intake.id,
+                IntakeAnswer.owner_user_id == intake.owner_user_id,
+                IntakeAnswer.state == "answered",
+            )
+            .order_by(IntakeAnswer.created_at.desc(), IntakeAnswer.id.desc())
+            .limit(1)
+        )
+        return await session.scalar(query.with_for_update() if lock else query)
+
+    async def decide_candidate(
+        self,
+        owner_id: str,
+        session_id: str,
+        candidate_id: str,
+        values: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        route = (
+            f"/v1/intake-sessions/{session_id}/fact-candidates/"
+            f"{candidate_id}/decision"
+        )
+        async with self.idempotency.transaction(self.sessions) as session:
+            owner = await canonical_user_id(session, owner_id)
+            claim = await self._claim(
+                session,
+                owner,
+                route,
+                idempotency_key,
+                values,
+            )
+            if claim.is_replay:
+                return claim.replay_response or {}
+            intake = await self._session(session, owner_id, session_id, lock=True)
+            if intake is None:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            owners = await authorized_owner_ids(session, owner_id)
+            candidate = await session.scalar(
+                select(FactCandidate)
+                .join(
+                    IntakeAnswer,
+                    and_(
+                        IntakeAnswer.id == FactCandidate.intake_answer_id,
+                        IntakeAnswer.owner_user_id == FactCandidate.owner_user_id,
+                    ),
+                )
+                .where(
+                    FactCandidate.id == candidate_id,
+                    FactCandidate.owner_user_id.in_(owners),
+                    IntakeAnswer.session_id == session_id,
+                    IntakeAnswer.owner_user_id.in_(owners),
+                )
+                .with_for_update()
+            )
+            if candidate is None:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Fact candidate not found", 404)
+            if candidate.status != "pending":
+                raise IntakeError(
+                    "FACT_CANDIDATE_ALREADY_DECIDED",
+                    "Fact candidate was already decided",
+                    409,
+                )
+            if intake.version != values["base_version"]:
+                raise IntakeError(
+                    "INTAKE_VERSION_CONFLICT",
+                    "Intake session has changed",
+                    409,
+                )
+            decision = values["decision"]
+            edited_value = (values.get("value") or "").strip()
+            if decision == "accept" and candidate.decision_mode != "accept_or_edit":
+                raise IntakeError(
+                    "FACT_CANDIDATE_DECISION_NOT_ALLOWED",
+                    "This candidate must be edited or rejected",
+                    422,
+                )
+            if decision == "edit" and (
+                not edited_value or edited_value == candidate.value_encrypted
+            ):
+                raise IntakeError(
+                    "FACT_CANDIDATE_EDIT_INVALID",
+                    "Edited candidate value must be non-empty and changed",
+                    422,
+                )
+            answer_row = await session.scalar(
+                select(IntakeAnswer)
+                .where(
+                    IntakeAnswer.id == candidate.intake_answer_id,
+                    IntakeAnswer.owner_user_id == candidate.owner_user_id,
+                    IntakeAnswer.session_id == intake.id,
+                )
+                .with_for_update()
+            )
+            if answer_row is None:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake answer not found", 404)
+            fact = None
+            source = None
+            source_range = None
+            source_hash = None
+            now = datetime.now(timezone.utc)
+            if decision == "accept":
+                answer_text = answer_row.answer_encrypted or ""
+                source = SourceRecord(
+                    id=new_id("src"),
+                    owner_user_id=candidate.owner_user_id,
+                    source_type="question_answer",
+                    source_ref=f"intake-answer:{answer_row.id}",
+                    content_encrypted=answer_text,
+                )
+                fact_value = candidate.value_encrypted
+                source_range = {
+                    "start": candidate.source_start,
+                    "end": candidate.source_end,
+                }
+                source_hash = candidate.source_hash
+            elif decision == "edit":
+                source = SourceRecord(
+                    id=new_id("src"),
+                    owner_user_id=candidate.owner_user_id,
+                    source_type="fact_candidate_edit",
+                    source_ref=f"fact-candidate:{candidate.id}",
+                    content_encrypted=edited_value,
+                )
+                fact_value = edited_value
+                source_range = {"start": 0, "end": len(edited_value)}
+                source_hash = hashlib.sha256(edited_value.encode()).hexdigest()
+            if source is not None:
+                fact = Fact(
+                    id=new_id("fact"),
+                    owner_user_id=candidate.owner_user_id,
+                    kind=candidate.kind,
+                    value_encrypted=fact_value,
+                    status="unconfirmed",
+                    confirmed_at=None,
+                )
+                session.add_all((source, fact))
+                await session.flush()
+                session.add(
+                    FactSource(
+                        fact_id=fact.id,
+                        source_record_id=source.id,
+                        owner_user_id=candidate.owner_user_id,
+                        source_range=source_range,
+                        source_hash=source_hash,
+                    )
+                )
+                await session.flush()
+                fact.status = "confirmed"
+                fact.confirmed_at = now
+                candidate.fact_id = fact.id
+                if decision == "edit":
+                    candidate.decision_source_id = source.id
+                intake.fact_ids = [*intake.fact_ids, fact.id]
+            candidate.status = {
+                "accept": "accepted",
+                "edit": "edited",
+                "reject": "rejected",
+            }[decision]
+            candidate.decided_at = now
+            candidate.decided_by = owner
+            await session.flush()
+            pending = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(FactCandidate)
+                    .where(
+                        FactCandidate.intake_answer_id == answer_row.id,
+                        FactCandidate.owner_user_id == answer_row.owner_user_id,
+                        FactCandidate.status == "pending",
+                    )
+                )
+                or 0
+            )
+            if pending == 0:
+                answer_row.analysis_status = "completed"
+            intake.version += 1
+            intake.updated_at = now
+            response = _candidate_decision_response(candidate, fact, intake)
+            await self.idempotency.complete(session, claim, 200, response)
+            return response
+
+    async def _analysis_resource(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        answer_id: str,
+        task_id: str,
+        *,
+        lock: bool,
+    ) -> tuple[IntakeAnswer, IntakeSession]:
+        owners = await authorized_owner_ids(session, owner_id)
+        query = select(IntakeAnswer).where(
+            IntakeAnswer.id == answer_id,
+            IntakeAnswer.owner_user_id.in_(owners),
+            IntakeAnswer.analysis_task_id == task_id,
+        )
+        answer_row = await session.scalar(query.with_for_update() if lock else query)
+        if answer_row is None:
+            raise IntakeError("RESOURCE_NOT_FOUND", "Intake answer not found", 404)
+        intake = await session.scalar(
+            select(IntakeSession)
+            .where(
+                IntakeSession.id == answer_row.session_id,
+                IntakeSession.owner_user_id == answer_row.owner_user_id,
+            )
+            .with_for_update()
+        )
+        if intake is None:
+            raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+        return answer_row, intake
+
+    async def _analysis_request(
+        self,
+        session: AsyncSession,
+        task,
+        answer_row: IntakeAnswer,
+        intake: IntakeSession,
+    ) -> AnalyzeIntakeRequest:
+        answer = answer_row.answer_encrypted or ""
+        _require_saved_answer_input(answer_row)
+        facts = list(
+            (
+                await session.scalars(
+                    select(Fact).where(
+                        Fact.id.in_(intake.fact_ids or []),
+                        Fact.owner_user_id == answer_row.owner_user_id,
+                        Fact.status == "confirmed",
+                    )
+                )
+            ).all()
+        ) if intake.fact_ids else []
+        question = _question(answer_row.question_id)
+        return AnalyzeIntakeRequest(
+            workflow_type="analyze_intake_answer",
+            workflow_version="2",
+            prompt_template_version="intake-answer@2",
+            trace_id=task.trace_id,
+            task_id=task.id,
+            owner_scope_hash=hashlib.sha256(
+                answer_row.owner_user_id.encode()
+            ).hexdigest(),
+            locale="zh-CN",
+            input_version=answer_row.analysis_input_version,
+            input_hash=answer_row.analysis_input_hash,
+            payload=AnalyzeIntakePayload(
+                session_id_hash=hashlib.sha256(intake.id.encode()).hexdigest(),
+                answer_id=answer_row.id,
+                question_id=answer_row.question_id,
+                question_reason=question.get("reason") or "general",
+                answer_text=answer,
+                answer_state=answer_row.state,
+                confirmed_facts=tuple(
+                    FactProjection(id=fact.id, kind=fact.kind, value=fact.value_encrypted)
+                    for fact in facts
+                ),
+                covered_slots=(),
+                missing_slots=(),
+                asked_question_ids=tuple(intake.answered_question_ids),
+            ),
+        )
+
+    @staticmethod
+    async def _append_candidate_validation_events(
+        session: AsyncSession,
+        owner_id: str,
+        ai_run_id: str,
+        invalid: list[tuple[int, str]],
+    ) -> None:
+        if not invalid:
+            return
+        last_seq = int(
+            await session.scalar(
+                select(func.coalesce(func.max(AiTraceEvent.event_seq), 0)).where(
+                    AiTraceEvent.ai_run_id == ai_run_id,
+                    AiTraceEvent.owner_user_id == owner_id,
+                )
+            )
+            or 0
+        )
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                AiTraceEvent(
+                    id=new_id("aie"),
+                    owner_user_id=owner_id,
+                    ai_run_id=ai_run_id,
+                    event_seq=last_seq + offset,
+                    event_type="fact_validation_failed",
+                    payload={
+                        "error_code": "fact_validation_failed",
+                        "schema_path": f"$.fact_candidates[{index}]",
+                        "risk_flags": [reason],
+                    },
+                    created_at=now,
+                )
+                for offset, (index, reason) in enumerate(invalid, start=1)
+            ]
+        )
 
     async def queue_draft(
         self,
@@ -562,42 +1313,6 @@ class IntakeService:
         )
         return await session.scalar(query.with_for_update() if lock else query)
 
-    async def _create_fact(
-        self,
-        session: AsyncSession,
-        row: IntakeSession,
-        *,
-        question_id: str,
-        answer: str,
-    ) -> str:
-        source = SourceRecord(
-            id=new_id("src"),
-            owner_user_id=row.owner_user_id,
-            source_type="question_answer",
-            source_ref=f"intake:{row.id}:{question_id}",
-            content_encrypted=answer,
-        )
-        fact = Fact(
-            id=new_id("fact"),
-            owner_user_id=row.owner_user_id,
-            kind=_fact_kind(question_id),
-            value_encrypted=answer,
-            status="unconfirmed",
-        )
-        session.add_all((source, fact))
-        await session.flush()
-        session.add(
-            FactSource(
-                fact_id=fact.id,
-                source_record_id=source.id,
-                owner_user_id=row.owner_user_id,
-                source_range={"start": 0, "end": len(answer)},
-                source_hash=hashlib.sha256(answer.encode()).hexdigest(),
-            )
-        )
-        await session.flush()
-        return fact.id
-
     async def _ready_facts(
         self,
         session: AsyncSession,
@@ -652,6 +1367,15 @@ class IntakeService:
                 ).all()
             )
         facts_by_id = {fact.id: fact for fact in facts}
+        latest_answer = await session.scalar(
+            select(IntakeAnswer)
+            .where(
+                IntakeAnswer.session_id == row.id,
+                IntakeAnswer.owner_user_id == row.owner_user_id,
+            )
+            .order_by(IntakeAnswer.created_at.desc(), IntakeAnswer.id.desc())
+            .limit(1)
+        )
         return {
             "id": row.id,
             "status": row.status,
@@ -671,6 +1395,12 @@ class IntakeService:
                 for fact_id in row.fact_ids
                 if (fact := facts_by_id.get(fact_id)) is not None
             ],
+            "analysis_task_id": (
+                latest_answer.analysis_task_id if latest_answer is not None else None
+            ),
+            "analysis_status": (
+                latest_answer.analysis_status if latest_answer is not None else "idle"
+            ),
             "task_id": row.task_id,
             "resume_id": row.resume_id,
         }
@@ -681,19 +1411,145 @@ def _answer_state(answer: str, skipped: bool) -> str:
         return "skipped"
     normalized = re.sub(r"[\s，。！？,.!?；;：:]+", "", answer)
     if normalized in NEGATIVE_ANSWERS or re.fullmatch(
-        r"(?:暂时)?(?:没有|无)(?:相关|类似|这方面)?(?:经历|经验|项目|任务|内容)?(?:了)?",
+        r"(?:暂时)?(?:没有|无)(?:相关|类似|这方面)?(?:经历|经验|项目|任务|内容|实习|兼职|工作|课程|社团|志愿活动)?(?:了)?",
         normalized,
     ):
         return "negative"
     return "answered"
 
 
-def _fact_kind(question_id: str) -> str:
-    if question_id.endswith("_role"):
-        return "role"
-    if question_id == "experience_result":
-        return "result"
-    return "experience"
+def _require_analysis_graph(task, answer: IntakeAnswer, intake: IntakeSession) -> None:
+    if (
+        task.type != "analyze_intake_answer"
+        or task.resource_type != "intake_answer"
+        or task.resource_id != answer.id
+        or answer.analysis_task_id != task.id
+        or answer.session_id != intake.id
+        or answer.owner_user_id != intake.owner_user_id
+        or task.owner_user_id != answer.owner_user_id
+    ):
+        raise IntakeError(
+            "INTAKE_ANALYSIS_GRAPH_INVALID",
+            "Intake answer analysis resources do not match",
+            409,
+        )
+
+
+def _require_saved_answer_input(answer: IntakeAnswer) -> None:
+    value = answer.answer_encrypted or ""
+    if (
+        answer.state != "answered"
+        or answer.analysis_input_version != 1
+        or answer.analysis_input_hash != hashlib.sha256(value.encode()).hexdigest()
+    ):
+        raise IntakeError(
+            "INTAKE_ANALYSIS_INPUT_CHANGED",
+            "Saved answer analysis input is no longer valid",
+            409,
+        )
+
+
+def _validated_candidates(
+    answer: IntakeAnswer,
+    result: AnalyzeIntakeResult,
+) -> tuple[list[Any], list[tuple[int, str]]]:
+    answer_text = answer.answer_encrypted or ""
+    valid: list[Any] = []
+    invalid: list[tuple[int, str]] = []
+    seen: set[tuple[str, str, int, int, str]] = set()
+    for index, candidate in enumerate(result.fact_candidates):
+        start = candidate.source_range.start
+        end = candidate.source_range.end
+        reason = None
+        source_slice = ""
+        if candidate.source_answer_id != answer.id:
+            reason = "source_answer_mismatch"
+        elif not (0 <= start < end <= len(answer_text)):
+            reason = "source_range_invalid"
+        else:
+            source_slice = answer_text[start:end]
+            if hashlib.sha256(source_slice.encode()).hexdigest() != candidate.source_hash:
+                reason = "source_hash_mismatch"
+            elif _answer_state(source_slice, False) != "answered":
+                reason = "negative_source"
+            elif not set(NUMBER_TOKEN.findall(candidate.value)).issubset(
+                set(NUMBER_TOKEN.findall(source_slice))
+            ):
+                reason = "unsupported_numeric"
+        key = _candidate_key(candidate)
+        if reason is None and key in seen:
+            reason = "duplicate_candidate"
+        if reason is not None:
+            invalid.append((index, reason))
+            continue
+        seen.add(key)
+        valid.append(candidate)
+    return valid, invalid
+
+
+def _candidate_key(candidate) -> tuple[str, str, int, int, str]:
+    return (
+        candidate.kind,
+        candidate.value,
+        candidate.source_range.start,
+        candidate.source_range.end,
+        candidate.source_hash,
+    )
+
+
+def _analysis_next_question(
+    answer: IntakeAnswer,
+    result: AnalyzeIntakeResult,
+) -> tuple[dict[str, Any] | None, str]:
+    next_question = _next_question(
+        answer.question_id,
+        answer.answer_encrypted or "",
+        "answered",
+    )
+    candidate = result.question_candidate
+    if (
+        next_question is not None
+        and candidate is not None
+        and candidate.slot == next_question["id"]
+    ):
+        return {**next_question, "prompt": candidate.text}, "model"
+    return next_question, "rule"
+
+
+def _question(question_id: str) -> dict[str, Any]:
+    if question_id == INITIAL_QUESTION["id"]:
+        return INITIAL_QUESTION
+    question = QUESTIONS.get(question_id)
+    if question is None:
+        raise IntakeError(
+            "INTAKE_QUESTION_INVALID",
+            "Saved intake question is invalid",
+            409,
+        )
+    return question
+
+
+def _candidate_decision_response(
+    candidate: FactCandidate,
+    fact: Fact | None,
+    intake: IntakeSession,
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate.id,
+        "status": candidate.status,
+        "fact_summary": (
+            {
+                "id": fact.id,
+                "kind": fact.kind,
+                "value": fact.value_encrypted,
+                "status": fact.status,
+            }
+            if fact is not None
+            else None
+        ),
+        "session_version": intake.version,
+        "current_question": intake.current_question,
+    }
 
 
 def _next_question(

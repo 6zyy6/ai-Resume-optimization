@@ -110,6 +110,7 @@ def test_metadata_contains_complete_owner_scoped_foundation():
         "fact_revisions",
         "intake_sessions",
         "intake_answers",
+        "fact_candidates",
             "resumes",
             "targeted_resume_keys",
             "resume_versions",

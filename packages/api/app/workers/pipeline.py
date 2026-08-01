@@ -64,7 +64,7 @@ def configure_pipeline_operations(
         else None
     )
     imports = ImportService(sessions, storage)
-    intake = IntakeService(sessions)
+    intake = IntakeService(sessions, ai_client)
     legacy_ai_client = (
         LegacyAiClientAdapter(ai_client) if ai_client is not None else None
     )
@@ -119,6 +119,26 @@ def configure_pipeline_operations(
             task_service=task_service,
         )
 
+    async def analyze_intake_answer(claim: TaskClaim) -> str:
+        task = await _task(task_service, claim)
+        answer_id = _resource(task, "intake_answer")
+        try:
+            return await intake.process_answer_analysis(
+                claim.owner_user_id,
+                answer_id,
+                task_id=task.id,
+                claim_token=claim.token,
+                task_service=task_service,
+                cancellation=TaskAiCancellation(task_service, claim),
+            )
+        except Exception:
+            await intake.mark_answer_analysis_failed(
+                claim.owner_user_id,
+                answer_id,
+                task.id,
+            )
+            raise
+
     async def export_private_data(claim: TaskClaim) -> str:
         return await privacy.export_data(claim.owner_user_id, claim.task_id)
 
@@ -129,6 +149,7 @@ def configure_pipeline_operations(
     register_operation("parse_job", parse_job)
     register_operation("match_resume_to_job", match_resume_to_job)
     register_operation("render_resume_export", render_resume_export)
+    register_operation("analyze_intake_answer", analyze_intake_answer)
     register_operation("generate_intake_draft", generate_intake_draft)
     register_operation("data_export", export_private_data)
     register_operation("account_deletion", delete_private_data)

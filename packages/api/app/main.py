@@ -148,7 +148,6 @@ def create_app(
     application.state.fact_service = FactService(task4_sessions)
     application.state.resume_service = ResumeService(task4_sessions)
     application.state.task_service = TaskService(task4_sessions)
-    application.state.intake_service = IntakeService(task4_sessions)
     application.state.me_service = MeService(
         task4_sessions,
         application.state.auth_service.users,
@@ -168,6 +167,7 @@ def create_app(
         )
     )
     application.state.storage = storage
+    application.state.intake_service = IntakeService(task4_sessions, ai_client)
     application.state.import_service = ImportService(task4_sessions, storage)
     legacy_ai_client = (
         LegacyAiClientAdapter(ai_client) if ai_client is not None else None
