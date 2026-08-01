@@ -158,7 +158,7 @@ NEGATIVE_CLAIM = re.compile(
 CHINESE_ACTION_PREDICATE = (
     r"负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|帮助|指导|评审|协助|支持|培训|分析|服务|维护|"
-    r"审核|撰写|制定|提交|合并|并行计算|做"
+    r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|做"
 )
 CHINESE_COORDINATION = r"并且|同时|还|且|并|以及|(?<!参)与|、"
 ATOMIC_CLAUSE_BOUNDARY = re.compile(
@@ -253,9 +253,14 @@ ENGLISH_TAIL_DENIAL = re.compile(
     re.IGNORECASE,
 )
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
-    rf"(?:{CHINESE_ACTION_PREDICATE})不了(?!解)"
+    rf"(?:{CHINESE_ACTION_PREDICATE})(?:不了(?!解)|不来|不成)"
 )
-CHINESE_REFERENTIAL_TARGET = r"(?:(?:该|此|这个|前述)(?:项目|任务|工作)|它)"
+CHINESE_REFERENTIAL_TARGET = (
+    r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
+)
+CHINESE_EXPLICIT_OTHER_SUBJECT = re.compile(
+    r"^(?:导师|老师|同学|同事|队友|供应商|外包(?:团队|项目组)?)(?=\S)"
+)
 
 
 @dataclass
@@ -1975,14 +1980,14 @@ def _candidate_decision_mode(
     clause = answer[clause_start:clause_end]
     semantic_scope = answer[start:end] if spans_boundary else clause
     tail = _context_text(answer[clause_end:])
-    main_positive = _has_positive_assertion(semantic_scope)
+    main_assertion = _main_assertion_kind(semantic_scope)
+    tail_relation = _tail_relation(tail)
 
     if (
-        CHINESE_POSTPOSITIVE_INABILITY.search(_context_text(semantic_scope))
-        or (_has_explicit_negative(semantic_scope) and not main_positive)
+        main_assertion == "hard"
         or _prior_clause_has_dangling_negative(answer[:clause_start])
         or _prior_negative_carries(answer, clause_start)
-        or _tail_denies_candidate(tail)
+        or tail_relation == "same_fact"
     ):
         return None
 
@@ -2004,8 +2009,9 @@ def _candidate_decision_mode(
     if not complete_clause:
         return "edit_only"
     if (
-        re.search(r"[没不未无]", _context_text(clause))
-        and not _has_positive_assertion(clause)
+        main_assertion != "positive"
+        or tail_relation == "unknown"
+        or _has_unresolved_coordination(clause)
     ):
         return "edit_only"
     return "accept_or_edit"
@@ -2055,11 +2061,91 @@ def _has_positive_assertion(value: str) -> bool:
     return bool(CHINESE_POSITIVE_ASSERTION.search(_context_text(value)))
 
 
+def _main_assertion_kind(value: str) -> str:
+    context = _context_text(value)
+    compact = re.sub(r"[\s、]+", "", context)
+    if CHINESE_POSTPOSITIVE_INABILITY.search(context):
+        return "hard"
+
+    english_self = re.match(r"^(?:i|we)\b", context, re.IGNORECASE)
+    if english_self is not None:
+        main_scope = re.split(
+            r"\b(?:who|which|that)\b",
+            context,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
+            return "hard"
+        if re.match(
+            r"^(?:i|we)\s+(?:(?:successfully|independently|personally)\s+)*"
+            r"(?:lead|led|complete(?:d)?|own(?:ed)?|handle(?:d)?|deliver(?:ed)?|"
+            r"participate(?:d)?|contribute(?:d)?|work(?:ed)?\s+on|support(?:ed)?|"
+            r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?)\b",
+            main_scope,
+            re.IGNORECASE,
+        ):
+            return "positive"
+        return "unknown"
+
+    if _has_positive_assertion(context):
+        return "positive"
+
+    if CHINESE_EXPLICIT_NEGATIVE.search(compact) or RESPONSIBILITY_DENIAL.search(
+        compact
+    ):
+        return "hard"
+
+    chinese_assignment = CHINESE_OWNER_ASSIGNMENT.search(compact)
+    if chinese_assignment is not None:
+        owner = (
+            chinese_assignment.group("by_owner")
+            or chinese_assignment.group("copula_owner")
+            or ""
+        )
+        return "positive" if _is_chinese_self_owner(owner) else "hard"
+
+    chinese_active = CHINESE_ACTIVE_OWNER.search(compact)
+    if chinese_active is not None:
+        owner = chinese_active.group("owner")
+        if "由" not in owner:
+            if re.match(r"^(?:并未|未|没有|没|不|无)", owner):
+                return "unknown"
+            return "positive" if _is_chinese_adverbial_owner(owner) else "hard"
+
+    english_assignment = ENGLISH_BY_OWNER.search(context)
+    if english_assignment is not None:
+        owner = english_assignment.group("owner").strip().lower()
+        return "positive" if _is_english_self_owner(owner) else "hard"
+
+    english_active = ENGLISH_ACTIVE_OWNER.search(context)
+    if english_active is not None:
+        owner = english_active.group("owner").strip().lower()
+        if _is_english_self_owner(owner) or re.search(r"\b(?:i|we|us)\b", owner):
+            return "positive"
+        return "hard"
+
+    if CHINESE_EXPLICIT_OTHER_SUBJECT.search(compact) or _has_other_owner(context):
+        return "hard"
+    if ENGLISH_EXPLICIT_NEGATIVE.search(context):
+        return "hard"
+    return "unknown"
+
+
+def _has_unresolved_coordination(value: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:并且|以及|(?<!参)与|、)(?=\S)",
+            _context_text(value),
+        )
+    )
+
+
 def _is_chinese_self_owner(owner: str) -> bool:
     return bool(
         owner == "本团队"
         or re.fullmatch(
-            r"(?:我|本人|我们|咱们)"
+            r"(?:我|本人|我们|咱们)(?:[零〇一二三四五六七八九十百千万两\d]+人)?"
             r"(?:(?:全程|最终|独立|共同|团队|亲自|实际|主要|具体|直接|"
             r"全权|单独|协同))*",
             owner,
@@ -2090,6 +2176,8 @@ def _is_chinese_adverbial_owner(owner: str) -> bool:
             owner,
         )
         or re.fullmatch(r"(?:高|低)?质量|按时|提前", owner)
+        or re.fullmatch(r"(?:同时)?(?:序列|批量|并行)", owner)
+        or re.fullmatch(r"[\u4e00-\u9fff]{1,8}(?:省|市|县|区)", owner)
         or re.fullmatch(
             r"独立|共同|亲自|主动|成功|最终|随后|当时|一直|唯一|"
             rf"(?:{CHINESE_COORDINATION})(?:成功|独立|共同|实际|具体|主要|亲自|主动)*|"
@@ -2139,7 +2227,7 @@ def _has_other_owner(value: str) -> bool:
     owner = active.group("owner").strip().lower()
     return not (
         re.search(r"\b(?:i|we|us)\b", owner)
-        or re.match(r"^(?:my|our)\b", owner)
+        or _is_english_self_owner(owner)
         or owner.split()[-1] in {"am", "are", "is", "was", "were", "have", "has", "had"}
     )
 
@@ -2164,19 +2252,19 @@ def _is_dangling_negative_clause(value: str) -> bool:
             compact,
         )
         or re.fullmatch(
-            r"(?:I|we)(?:\s+(?:really|completely|actually|simply))?\s+"
+            r"(?:I|we)(?:\s+(?:really|completely|actually|simply|absolutely))?\s+"
             r"(?:cannot|cant|can't|could\s+not|couldnt|couldn't)",
             context,
             re.IGNORECASE,
         )
         or re.fullmatch(
-            r"(?:I|we)(?:\s+(?:really|completely|actually|simply))?\s+"
+            r"(?:I|we)(?:\s+(?:really|completely|actually|simply|absolutely))?\s+"
             r"(?:do\s+not|dont|don't)",
             context,
             re.IGNORECASE,
         )
         or re.fullmatch(
-            r"(?:I|we)(?:\s+(?:really|completely|actually|simply))?\s+"
+            r"(?:I|we)(?:\s+(?:really|completely|actually|simply|absolutely))?\s+"
             r"lack(?:\s+\w+){0,2}\s+experience",
             context,
             re.IGNORECASE,
@@ -2244,6 +2332,27 @@ def _tail_denies_candidate(tail: str) -> bool:
     )
 
 
+def _tail_relation(tail: str) -> str:
+    context = _context_text(tail)
+    if not context:
+        return "none"
+    if _tail_denies_candidate(context):
+        return "same_fact"
+    if context[0] not in "。.!！?？\n\r":
+        return "none"
+    units = [
+        _tail_unit_text(unit)
+        for unit in re.split(r"[。.!！?？\n\r]", context)
+        if _tail_unit_text(unit)
+    ]
+    if not units:
+        return "none"
+    immediate = units[0]
+    if _tail_starts_new_topic(immediate):
+        return "new_topic"
+    return "unknown"
+
+
 def _tail_unit_text(value: str) -> str:
     return re.sub(
         r"^[\s，,；;]*(?:(?:不过|然而|可是|但|却)\s*)?",
@@ -2257,12 +2366,22 @@ def _tail_starts_new_topic(value: str) -> bool:
     return bool(
         re.match(
             r"^(?:另一个|另一项|另一份|其他|其它|"
-            r"后续(?:项目|工作|任务)|(?:项目|工作|任务)\s*[A-Za-z]|"
+            r"(?:后续|接下来(?:的)?)(?:项目|工作|任务)|"
+            r"(?:项目|工作|任务)\s*[A-Za-z](?![A-Za-z])|"
             r"第[零〇一二三四五六七八九十百千万两\d]+个?(?:项目|工作|任务)|"
             r"[A-Za-z]\s*(?:项目|工作|任务))",
             core,
         )
         or re.search(r"\b(?:A|B)\s*(?:project|job|task)\b", core, re.IGNORECASE)
+        or re.search(
+            r"(?<![A-Za-z])[A-Za-z](?![A-Za-z])\s*(?:项目|工作|任务)",
+            core,
+        )
+        or re.match(
+            r"^(?:我|本人|我们|咱们)(?:不熟悉|不了解|不懂)\s*"
+            r"[A-Za-z][A-Za-z0-9+#.-]*$",
+            core,
+        )
         or re.search(
             r"\b(?:for|on)\s+(?:the\s+)?(?:second|third|another)\s+"
             r"(?:project|job|task)\b",
@@ -2308,6 +2427,11 @@ def _is_referential_tail_denial(value: str) -> bool:
             r"(?:没有|没|未|不)(?:真正|实际|直接|具体|独立|主动)*"
             r"(?:负责|完成|参与|承担|主导|做)(?:过)?(?:了|的)?"
             rf"(?:{CHINESE_REFERENTIAL_TARGET})?",
+            core,
+        )
+        or re.search(
+            rf"^(?:我|本人).*?否认.*?(?:负责|完成|参与|承担|主导|做).*?"
+            rf"{CHINESE_REFERENTIAL_TARGET}",
             core,
         )
         or re.search(

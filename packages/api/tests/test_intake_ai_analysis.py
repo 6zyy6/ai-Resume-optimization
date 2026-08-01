@@ -1587,6 +1587,140 @@ def test_each_extended_coordinated_clause_is_accepted(answer, evidence):
 
 
 @pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("My mentor completed the project", "My mentor completed the project"),
+        ("导师设计产品", "导师设计产品"),
+        ("完成不来项目", "完成不来项目"),
+        ("完成不成项目", "完成不成项目"),
+        ("I absolutely cannot, lead project", "lead project"),
+        ("完成项目。该经历由同学完成", "完成项目"),
+    ],
+)
+def test_main_negative_or_other_owner_assertion_is_trace_only(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I supported users who were unfamiliar with the system",
+        "I analyzed data completed by my mentor",
+        "项目由我们三人共同完成",
+    ],
+)
+def test_nested_context_or_counted_self_owner_does_not_poison_main_assertion(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_explicit_following_topic_does_not_poison_prior_assertion():
+    answer = "我完成A项目。接下来的项目不是我做的"
+    evidence = "我完成A项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_unrecognized_coordinated_action_requires_edit():
+    answer = "完成项目并且编写报告"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize("answer", ["I maybe project", "I failed the exam"])
+def test_unknown_english_self_predicate_requires_edit(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_self_denial_tail_referring_to_same_fact_is_trace_only():
+    answer = "完成项目。我否认完成这个项目"
+    evidence = "完成项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_unknown_self_tail_requires_edit():
+    answer = "完成项目。我后来有些犹豫"
+    evidence = "完成项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_same_fact_technical_tail_is_not_inferred_as_new_topic():
+    answer = "完成Python项目。我对Python项目还有疑问"
+    evidence = "完成Python项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_prefixed_technical_tail_is_not_inferred_as_lettered_topic():
+    answer = "完成项目。项目Python部分不是我负责的"
+    evidence = "完成项目"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),
