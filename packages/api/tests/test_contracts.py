@@ -82,3 +82,37 @@ def test_openapi_declares_the_runtime_error_envelope():
     assert usage_auth["content"]["application/json"]["schema"]["$ref"].endswith(
         "/ApiErrorEnvelope"
     )
+
+
+def test_openapi_declares_async_intake_analysis_and_candidate_review_contracts():
+    """A 200-only or candidate-free schema would make the runtime flow unusable."""
+    schema = build_application().openapi()
+    paths = schema["paths"]
+    schemas = schema["components"]["schemas"]
+
+    answers = paths["/v1/intake-sessions/{session_id}/answers"]["post"]
+    retry = paths["/v1/intake-sessions/{session_id}/analysis/retry"]["post"]
+    decision = paths[
+        "/v1/intake-sessions/{session_id}/fact-candidates/{candidate_id}/decision"
+    ]["post"]
+    assert {"200", "202"} <= set(answers["responses"])
+    assert "202" in retry["responses"]
+    assert decision["responses"]["200"]["content"]["application/json"]["schema"]
+    assert {
+        "analysis_task_id",
+        "analysis_status",
+        "fact_candidates",
+    } <= set(schemas["IntakeSessionResponse"]["properties"])
+    assert {
+        "id",
+        "intake_answer_id",
+        "kind",
+        "value",
+        "source_excerpt",
+        "source_start",
+        "source_end",
+        "source_hash",
+        "status",
+        "decision_mode",
+        "ai_run_id",
+    } == set(schemas["IntakeFactCandidateResponse"]["properties"])

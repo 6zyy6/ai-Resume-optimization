@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Protocol
 
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
@@ -689,6 +689,47 @@ class TaskService:
             task_id,
             claim_token,
         )
+
+    async def ai_receipt_task_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+        ai_run_id: str,
+        receipt_status: str,
+    ) -> Task:
+        allowed_states = [
+            and_(
+                Task.status == "running",
+                Task.claim_token == claim_token,
+            )
+        ]
+        if receipt_status == "cancelled":
+            allowed_states.append(
+                and_(
+                    Task.status == "cancelled",
+                    Task.cancellation_requested.is_(True),
+                    Task.active_ai_run_id == ai_run_id,
+                    Task.claim_token.is_(None),
+                    Task.ai_cancel_acknowledged_at.is_not(None),
+                )
+            )
+        task = await session.scalar(
+            select(Task)
+            .where(
+                Task.id == task_id,
+                Task.owner_user_id == owner_user_id,
+                or_(*allowed_states),
+            )
+            .with_for_update()
+        )
+        if task is None:
+            raise TaskClaimError(
+                "TASK_CLAIM_STALE",
+                "Task claim or cancelled AI run is missing or superseded",
+            )
+        return task
 
     async def complete_task_in_session(
         self,

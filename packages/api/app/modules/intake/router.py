@@ -96,7 +96,12 @@ async def get_intake(
     return IntakeSessionResponse.model_validate(result, strict=False)
 
 
-@router.post("/{session_id}/answers", response_model=IntakeSessionResponse)
+@router.post(
+    "/{session_id}/answers",
+    response_model=IntakeSessionResponse,
+    status_code=202,
+    responses={200: {"model": IntakeSessionResponse}},
+)
 async def answer_intake(
     session_id: str,
     payload: IntakeAnswerRequest,
@@ -125,6 +130,7 @@ async def answer_intake(
 @router.post(
     "/{session_id}/analysis/retry",
     response_model=IntakeSessionResponse,
+    status_code=202,
 )
 async def retry_answer_analysis(
     session_id: str,

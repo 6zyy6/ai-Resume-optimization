@@ -374,6 +374,95 @@
         "title": "ExportResponse",
         "type": "object"
       },
+      "FactCandidateDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_version": {
+            "minimum": 0.0,
+            "title": "Base Version",
+            "type": "integer"
+          },
+          "decision": {
+            "enum": [
+              "accept",
+              "edit",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "decision",
+          "base_version"
+        ],
+        "title": "FactCandidateDecisionRequest",
+        "type": "object"
+      },
+      "FactCandidateDecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "current_question": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntakeQuestionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntakeFactSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_version": {
+            "title": "Session Version",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "accepted",
+              "edited",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "status",
+          "fact_summary",
+          "session_version",
+          "current_question"
+        ],
+        "title": "FactCandidateDecisionResponse",
+        "type": "object"
+      },
       "FactCreate": {
         "additionalProperties": false,
         "properties": {
@@ -766,6 +855,21 @@
         "title": "ImportedFactInput",
         "type": "object"
       },
+      "IntakeAnalysisActionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_version": {
+            "minimum": 0.0,
+            "title": "Base Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_version"
+        ],
+        "title": "IntakeAnalysisActionRequest",
+        "type": "object"
+      },
       "IntakeAnswerRequest": {
         "additionalProperties": false,
         "properties": {
@@ -858,6 +962,80 @@
         "title": "IntakeDraftResponse",
         "type": "object"
       },
+      "IntakeFactCandidateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ai_run_id": {
+            "title": "Ai Run Id",
+            "type": "string"
+          },
+          "decision_mode": {
+            "enum": [
+              "accept_or_edit",
+              "edit_only"
+            ],
+            "title": "Decision Mode",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "intake_answer_id": {
+            "title": "Intake Answer Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_end": {
+            "title": "Source End",
+            "type": "integer"
+          },
+          "source_excerpt": {
+            "title": "Source Excerpt",
+            "type": "string"
+          },
+          "source_hash": {
+            "title": "Source Hash",
+            "type": "string"
+          },
+          "source_start": {
+            "title": "Source Start",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "accepted",
+              "edited",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "intake_answer_id",
+          "kind",
+          "value",
+          "source_excerpt",
+          "source_start",
+          "source_end",
+          "source_hash",
+          "status",
+          "decision_mode",
+          "ai_run_id"
+        ],
+        "title": "IntakeFactCandidateResponse",
+        "type": "object"
+      },
       "IntakeFactSummary": {
         "additionalProperties": false,
         "properties": {
@@ -939,6 +1117,29 @@
       "IntakeSessionResponse": {
         "additionalProperties": false,
         "properties": {
+          "analysis_status": {
+            "enum": [
+              "idle",
+              "queued",
+              "running",
+              "waiting_for_confirmation",
+              "failed",
+              "completed"
+            ],
+            "title": "Analysis Status",
+            "type": "string"
+          },
+          "analysis_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Id"
+          },
           "answered_question_ids": {
             "items": {
               "type": "string"
@@ -959,6 +1160,13 @@
                 "type": "null"
               }
             ]
+          },
+          "fact_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/IntakeFactCandidateResponse"
+            },
+            "title": "Fact Candidates",
+            "type": "array"
           },
           "fact_summaries": {
             "items": {
@@ -1029,6 +1237,9 @@
           "answered_question_ids",
           "skipped_question_ids",
           "fact_summaries",
+          "fact_candidates",
+          "analysis_task_id",
+          "analysis_status",
           "task_id",
           "resume_id"
         ],
@@ -5003,6 +5214,252 @@
         ]
       }
     },
+    "/v1/intake-sessions/{session_id}/analysis/continue": {
+      "post": {
+        "operationId": "continue_answer_analysis_v1_intake_sessions__session_id__analysis_continue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeAnalysisActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "summary": "Continue Answer Analysis",
+        "tags": [
+          "intake"
+        ]
+      }
+    },
+    "/v1/intake-sessions/{session_id}/analysis/retry": {
+      "post": {
+        "operationId": "retry_answer_analysis_v1_intake_sessions__session_id__analysis_retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeAnalysisActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "summary": "Retry Answer Analysis",
+        "tags": [
+          "intake"
+        ]
+      }
+    },
     "/v1/intake-sessions/{session_id}/answers": {
       "post": {
         "operationId": "answer_intake_v1_intake_sessions__session_id__answers_post",
@@ -5045,6 +5502,16 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeSessionResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -5244,6 +5711,138 @@
           }
         ],
         "summary": "Create Draft",
+        "tags": [
+          "intake"
+        ]
+      }
+    },
+    "/v1/intake-sessions/{session_id}/fact-candidates/{candidate_id}/decision": {
+      "post": {
+        "operationId": "decide_fact_candidate_v1_intake_sessions__session_id__fact_candidates__candidate_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactCandidateDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactCandidateDecisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "summary": "Decide Fact Candidate",
         "tags": [
           "intake"
         ]

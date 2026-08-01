@@ -482,6 +482,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/intake-sessions/{session_id}/analysis/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Continue Answer Analysis */
+        post: operations["continue_answer_analysis_v1_intake_sessions__session_id__analysis_continue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/intake-sessions/{session_id}/analysis/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Answer Analysis */
+        post: operations["retry_answer_analysis_v1_intake_sessions__session_id__analysis_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/intake-sessions/{session_id}/answers": {
         parameters: {
             query?: never;
@@ -510,6 +544,23 @@ export interface paths {
         put?: never;
         /** Create Draft */
         post: operations["create_draft_v1_intake_sessions__session_id__drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/intake-sessions/{session_id}/fact-candidates/{candidate_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Fact Candidate */
+        post: operations["decide_fact_candidate_v1_intake_sessions__session_id__fact_candidates__candidate_id__decision_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1114,6 +1165,32 @@ export interface components {
             /** Template Version */
             template_version: string;
         };
+        /** FactCandidateDecisionRequest */
+        FactCandidateDecisionRequest: {
+            /** Base Version */
+            base_version: number;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "accept" | "edit" | "reject";
+            /** Value */
+            value?: string | null;
+        };
+        /** FactCandidateDecisionResponse */
+        FactCandidateDecisionResponse: {
+            /** Candidate Id */
+            candidate_id: string;
+            current_question: components["schemas"]["IntakeQuestionResponse"] | null;
+            fact_summary: components["schemas"]["IntakeFactSummary"] | null;
+            /** Session Version */
+            session_version: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "accepted" | "edited" | "rejected";
+        };
         /** FactCreate */
         FactCreate: {
             /** Kind */
@@ -1233,6 +1310,11 @@ export interface components {
             /** Value */
             value: string;
         };
+        /** IntakeAnalysisActionRequest */
+        IntakeAnalysisActionRequest: {
+            /** Base Version */
+            base_version: number;
+        };
         /** IntakeAnswerRequest */
         IntakeAnswerRequest: {
             /** Answer */
@@ -1268,6 +1350,37 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** IntakeFactCandidateResponse */
+        IntakeFactCandidateResponse: {
+            /** Ai Run Id */
+            ai_run_id: string;
+            /**
+             * Decision Mode
+             * @enum {string}
+             */
+            decision_mode: "accept_or_edit" | "edit_only";
+            /** Id */
+            id: string;
+            /** Intake Answer Id */
+            intake_answer_id: string;
+            /** Kind */
+            kind: string;
+            /** Source End */
+            source_end: number;
+            /** Source Excerpt */
+            source_excerpt: string;
+            /** Source Hash */
+            source_hash: string;
+            /** Source Start */
+            source_start: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "edited" | "rejected";
+            /** Value */
+            value: string;
+        };
         /** IntakeFactSummary */
         IntakeFactSummary: {
             /** Id */
@@ -1298,11 +1411,20 @@ export interface components {
         };
         /** IntakeSessionResponse */
         IntakeSessionResponse: {
+            /**
+             * Analysis Status
+             * @enum {string}
+             */
+            analysis_status: "idle" | "queued" | "running" | "waiting_for_confirmation" | "failed" | "completed";
+            /** Analysis Task Id */
+            analysis_task_id: string | null;
             /** Answered Question Ids */
             answered_question_ids: string[];
             /** Completed Count */
             completed_count: number;
             current_question: components["schemas"]["IntakeQuestionResponse"] | null;
+            /** Fact Candidates */
+            fact_candidates: components["schemas"]["IntakeFactCandidateResponse"][];
             /** Fact Summaries */
             fact_summaries: components["schemas"]["IntakeFactSummary"][];
             /** Id */
@@ -3713,6 +3835,170 @@ export interface operations {
             };
         };
     };
+    continue_answer_analysis_v1_intake_sessions__session_id__analysis_continue_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntakeAnalysisActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntakeSessionResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    retry_answer_analysis_v1_intake_sessions__session_id__analysis_retry_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IntakeAnalysisActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntakeSessionResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
     answer_intake_v1_intake_sessions__session_id__answers_post: {
         parameters: {
             query?: never;
@@ -3730,8 +4016,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description OK */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntakeSessionResponse"];
+                };
+            };
+            /** @description Successful Response */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3819,6 +4114,89 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IntakeDraftResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    decide_fact_candidate_v1_intake_sessions__session_id__fact_candidates__candidate_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                session_id: string;
+                candidate_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactCandidateDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactCandidateDecisionResponse"];
                 };
             };
             /** @description Unauthorized */

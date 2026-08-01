@@ -27,6 +27,22 @@ class IntakeFactSummary(BaseModel):
     status: Literal["unconfirmed", "confirmed", "rejected"]
 
 
+class IntakeFactCandidateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    intake_answer_id: str
+    kind: str
+    value: str
+    source_excerpt: str
+    source_start: int
+    source_end: int
+    source_hash: str
+    status: Literal["pending", "accepted", "edited", "rejected"]
+    decision_mode: Literal["accept_or_edit", "edit_only"]
+    ai_run_id: str
+
+
 class IntakeSessionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -39,6 +55,7 @@ class IntakeSessionResponse(BaseModel):
     answered_question_ids: list[str]
     skipped_question_ids: list[str]
     fact_summaries: list[IntakeFactSummary]
+    fact_candidates: list[IntakeFactCandidateResponse]
     analysis_task_id: str | None
     analysis_status: Literal[
         "idle",

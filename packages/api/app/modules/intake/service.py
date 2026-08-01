@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import and_, func, select, update
@@ -18,6 +20,7 @@ from app.db.models import (
     FactSource,
     IntakeAnswer,
     IntakeSession,
+    Outbox,
     Resume,
     ResumeVersion,
     SourceRecord,
@@ -147,7 +150,16 @@ QUESTIONS = {
 }
 
 NEGATIVE_ANSWERS = frozenset({"没有", "不知道", "不清楚", "无", "跳过"})
-NUMBER_TOKEN = re.compile(r"(?<![\d.])\d+(?:\.\d+)?%?(?![\d.])")
+NEGATIVE_CLAIM = re.compile(
+    r"(?:(?:并)?没有|从未|未曾|未)(?:真正)?"
+    r"(?:负责|参与|完成|承担|做过|参加)(?:这个|该|相关)?"
+    r"(?:项目|任务|工作|实习|活动|课程)?"
+)
+NUMBER_TOKEN = re.compile(
+    r"(?<![\d.,])(?P<number>[+\-−]?(?:"
+    r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+))"
+    r"(?P<percent>[%％]?)(?![\d.,])"
+)
 
 
 @dataclass
@@ -215,6 +227,22 @@ class IntakeService:
                     "Wait for or cancel the current draft task before restarting",
                     409,
                 )
+            if active is not None and restart:
+                live_analysis = await session.scalar(
+                    select(IntakeAnswer.id).where(
+                        IntakeAnswer.session_id == active.id,
+                        IntakeAnswer.owner_user_id == active.owner_user_id,
+                        IntakeAnswer.analysis_status.in_(
+                            ("queued", "running", "waiting_for_confirmation")
+                        ),
+                    )
+                )
+                if live_analysis is not None:
+                    raise IntakeError(
+                        "INTAKE_ANALYSIS_IN_PROGRESS",
+                        "Wait for or finish the current answer analysis before restarting",
+                        409,
+                    )
             if active is not None:
                 active.status = "abandoned"
                 active.active_owner_key = None
@@ -286,6 +314,33 @@ class IntakeService:
                     "Intake session has changed",
                     409,
                 )
+            pending_candidates = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(FactCandidate)
+                    .join(
+                        IntakeAnswer,
+                        and_(
+                            IntakeAnswer.id == FactCandidate.intake_answer_id,
+                            IntakeAnswer.owner_user_id
+                            == FactCandidate.owner_user_id,
+                        ),
+                    )
+                    .where(
+                        IntakeAnswer.session_id == row.id,
+                        IntakeAnswer.owner_user_id == row.owner_user_id,
+                        FactCandidate.owner_user_id == row.owner_user_id,
+                        FactCandidate.status == "pending",
+                    )
+                )
+                or 0
+            )
+            if pending_candidates:
+                raise IntakeError(
+                    "INTAKE_FACT_REVIEW_REQUIRED",
+                    "Review all pending fact candidates before answering",
+                    409,
+                )
             question = row.current_question
             if question is None or question["id"] != values["question_id"]:
                 raise IntakeError(
@@ -306,15 +361,17 @@ class IntakeService:
                 fact_id=None,
                 analysis_status="queued" if state == "answered" else "idle",
                 analysis_input_version=1 if state == "answered" else None,
-                analysis_input_hash=(
-                    hashlib.sha256(answer.encode()).hexdigest()
-                    if state == "answered"
-                    else None
-                ),
+                analysis_input_hash=None,
                 next_question_source="rule" if state != "answered" else None,
             )
             session.add(answer_row)
             if state == "answered":
+                analysis_snapshot = await self._build_analysis_snapshot(
+                    session,
+                    row,
+                    answer_row,
+                )
+                answer_row.analysis_input_hash = _semantic_hash(analysis_snapshot)
                 try:
                     task = await task_service.create_task_in_session(
                         session,
@@ -331,6 +388,7 @@ class IntakeService:
                             "intake_answer_id": answer_id,
                             "analysis_input_version": 1,
                             "analysis_input_hash": answer_row.analysis_input_hash,
+                            "analysis_snapshot": analysis_snapshot,
                         },
                     )
                 except TaskServiceError as error:
@@ -407,11 +465,13 @@ class IntakeService:
             raise
 
         async with self.sessions.begin() as session:
-            task = await task_service.claimed_task_in_session(
+            task = await task_service.ai_receipt_task_in_session(
                 session,
                 owner_id,
                 task_id,
                 claim_token,
+                receipt.run.ai_run_id,
+                receipt.run.status,
             )
             answer_row, intake = await self._analysis_resource(
                 session,
@@ -461,11 +521,12 @@ class IntakeService:
                 )
             if receipt.run.status != "succeeded":
                 answer_row.analysis_status = "failed"
-                await task_service.fail_task_in_session(
-                    session,
-                    task,
-                    receipt.run.error_code or f"ai_{receipt.run.status}",
-                )
+                if task.status == "running":
+                    await task_service.fail_task_in_session(
+                        session,
+                        task,
+                        receipt.run.error_code or f"ai_{receipt.run.status}",
+                    )
                 return answer_row.id
             if not isinstance(receipt.result, AnalyzeIntakeResult):
                 raise IntakeError(
@@ -620,6 +681,18 @@ class IntakeService:
                     409,
                 )
             _require_saved_answer_input(answer_row)
+            old_outbox = await session.scalar(
+                select(Outbox).where(
+                    Outbox.task_id == old_task.id,
+                    Outbox.owner_user_id == old_task.owner_user_id,
+                )
+            )
+            analysis_snapshot, _ = _validated_analysis_snapshot(
+                old_task,
+                answer_row,
+                intake,
+                old_outbox,
+            )
             reservation = await session.scalar(
                 select(UsageLedger)
                 .where(
@@ -651,6 +724,7 @@ class IntakeService:
                         "intake_answer_id": answer_row.id,
                         "analysis_input_version": answer_row.analysis_input_version,
                         "analysis_input_hash": answer_row.analysis_input_hash,
+                        "analysis_snapshot": analysis_snapshot,
                     },
                 )
             except TaskServiceError as error:
@@ -717,6 +791,7 @@ class IntakeService:
                     Task.id == answer_row.analysis_task_id,
                     Task.owner_user_id == answer_row.owner_user_id,
                     Task.type == "analyze_intake_answer",
+                    Task.resource_type == "intake_answer",
                     Task.resource_id == answer_row.id,
                     Task.status.in_(("failed", "cancelled")),
                 )
@@ -802,6 +877,12 @@ class IntakeService:
             intake = await self._session(session, owner_id, session_id, lock=True)
             if intake is None:
                 raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            if intake.status != "active":
+                raise IntakeError(
+                    "INTAKE_NOT_ACTIVE",
+                    "Intake session is not accepting candidate decisions",
+                    409,
+                )
             owners = await authorized_owner_ids(session, owner_id)
             candidate = await session.scalar(
                 select(FactCandidate)
@@ -861,6 +942,12 @@ class IntakeService:
             )
             if answer_row is None:
                 raise IntakeError("RESOURCE_NOT_FOUND", "Intake answer not found", 404)
+            if answer_row.analysis_status != "waiting_for_confirmation":
+                raise IntakeError(
+                    "INTAKE_FACT_REVIEW_NOT_ACTIVE",
+                    "Fact candidate review is no longer active",
+                    409,
+                )
             fact = None
             source = None
             source_range = None
@@ -943,7 +1030,12 @@ class IntakeService:
                 answer_row.analysis_status = "completed"
             intake.version += 1
             intake.updated_at = now
-            response = _candidate_decision_response(candidate, fact, intake)
+            response = _candidate_decision_response(
+                candidate,
+                fact,
+                intake,
+                current_question=(None if pending else intake.current_question),
+            )
             await self.idempotency.complete(session, claim, 200, response)
             return response
 
@@ -984,48 +1076,82 @@ class IntakeService:
         answer_row: IntakeAnswer,
         intake: IntakeSession,
     ) -> AnalyzeIntakeRequest:
-        answer = answer_row.answer_encrypted or ""
         _require_saved_answer_input(answer_row)
-        facts = list(
-            (
-                await session.scalars(
-                    select(Fact).where(
-                        Fact.id.in_(intake.fact_ids or []),
-                        Fact.owner_user_id == answer_row.owner_user_id,
-                        Fact.status == "confirmed",
-                    )
-                )
-            ).all()
-        ) if intake.fact_ids else []
-        question = _question(answer_row.question_id)
+        outbox = await session.scalar(
+            select(Outbox).where(
+                Outbox.task_id == task.id,
+                Outbox.owner_user_id == task.owner_user_id,
+            )
+        )
+        snapshot, payload = _validated_analysis_snapshot(
+            task,
+            answer_row,
+            intake,
+            outbox,
+        )
         return AnalyzeIntakeRequest(
-            workflow_type="analyze_intake_answer",
-            workflow_version="2",
-            prompt_template_version="intake-answer@2",
+            workflow_type=snapshot["workflow_type"],
+            workflow_version=snapshot["workflow_version"],
+            prompt_template_version=snapshot["prompt_template_version"],
             trace_id=task.trace_id,
             task_id=task.id,
             owner_scope_hash=hashlib.sha256(
                 answer_row.owner_user_id.encode()
             ).hexdigest(),
-            locale="zh-CN",
+            locale=snapshot["locale"],
             input_version=answer_row.analysis_input_version,
             input_hash=answer_row.analysis_input_hash,
-            payload=AnalyzeIntakePayload(
-                session_id_hash=hashlib.sha256(intake.id.encode()).hexdigest(),
-                answer_id=answer_row.id,
-                question_id=answer_row.question_id,
-                question_reason=question.get("reason") or "general",
-                answer_text=answer,
-                answer_state=answer_row.state,
-                confirmed_facts=tuple(
-                    FactProjection(id=fact.id, kind=fact.kind, value=fact.value_encrypted)
-                    for fact in facts
-                ),
-                covered_slots=(),
-                missing_slots=(),
-                asked_question_ids=tuple(intake.answered_question_ids),
+            payload=payload,
+        )
+
+    async def _build_analysis_snapshot(
+        self,
+        session: AsyncSession,
+        intake: IntakeSession,
+        answer: IntakeAnswer,
+    ) -> dict[str, Any]:
+        facts: list[Fact] = []
+        if intake.fact_ids:
+            facts = list(
+                (
+                    await session.scalars(
+                        select(Fact).where(
+                            Fact.id.in_(intake.fact_ids),
+                            Fact.owner_user_id == intake.owner_user_id,
+                            Fact.status == "confirmed",
+                        )
+                    )
+                ).all()
+            )
+        facts_by_id = {fact.id: fact for fact in facts}
+        question = dict(intake.current_question or _question(answer.question_id))
+        payload = AnalyzeIntakePayload(
+            session_id_hash=hashlib.sha256(intake.id.encode()).hexdigest(),
+            answer_id=answer.id,
+            question_id=answer.question_id,
+            question_reason=question.get("reason") or "general",
+            answer_text=answer.answer_encrypted or "",
+            answer_state=answer.state,
+            confirmed_facts=tuple(
+                FactProjection(id=fact.id, kind=fact.kind, value=fact.value_encrypted)
+                for fact_id in intake.fact_ids
+                if (fact := facts_by_id.get(fact_id)) is not None
+            ),
+            covered_slots=(),
+            missing_slots=(),
+            asked_question_ids=tuple(
+                [*intake.answered_question_ids, answer.question_id]
             ),
         )
+        return {
+            "workflow_type": "analyze_intake_answer",
+            "workflow_version": "2",
+            "prompt_template_version": "intake-answer@2",
+            "locale": "zh-CN",
+            "input_version": 1,
+            "question": question,
+            "payload": payload.model_dump(mode="json"),
+        }
 
     @staticmethod
     async def _append_candidate_validation_events(
@@ -1376,11 +1502,39 @@ class IntakeService:
             .order_by(IntakeAnswer.created_at.desc(), IntakeAnswer.id.desc())
             .limit(1)
         )
+        candidate_rows = list(
+            (
+                await session.execute(
+                    select(FactCandidate, IntakeAnswer.answer_encrypted)
+                    .join(
+                        IntakeAnswer,
+                        and_(
+                            IntakeAnswer.id == FactCandidate.intake_answer_id,
+                            IntakeAnswer.owner_user_id
+                            == FactCandidate.owner_user_id,
+                        ),
+                    )
+                    .where(
+                        IntakeAnswer.session_id == row.id,
+                        IntakeAnswer.owner_user_id == row.owner_user_id,
+                        FactCandidate.owner_user_id == row.owner_user_id,
+                    )
+                    .order_by(
+                        IntakeAnswer.created_at,
+                        FactCandidate.source_start,
+                        FactCandidate.id,
+                    )
+                )
+            ).all()
+        )
+        pending_candidates = any(
+            candidate.status == "pending" for candidate, _ in candidate_rows
+        )
         return {
             "id": row.id,
             "status": row.status,
             "version": row.version,
-            "current_question": row.current_question,
+            "current_question": None if pending_candidates else row.current_question,
             "completed_count": len(row.answered_question_ids),
             "remaining_estimate": max(0, 8 - len(row.answered_question_ids)),
             "answered_question_ids": list(row.answered_question_ids),
@@ -1394,6 +1548,24 @@ class IntakeService:
                 }
                 for fact_id in row.fact_ids
                 if (fact := facts_by_id.get(fact_id)) is not None
+            ],
+            "fact_candidates": [
+                {
+                    "id": candidate.id,
+                    "intake_answer_id": candidate.intake_answer_id,
+                    "kind": candidate.kind,
+                    "value": candidate.value_encrypted,
+                    "source_excerpt": (answer or "")[
+                        candidate.source_start : candidate.source_end
+                    ],
+                    "source_start": candidate.source_start,
+                    "source_end": candidate.source_end,
+                    "source_hash": candidate.source_hash,
+                    "status": candidate.status,
+                    "decision_mode": candidate.decision_mode,
+                    "ai_run_id": candidate.ai_run_id,
+                }
+                for candidate, answer in candidate_rows
             ],
             "analysis_task_id": (
                 latest_answer.analysis_task_id if latest_answer is not None else None
@@ -1413,7 +1585,7 @@ def _answer_state(answer: str, skipped: bool) -> str:
     if normalized in NEGATIVE_ANSWERS or re.fullmatch(
         r"(?:暂时)?(?:没有|无)(?:相关|类似|这方面)?(?:经历|经验|项目|任务|内容|实习|兼职|工作|课程|社团|志愿活动)?(?:了)?",
         normalized,
-    ):
+    ) or NEGATIVE_CLAIM.fullmatch(normalized):
         return "negative"
     return "answered"
 
@@ -1425,6 +1597,7 @@ def _require_analysis_graph(task, answer: IntakeAnswer, intake: IntakeSession) -
         or task.resource_id != answer.id
         or answer.analysis_task_id != task.id
         or answer.session_id != intake.id
+        or intake.status != "active"
         or answer.owner_user_id != intake.owner_user_id
         or task.owner_user_id != answer.owner_user_id
     ):
@@ -1436,17 +1609,98 @@ def _require_analysis_graph(task, answer: IntakeAnswer, intake: IntakeSession) -
 
 
 def _require_saved_answer_input(answer: IntakeAnswer) -> None:
-    value = answer.answer_encrypted or ""
     if (
         answer.state != "answered"
         or answer.analysis_input_version != 1
-        or answer.analysis_input_hash != hashlib.sha256(value.encode()).hexdigest()
+        or not isinstance(answer.analysis_input_hash, str)
+        or re.fullmatch(r"[0-9a-f]{64}", answer.analysis_input_hash) is None
     ):
         raise IntakeError(
             "INTAKE_ANALYSIS_INPUT_CHANGED",
             "Saved answer analysis input is no longer valid",
             409,
         )
+
+
+def _semantic_hash(snapshot: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_analysis_snapshot(
+    task: Task,
+    answer: IntakeAnswer,
+    intake: IntakeSession,
+    outbox: Outbox | None,
+) -> tuple[dict[str, Any], AnalyzeIntakePayload]:
+    task_payload = outbox.payload if outbox is not None else None
+    snapshot = (
+        task_payload.get("analysis_snapshot")
+        if isinstance(task_payload, dict)
+        else None
+    )
+    expected_snapshot_keys = {
+        "workflow_type",
+        "workflow_version",
+        "prompt_template_version",
+        "locale",
+        "input_version",
+        "question",
+        "payload",
+    }
+    question = snapshot.get("question") if isinstance(snapshot, dict) else None
+    try:
+        semantic_payload = AnalyzeIntakePayload.model_validate(
+            snapshot.get("payload") if isinstance(snapshot, dict) else None,
+            strict=False,
+        )
+    except Exception as error:
+        raise IntakeError(
+            "INTAKE_ANALYSIS_SNAPSHOT_INVALID",
+            "Saved answer analysis snapshot is invalid",
+            409,
+        ) from error
+    valid = (
+        outbox is not None
+        and outbox.task_id == task.id
+        and outbox.owner_user_id == task.owner_user_id
+        and isinstance(task_payload, dict)
+        and task_payload.get("task_id") == task.id
+        and task_payload.get("intake_session_id") == intake.id
+        and task_payload.get("intake_answer_id") == answer.id
+        and task_payload.get("analysis_input_version")
+        == answer.analysis_input_version
+        and task_payload.get("analysis_input_hash") == answer.analysis_input_hash
+        and isinstance(snapshot, dict)
+        and set(snapshot) == expected_snapshot_keys
+        and snapshot.get("workflow_type") == "analyze_intake_answer"
+        and snapshot.get("workflow_version") == "2"
+        and snapshot.get("prompt_template_version") == "intake-answer@2"
+        and snapshot.get("locale") == "zh-CN"
+        and snapshot.get("input_version") == answer.analysis_input_version
+        and isinstance(question, dict)
+        and set(question) == {"id", "type", "prompt", "reason"}
+        and question.get("id") == answer.question_id
+        and semantic_payload.session_id_hash
+        == hashlib.sha256(intake.id.encode()).hexdigest()
+        and semantic_payload.answer_id == answer.id
+        and semantic_payload.question_id == answer.question_id
+        and semantic_payload.answer_text == (answer.answer_encrypted or "")
+        and semantic_payload.answer_state == answer.state
+        and _semantic_hash(snapshot) == answer.analysis_input_hash
+    )
+    if not valid:
+        raise IntakeError(
+            "INTAKE_ANALYSIS_SNAPSHOT_INVALID",
+            "Saved answer analysis snapshot is invalid",
+            409,
+        )
+    return snapshot, semantic_payload
 
 
 def _validated_candidates(
@@ -1472,8 +1726,8 @@ def _validated_candidates(
                 reason = "source_hash_mismatch"
             elif _answer_state(source_slice, False) != "answered":
                 reason = "negative_source"
-            elif not set(NUMBER_TOKEN.findall(candidate.value)).issubset(
-                set(NUMBER_TOKEN.findall(source_slice))
+            elif not _number_tokens(candidate.value).issubset(
+                _number_tokens(source_slice)
             ):
                 reason = "unsupported_numeric"
         key = _candidate_key(candidate)
@@ -1495,6 +1749,23 @@ def _candidate_key(candidate) -> tuple[str, str, int, int, str]:
         candidate.source_range.end,
         candidate.source_hash,
     )
+
+
+def _number_tokens(value: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in NUMBER_TOKEN.finditer(value):
+        raw = match.group("number").replace(",", "").replace("−", "-")
+        try:
+            number = Decimal(raw)
+        except InvalidOperation:
+            continue
+        normalized = format(number.normalize(), "f")
+        if number == 0:
+            normalized = "0"
+        if match.group("percent"):
+            normalized = f"{normalized}%"
+        tokens.add(normalized)
+    return tokens
 
 
 def _analysis_next_question(
@@ -1533,6 +1804,8 @@ def _candidate_decision_response(
     candidate: FactCandidate,
     fact: Fact | None,
     intake: IntakeSession,
+    *,
+    current_question: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "candidate_id": candidate.id,
@@ -1548,7 +1821,7 @@ def _candidate_decision_response(
             else None
         ),
         "session_version": intake.version,
-        "current_question": intake.current_question,
+        "current_question": current_question,
     }
 
 

@@ -31,6 +31,7 @@ from app.db.models import (
     FactSource,
     IntakeAnswer,
     IntakeSession,
+    Outbox,
     SourceRecord,
     Task,
     UsageLedger,
@@ -46,7 +47,7 @@ from app.main import create_app
 from app.integrations.storage import MemoryStorage
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
-from app.modules.intake.service import IntakeService
+from app.modules.intake.service import IntakeError, IntakeService
 from app.workers.execution import TaskExecutor, resolve_operation
 from app.workers.pipeline import configure_pipeline_operations
 
@@ -388,6 +389,34 @@ class MismatchedReceiptClient(IntakeReceiptClient):
         )
 
 
+class CancellingIntakeReceiptClient:
+    def __init__(self, task_service, *, stale_receipt=False):
+        self.task_service = task_service
+        self.stale_receipt = stale_receipt
+
+    async def run(self, input, cancellation=None):
+        ai_run_id = derive_ai_run_id(input.task_id, "analysis", input.input_hash)
+        assert cancellation is not None
+        assert await cancellation.register_run(ai_run_id) is True
+        await self.task_service.request_cancel("usr_analysis", input.task_id)
+        assert await cancellation.is_cancel_requested() is True
+        await cancellation.acknowledge_cancel(ai_run_id)
+        receipt = await IntakeReceiptClient(
+            lambda _: [],
+            status="cancelled",
+            error_code=None,
+        ).run(input)
+        if self.stale_receipt:
+            return receipt.model_copy(
+                update={
+                    "run": receipt.run.model_copy(
+                        update={"ai_run_id": "airun_stale"}
+                    )
+                }
+            )
+        return receipt
+
+
 @pytest.fixture
 def intake_analysis_app(tmp_path):
     database_path = tmp_path / "intake-analysis.db"
@@ -543,6 +572,97 @@ def test_mixed_negative_answer_keeps_only_the_positive_source_slice(
     ]
 
 
+@pytest.mark.parametrize(
+    "negative_slice",
+    ["并没有负责项目", "从未负责项目", "未参与这个项目"],
+)
+def test_negative_candidate_slices_never_become_positive_candidates(
+    intake_analysis_app,
+    negative_slice,
+):
+    """A prefixed negation must not be lost when validating a positive-looking value."""
+    client, sessions, application = intake_analysis_app
+    answer_text = f"补充说明：{negative_slice}，但完成了汇报"
+    start = answer_text.index(negative_slice)
+    end = start + len(negative_slice)
+
+    def candidates(input):
+        return [{
+            "kind": "role",
+            "value": "负责项目",
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": start, "end": end},
+            "source_hash": hashlib.sha256(negative_slice.encode()).hexdigest(),
+            "risk_flags": [],
+        }]
+
+    queued = _queue_answer(client, answer_text)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_model_count(sessions, FactCandidate)) == 0
+    assert "negative_source" in _run(_trace_payload(sessions))
+
+
+@pytest.mark.parametrize(
+    ("source", "value", "expected_count"),
+    [
+        ("服务了1,000人", "服务了1000人", 1),
+        ("提升.5%", "提升.5%", 1),
+        ("下降-5%", "下降5%", 0),
+        ("提升5%", "提升.5%", 0),
+    ],
+)
+def test_numeric_candidate_tokens_are_canonical_and_sign_sensitive(
+    intake_analysis_app,
+    source,
+    value,
+    expected_count,
+):
+    """Loose digit matching must not merge signs, decimals, or thousands."""
+    client, sessions, application = intake_analysis_app
+
+    def candidates(input):
+        return [{
+            "kind": "result",
+            "value": value,
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": 0, "end": len(source)},
+            "source_hash": hashlib.sha256(source.encode()).hexdigest(),
+            "risk_flags": [],
+        }]
+
+    queued = _queue_answer(client, source)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_model_count(sessions, FactCandidate)) == expected_count
+    if expected_count == 0:
+        assert "unsupported_numeric" in _run(_trace_payload(sessions))
+
+
 def test_cancelled_analysis_receipt_atomically_marks_answer_and_task_failed(
     intake_analysis_app,
 ):
@@ -576,6 +696,80 @@ def test_cancelled_analysis_receipt_atomically_marks_answer_and_task_failed(
     assert _run(_task_error(sessions, task_id)) == ("failed", "already_terminal")
     assert _run(_usage_state(sessions, task_id))[0] == "consumed"
     assert _run(_ai_run_state(sessions)) == ("cancelled", "already_terminal")
+
+
+def test_real_cancel_after_claim_clear_persists_receipt_without_second_terminal_write(
+    intake_analysis_app,
+):
+    """Claim acknowledgement must not make the final cancelled receipt unpersistable."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=CancellingIntakeReceiptClient(
+            application.state.task_service
+        ),
+    )
+
+    result = _run(
+        TaskExecutor(application.state.task_service).execute(
+            "usr_analysis",
+            task_id,
+            resolve_operation,
+        )
+    )
+
+    answer_id = _run(_answer_id(sessions, task_id))
+    assert result["status"] == "cancelled"
+    assert _run(_analysis_state(sessions, answer_id))[0] == "failed"
+    assert _run(_ai_run_state(sessions)) == ("cancelled", None)
+    assert _run(_usage_state(sessions, task_id))[0] == "consumed"
+    assert _run(_cancelled_task_state(sessions, task_id)) == (
+        "cancelled",
+        True,
+        None,
+        derive_ai_run_id(
+            task_id,
+            "analysis",
+            _run(_outbox_payload(sessions, task_id))["analysis_input_hash"],
+        ),
+    )
+    assert _run(_model_count(sessions, FactCandidate)) == 0
+
+
+def test_cancelled_task_rejects_a_receipt_from_a_different_run(
+    intake_analysis_app,
+):
+    """Cancelled-task recovery must remain bound to its registered active run."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=CancellingIntakeReceiptClient(
+            application.state.task_service,
+            stale_receipt=True,
+        ),
+    )
+
+    result = _run(
+        TaskExecutor(application.state.task_service).execute(
+            "usr_analysis",
+            task_id,
+            resolve_operation,
+        )
+    )
+
+    assert result["status"] == "cancelled"
+    assert _run(_model_count(sessions, AiRun)) == 0
+    assert _run(_model_count(sessions, FactCandidate)) == 0
 
 
 def test_pipeline_executes_typed_answer_analysis_without_a_second_completion(
@@ -730,6 +924,217 @@ def test_analysis_result_transaction_rolls_back_every_result_side_effect(
     assert _run(_analysis_state(sessions, answer_id))[0] == "running"
 
 
+def test_session_projects_candidates_and_blocks_answers_until_all_are_decided(
+    intake_analysis_app,
+):
+    """Removing candidate projection or the waiting gate would strand or bypass review."""
+    client, sessions, application = intake_analysis_app
+    answer_text = "我完成课程项目并负责展示"
+    queued = _queue_answer(client, answer_text)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+
+    def candidates(input):
+        return [
+            {
+                "kind": "experience",
+                "value": "完成课程项目",
+                "source_answer_id": input.payload.answer_id,
+                "source_range": {"start": 1, "end": 7},
+                "source_hash": "6abe8b47ad04032eae5f3a495688705b6bf33ef4a55ec11c8a3f769dd74d0b83",
+                "risk_flags": [],
+            },
+            {
+                "kind": "role",
+                "value": "负责展示",
+                "source_answer_id": input.payload.answer_id,
+                "source_range": {"start": 8, "end": 12},
+                "source_hash": "a4f47f8f25ea715c522ab0c3f0643047edbfd74ed39649b76b44d6018d10aa19",
+                "risk_flags": ["conflict"],
+            },
+        ]
+
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+    session_id = _run(_session_id(sessions))
+
+    fetched = client.get(f"/v1/intake-sessions/{session_id}")
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["analysis_status"] == "waiting_for_confirmation"
+    assert body["current_question"] is None
+    assert body["fact_candidates"] == [
+        {
+            "id": body["fact_candidates"][0]["id"],
+            "intake_answer_id": answer_id,
+            "kind": "experience",
+            "value": "完成课程项目",
+            "source_excerpt": "完成课程项目",
+            "source_start": 1,
+            "source_end": 7,
+            "source_hash": "6abe8b47ad04032eae5f3a495688705b6bf33ef4a55ec11c8a3f769dd74d0b83",
+            "status": "pending",
+            "decision_mode": "accept_or_edit",
+            "ai_run_id": body["fact_candidates"][0]["ai_run_id"],
+        },
+        {
+            "id": body["fact_candidates"][1]["id"],
+            "intake_answer_id": answer_id,
+            "kind": "role",
+            "value": "负责展示",
+            "source_excerpt": "负责展示",
+            "source_start": 8,
+            "source_end": 12,
+            "source_hash": "a4f47f8f25ea715c522ab0c3f0643047edbfd74ed39649b76b44d6018d10aa19",
+            "status": "pending",
+            "decision_mode": "edit_only",
+            "ai_run_id": body["fact_candidates"][1]["ai_run_id"],
+        },
+    ]
+
+    blocked = client.post(
+        f"/v1/intake-sessions/{session_id}/answers",
+        json={
+            "question_id": "course_role",
+            "answer": "我负责展示",
+            "skipped": False,
+            "base_version": 1,
+        },
+        headers={"Idempotency-Key": "answer-before-review"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "INTAKE_FACT_REVIEW_REQUIRED"
+
+    first = client.post(
+        f"/v1/intake-sessions/{session_id}/fact-candidates/"
+        f"{body['fact_candidates'][0]['id']}/decision",
+        json={"decision": "reject", "base_version": 1},
+        headers={"Idempotency-Key": "reject-first-candidate"},
+    )
+    assert first.status_code == 200
+    assert first.json()["current_question"] is None
+
+    second = client.post(
+        f"/v1/intake-sessions/{session_id}/fact-candidates/"
+        f"{body['fact_candidates'][1]['id']}/decision",
+        json={"decision": "reject", "base_version": 2},
+        headers={"Idempotency-Key": "reject-second-candidate"},
+    )
+    assert second.status_code == 200
+    assert second.json()["current_question"]["id"] == "course_role"
+    terminal = client.get(f"/v1/intake-sessions/{session_id}").json()
+    assert [candidate["status"] for candidate in terminal["fact_candidates"]] == [
+        "rejected",
+        "rejected",
+    ]
+
+
+@pytest.mark.parametrize("analysis_state", ["queued", "waiting_for_confirmation"])
+def test_restart_rejects_sessions_with_live_answer_analysis(
+    intake_analysis_app,
+    analysis_state,
+):
+    """Restart must not abandon a session while its analysis can still publish results."""
+    client, sessions, application = intake_analysis_app
+    if analysis_state == "queued":
+        _queue_answer(client, "我完成了课程项目")
+        session_id = _run(_session_id(sessions))
+    else:
+        _, session_id = _analyze_one_candidate(
+            client,
+            sessions,
+            application,
+            "我完成了课程项目",
+        )
+
+    response = client.post(
+        "/v1/intake-sessions",
+        json={"restart": True},
+        headers={"Idempotency-Key": f"restart-{analysis_state}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTAKE_ANALYSIS_IN_PROGRESS"
+    assert client.get(f"/v1/intake-sessions/{session_id}").json()["status"] == "active"
+
+
+def test_abandoned_or_nonwaiting_analysis_cannot_publish_candidates_or_facts(
+    intake_analysis_app,
+):
+    """Missing lifecycle gates would let an old worker or stale review mutate history."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    session_id = _run(_session_id(sessions))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+    _run(_set_session_status(sessions, session_id, "abandoned"))
+    service = IntakeService(
+        sessions,
+        IntakeReceiptClient(lambda input: [{
+            "kind": "experience",
+            "value": "我完成了课程项目",
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": 0, "end": 8},
+            "source_hash": hashlib.sha256("我完成了课程项目".encode()).hexdigest(),
+            "risk_flags": [],
+        }]),
+    )
+
+    with pytest.raises(IntakeError, match="resources do not match"):
+        _run(
+            service.process_answer_analysis(
+                "usr_analysis",
+                answer_id,
+                task_id=task_id,
+                claim_token=claim.token,
+                task_service=application.state.task_service,
+            )
+        )
+    assert _run(_model_count(sessions, FactCandidate)) == 0
+
+    _run(_set_session_status(sessions, session_id, "active"))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+    candidate_id = _run(_candidate_id(sessions, answer_id))
+    _run(_set_session_status(sessions, session_id, "abandoned"))
+    abandoned = client.post(
+        f"/v1/intake-sessions/{session_id}/fact-candidates/{candidate_id}/decision",
+        json={"decision": "accept", "base_version": 1},
+        headers={"Idempotency-Key": "abandoned-candidate"},
+    )
+    assert abandoned.status_code == 409
+    assert abandoned.json()["error"]["code"] == "INTAKE_NOT_ACTIVE"
+    assert _run(_model_count(sessions, Fact)) == 0
+
+    _run(_set_session_status(sessions, session_id, "active"))
+    _run(_set_answer_analysis_status(sessions, answer_id, "completed"))
+    nonwaiting = client.post(
+        f"/v1/intake-sessions/{session_id}/fact-candidates/{candidate_id}/decision",
+        json={"decision": "accept", "base_version": 1},
+        headers={"Idempotency-Key": "nonwaiting-candidate"},
+    )
+    assert nonwaiting.status_code == 409
+    assert nonwaiting.json()["error"]["code"] == "INTAKE_FACT_REVIEW_NOT_ACTIVE"
+    assert _run(_model_count(sessions, Fact)) == 0
+
+
 @pytest.mark.parametrize("decision", ["accept", "edit", "reject"])
 def test_candidate_decisions_create_only_the_allowed_provenance(
     intake_analysis_app,
@@ -840,6 +1245,9 @@ def test_failed_analysis_retry_reuses_answer_and_replaces_unused_reservation(
     queued = _queue_answer(client, "我完成了课程项目")
     old_task_id = queued["analysis_task_id"]
     answer_id = _run(_answer_id(sessions, old_task_id))
+    analysis_input_hash = _run(_outbox_payload(sessions, old_task_id))[
+        "analysis_input_hash"
+    ]
     _run(_mark_failed_unused(sessions, application, answer_id, old_task_id))
 
     retried = client.post(
@@ -866,10 +1274,109 @@ def test_failed_analysis_retry_reuses_answer_and_replaces_unused_reservation(
     assert _run(_answer_input(sessions, answer_id)) == (
         answer_id,
         1,
-        hashlib.sha256("我完成了课程项目".encode()).hexdigest(),
+        analysis_input_hash,
         new_task_id,
         "queued",
     )
+
+
+def test_retry_reuses_enqueue_snapshot_and_worker_ignores_mutated_live_context(
+    intake_analysis_app,
+):
+    """Rebuilding retry input from live rows would silently change the model request."""
+    client, sessions, application = intake_analysis_app
+    started = client.post(
+        "/v1/intake-sessions",
+        json={"restart": False},
+        headers={"Idempotency-Key": "snapshot-start"},
+    )
+    assert started.status_code == 201
+    _run(
+        _seed_confirmed_intake_fact(
+            sessions,
+            fact_id="fact_snapshot",
+            value="原始已确认事实",
+        )
+    )
+    queued = _queue_answer(client, "我完成了课程项目")
+    old_task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, old_task_id))
+    old_payload = _run(_outbox_payload(sessions, old_task_id))
+    snapshot = old_payload["analysis_snapshot"]
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert old_payload["analysis_input_hash"] == expected_hash
+
+    _run(_mutate_live_intake_context(sessions, "fact_snapshot"))
+    _run(_mark_failed_unused(sessions, application, answer_id, old_task_id))
+    retried = client.post(
+        f"/v1/intake-sessions/{_run(_session_id(sessions))}/analysis/retry",
+        json={"base_version": 1},
+        headers={"Idempotency-Key": "snapshot-retry"},
+    )
+    assert retried.status_code == 202
+    new_task_id = retried.json()["analysis_task_id"]
+    new_payload = _run(_outbox_payload(sessions, new_task_id))
+    assert new_payload["analysis_snapshot"] == snapshot
+    assert new_payload["analysis_input_hash"] == expected_hash
+
+    captured = []
+
+    def candidates(input):
+        captured.append(input)
+        return []
+
+    service = IntakeService(sessions, IntakeReceiptClient(candidates))
+    claim = _run(application.state.task_service.claim_task("usr_analysis", new_task_id))
+    _run(
+        service.process_answer_analysis(
+            "usr_analysis",
+            answer_id,
+            task_id=new_task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    request = captured[0]
+    assert request.input_hash == expected_hash
+    assert request.payload.answer_text == "我完成了课程项目"
+    assert request.payload.asked_question_ids == ("experience_radar",)
+    assert [fact.value for fact in request.payload.confirmed_facts] == [
+        "原始已确认事实"
+    ]
+
+
+def test_worker_rejects_tampered_analysis_snapshot_before_calling_ai(
+    intake_analysis_app,
+):
+    """Trusting a payload whose semantic hash no longer matches would break receipts."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    _run(_tamper_outbox_snapshot(sessions, task_id))
+    service = IntakeService(sessions, FailingIntakeClient())
+    claim = _run(application.state.task_service.claim_task("usr_analysis", task_id))
+
+    with pytest.raises(IntakeError, match="snapshot"):
+        _run(
+            service.process_answer_analysis(
+                "usr_analysis",
+                answer_id,
+                task_id=task_id,
+                claim_token=claim.token,
+                task_service=application.state.task_service,
+            )
+        )
+
+    assert _run(_model_count(sessions, AiRun)) == 0
 
 
 def test_analysis_continue_releases_reservation_and_advances_by_rule(
@@ -899,6 +1406,29 @@ def test_analysis_continue_releases_reservation_and_advances_by_rule(
     )
     assert _run(_task_error(sessions, task_id))[0] == "failed"
     assert _run(_usage_state(sessions, task_id))[0] == "released"
+
+
+def test_analysis_continue_rejects_a_task_with_the_wrong_resource_type(
+    intake_analysis_app,
+):
+    """Resource-id equality alone must not authorize a different task graph."""
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    _run(_mark_failed_unused(sessions, application, answer_id, task_id))
+    _run(_set_task_resource_type(sessions, task_id, "resume"))
+
+    response = client.post(
+        f"/v1/intake-sessions/{_run(_session_id(sessions))}/analysis/continue",
+        json={"base_version": 1},
+        headers={"Idempotency-Key": "continue-wrong-resource"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "INTAKE_ANALYSIS_GRAPH_INVALID"
+    assert _run(_analysis_state(sessions, answer_id))[0] == "failed"
+    assert _run(_usage_state(sessions, task_id))[0] == "reserved"
 
 
 def test_user_retry_is_disabled_at_the_global_degraded_cost_gate(
@@ -1061,6 +1591,17 @@ async def _task_error(sessions, task_id):
         return task.status, task.error_code
 
 
+async def _cancelled_task_state(sessions, task_id):
+    async with sessions() as session:
+        task = await session.scalar(select(Task).where(Task.id == task_id))
+        return (
+            task.status,
+            task.cancellation_requested,
+            task.claim_token,
+            task.active_ai_run_id,
+        )
+
+
 async def _usage_state(sessions, task_id):
     async with sessions() as session:
         row = await session.scalar(
@@ -1077,7 +1618,7 @@ async def _model_count(sessions, model):
 async def _ai_run_state(sessions):
     async with sessions() as session:
         row = await session.scalar(select(AiRun))
-        return row.status, row.error_code
+        return (row.status, row.error_code) if row is not None else None
 
 
 async def _trace_payload(sessions):
@@ -1116,6 +1657,96 @@ async def _mark_failed_unused(sessions, application, answer_id, task_id):
     async with sessions.begin() as session:
         answer = await session.scalar(select(IntakeAnswer).where(IntakeAnswer.id == answer_id))
         answer.analysis_status = "failed"
+
+
+async def _seed_confirmed_intake_fact(sessions, *, fact_id, value):
+    async with sessions.begin() as session:
+        intake = await session.scalar(select(IntakeSession))
+        source = SourceRecord(
+            id=f"src_{fact_id}",
+            owner_user_id="usr_analysis",
+            source_type="user_confirmation",
+            source_ref=f"seed:{fact_id}",
+            content_encrypted=value,
+        )
+        fact = Fact(
+            id=fact_id,
+            owner_user_id="usr_analysis",
+            kind="experience",
+            value_encrypted=value,
+            status="unconfirmed",
+        )
+        session.add_all((source, fact))
+        await session.flush()
+        session.add(
+            FactSource(
+                fact_id=fact.id,
+                source_record_id=source.id,
+                owner_user_id="usr_analysis",
+                source_range={"start": 0, "end": len(value)},
+                source_hash=hashlib.sha256(value.encode()).hexdigest(),
+            )
+        )
+        await session.flush()
+        fact.status = "confirmed"
+        fact.confirmed_at = datetime.now(timezone.utc)
+        intake.fact_ids = [fact.id]
+
+
+async def _outbox_payload(sessions, task_id):
+    async with sessions() as session:
+        return await session.scalar(
+            select(Outbox.payload).where(
+                Outbox.task_id == task_id,
+                Outbox.owner_user_id == "usr_analysis",
+            )
+        )
+
+
+async def _mutate_live_intake_context(sessions, fact_id):
+    async with sessions.begin() as session:
+        fact = await session.get(Fact, fact_id)
+        fact.value_encrypted = "篡改后的事实"
+        intake = await session.scalar(select(IntakeSession))
+        intake.fact_ids = []
+        intake.answered_question_ids = ["tampered_question"]
+
+
+async def _tamper_outbox_snapshot(sessions, task_id):
+    async with sessions.begin() as session:
+        outbox = await session.scalar(
+            select(Outbox).where(
+                Outbox.task_id == task_id,
+                Outbox.owner_user_id == "usr_analysis",
+            )
+        )
+        payload = dict(outbox.payload)
+        assert "analysis_snapshot" in payload
+        snapshot = dict(payload["analysis_snapshot"])
+        semantic_payload = dict(snapshot["payload"])
+        semantic_payload["answer_text"] = "篡改后的回答"
+        snapshot["payload"] = semantic_payload
+        payload["analysis_snapshot"] = snapshot
+        outbox.payload = payload
+
+
+async def _set_session_status(sessions, session_id, status):
+    async with sessions.begin() as session:
+        intake = await session.get(IntakeSession, session_id)
+        intake.status = status
+        intake.active_owner_key = intake.owner_user_id if status == "active" else None
+
+
+async def _set_answer_analysis_status(sessions, answer_id, status):
+    async with sessions.begin() as session:
+        answer = await session.get(IntakeAnswer, answer_id)
+        answer.analysis_status = status
+
+
+async def _set_task_resource_type(sessions, task_id, resource_type):
+    async with sessions.begin() as session:
+        task = await session.get(Task, task_id)
+        task.resource_type = resource_type
 
 
 async def _usage_states(sessions):
