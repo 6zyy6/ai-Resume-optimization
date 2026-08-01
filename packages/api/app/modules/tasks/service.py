@@ -364,6 +364,11 @@ class TaskService:
             task.ai_cancel_requested_at = (
                 task.ai_cancel_requested_at or self.clock.now()
             )
+            if task.status == "queued" and task.claim_token is None:
+                await self._release_unused_ai_reservation_in_session(
+                    session,
+                    task,
+                )
             await self._finish(session, task, "cancelled")
             return task
 
@@ -416,6 +421,11 @@ class TaskService:
                 task.ai_cancel_requested_at = (
                     task.ai_cancel_requested_at or self.clock.now()
                 )
+                if task.status == "queued" and task.claim_token is None:
+                    await self._release_unused_ai_reservation_in_session(
+                        session,
+                        task,
+                    )
                 await self._finish(session, task, "cancelled")
             response = self._task_payload(task)
             await self.idempotency.complete(session, claim, 200, response)
@@ -669,6 +679,7 @@ class TaskService:
         task: Task,
         result_ref: str,
     ) -> Task:
+        await self._release_unused_ai_reservation_in_session(session, task)
         await self._finish(
             session,
             task,
@@ -702,6 +713,7 @@ class TaskService:
             task = await self._claimed_task(
                 session, owner_user_id, task_id, claim_token
             )
+            await self._release_unused_ai_reservation_in_session(session, task)
             await self._finish(
                 session,
                 task,
@@ -899,6 +911,28 @@ class TaskService:
             reservation.updated_at = self.clock.now()
             await session.flush()
         return reservation
+
+    async def _release_unused_ai_reservation_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+    ) -> None:
+        if task.usage_type != "ai_task" or task.active_ai_run_id is not None:
+            return
+        reservation = await session.scalar(
+            select(UsageLedger)
+            .where(
+                UsageLedger.owner_user_id == task.owner_user_id,
+                UsageLedger.task_id == task.id,
+                UsageLedger.usage_type == "ai_task",
+                UsageLedger.state == "reserved",
+            )
+            .with_for_update()
+        )
+        if reservation is not None:
+            reservation.state = "released"
+            reservation.updated_at = self.clock.now()
+            await session.flush()
 
     async def _claimed_task(
         self,

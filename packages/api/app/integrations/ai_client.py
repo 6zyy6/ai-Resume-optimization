@@ -8,7 +8,15 @@ from decimal import Decimal
 from typing import Annotated, Literal, Protocol, TypeAlias
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from app.workers.execution import HttpServiceError
 
@@ -113,6 +121,13 @@ class ParseJdPayload(StrictModel):
         ],
         ...,
     ] = Field(min_length=1, max_length=4)
+
+    @field_validator("job_title", mode="before")
+    @classmethod
+    def reject_explicit_null_job_title(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("job_title must be omitted instead of null")
+        return value
 
 
 class MatchResumeToJdPayload(StrictModel):
@@ -288,7 +303,12 @@ class TraceUsage(StrictModel):
     cache_write: int = Field(ge=0)
     reasoning: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
-    cost_usd: Decimal = Field(ge=0)
+    cost_usd: Decimal = Field(
+        ge=0,
+        le=Decimal("999999"),
+        max_digits=24,
+        decimal_places=18,
+    )
 
 
 class TraceEvent(StrictModel):
@@ -560,7 +580,7 @@ class InternalAiClient:
         }
         payload = {
             "ai_run_id": ai_run_id,
-            "input": input.model_dump(mode="json"),
+            "input": input.model_dump(mode="json", exclude_none=True),
         }
         async with httpx.AsyncClient(
             base_url=self.base_url,
@@ -584,11 +604,18 @@ class InternalAiClient:
             try:
                 response = await client.post("/internal/v1/runs", json=payload, headers=headers)
                 response.raise_for_status()
-                body = response.json()
+                body = response.json(parse_float=Decimal)
                 receipt = _receipt_from_body(body)
                 if receipt is not None:
                     _validate_receipt_id(receipt, ai_run_id)
                     run_settled = True
+                    if cancellation is not None:
+                        await cancellation.register_run(ai_run_id)
+                        if receipt.run.status == "cancelled":
+                            await _acknowledge_terminal_cancel(
+                                cancellation,
+                                ai_run_id,
+                            )
                     return receipt
                 _validate_summary(body, ai_run_id)
                 cancel_requested = False
@@ -612,7 +639,7 @@ class InternalAiClient:
                         f"/internal/v1/runs/{ai_run_id}", headers=headers
                     )
                     status_response.raise_for_status()
-                    status_body = status_response.json()
+                    status_body = status_response.json(parse_float=Decimal)
                     receipt = _receipt_from_body(status_body)
                     if receipt is not None:
                         _validate_receipt_id(receipt, ai_run_id)
@@ -645,10 +672,28 @@ def _receipt_from_body(body: object) -> AiExecutionReceipt | None:
         return None
     try:
         return AiExecutionReceipt.model_validate_json(
-            json.dumps(value, separators=(",", ":"))
+            json.dumps(
+                _decimal_strings(value),
+                separators=(",", ":"),
+            )
         )
     except ValueError as error:
         raise AiProtocolError("AI terminal receipt is invalid") from error
+
+
+def _decimal_strings(value: object, path: tuple[str, ...] = ()) -> object:
+    if isinstance(value, Decimal):
+        if path == ("run", "usage", "cost_usd"):
+            return format(value, "f")
+        return float(value)
+    if isinstance(value, dict):
+        return {
+            key: _decimal_strings(item, (*path, key))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_decimal_strings(item, path) for item in value]
+    return value
 
 
 def _validate_summary(body: object, expected_id: str) -> None:

@@ -26,6 +26,8 @@ from sqlalchemy import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session as SyncSession
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 
 from app.contracts import FactStatus
 from app.db import repositories as repository_module
@@ -154,8 +156,9 @@ def test_ai_receipt_and_usage_reservation_metadata_is_constrained():
     assert ai_runs.c.status.nullable is False
     assert ai_runs.c.error_code.nullable is True
     assert ai_runs.c.workflow_stage.nullable is False
-    assert ai_runs.c.provider_cost.type.precision == 24
-    assert ai_runs.c.provider_cost.type.scale == 12
+    assert ai_runs.c.provider_cost.type.precision == 38
+    assert ai_runs.c.provider_cost.type.scale == 18
+    assert ai_runs.c.prompt_template_version.type.length == 128
     assert usage.c.state.nullable is False
     assert usage.c.task_id.nullable is True
     assert usage.c.ai_run_id.nullable is True
@@ -166,6 +169,17 @@ def test_ai_receipt_and_usage_reservation_metadata_is_constrained():
         if getattr(constraint, "name", None) == "ck_usage_ledger_state"
     }
     assert state_checks == {"state IN ('reserved', 'consumed', 'released')"}
+
+
+def test_postgresql_ai_run_ddl_preserves_cost_precision_and_template_width():
+    ddl = str(
+        CreateTable(Base.metadata.tables["ai_runs"]).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+
+    assert "provider_cost NUMERIC(38, 18)" in ddl
+    assert "prompt_template_version VARCHAR(128)" in ddl
 
 
 def test_migration_0012_marks_legacy_usage_as_consumed(tmp_path, monkeypatch):
@@ -359,6 +373,55 @@ def test_migration_0012_rejects_duplicate_mapped_stable_keys(tmp_path, monkeypat
 
     with pytest.raises(RuntimeError, match="duplicate"):
         command.upgrade(config, "0012")
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [
+        ("provider_cost", "0.1234567", "provider cost"),
+        ("prompt_template_version", "x" * 65, "prompt template"),
+    ],
+)
+def test_migration_0012_rejects_lossy_ai_run_downgrade(
+    tmp_path,
+    monkeypatch,
+    column,
+    value,
+    message,
+):
+    database_path = tmp_path / f"lossy-{column}.db"
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
+    api_root = Path(__file__).resolve().parents[1]
+    config = Config(api_root / "alembic.ini")
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "0011")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, status, locale, created_at) "
+                "VALUES ('usr_migration', 'active', 'zh-CN', "
+                "'2026-07-30 08:00:00')"
+            )
+        )
+        _seed_legacy_ai_run(
+            connection,
+            suffix="lossy",
+            workflow_type="parse_jd",
+            input_hash="lossy_hash",
+        )
+    engine.dispose()
+    command.upgrade(config, "0012")
+    engine = create_engine(f"sqlite:///{database_path}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(f"UPDATE ai_runs SET {column} = :value WHERE id = 'run_lossy'"),
+            {"value": value},
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match=message):
+        command.downgrade(config, "0011")
 
 
 @pytest.mark.parametrize("state", ["reserved", "released"])

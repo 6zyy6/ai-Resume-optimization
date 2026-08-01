@@ -4,6 +4,10 @@ import type {
   TraceEvent,
   TraceUsage,
 } from "../contracts.js";
+import {
+  TRACE_COST_USD_DECIMAL_PLACES,
+  TRACE_COST_USD_MAX,
+} from "../contracts.js";
 import { ALLOWED_TOOL_NAMES } from "../tools/guard.js";
 
 const KNOWN_EVENT_TYPES = new Set([
@@ -72,10 +76,15 @@ function hash(value: string): string {
 }
 
 function safeString(value: unknown, maxLength = 256): string | undefined {
-  if (typeof value !== "string") {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    !/^[a-zA-Z0-9_$.:/[\]-]+$/.test(value)
+  ) {
     return undefined;
   }
-  return value.replace(/[^a-zA-Z0-9_$.:/[\]-]/g, "_").slice(0, maxLength);
+  return value;
 }
 
 function safeDetails(
@@ -224,7 +233,8 @@ export function createEventLedger({
       usage.cache_write += number(rawUsage.cacheWrite);
       usage.reasoning += number(rawUsage.reasoning);
       usage.total_tokens += number(rawUsage.totalTokens);
-      usage.cost_usd += number(cost.total);
+      const rawCost = number(cost.total);
+      usage.cost_usd = normalizeCostUsd(usage.cost_usd + rawCost);
     }
 
     const toolName =
@@ -264,4 +274,11 @@ export function createEventLedger({
 
 function number(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function normalizeCostUsd(value: number): number {
+  if (!Number.isFinite(value) || value < 0 || value > TRACE_COST_USD_MAX) {
+    throw new RangeError("cost_usd is outside the receipt contract");
+  }
+  return Number(value.toFixed(TRACE_COST_USD_DECIMAL_PLACES));
 }

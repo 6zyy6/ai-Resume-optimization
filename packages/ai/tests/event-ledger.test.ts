@@ -98,6 +98,33 @@ describe("event ledger", () => {
     });
   });
 
+  it("quantizes USD cost to eighteen decimals and rejects the shared upper bound", () => {
+    const ledger = createEventLedger({
+      ai_run_id: "run_cost",
+      trace_id: "trace_cost",
+      task_id: "task_cost",
+    });
+
+    ledger.appendPiEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: {
+          cost: { total: 0.12345678901234567 },
+        },
+      },
+    });
+
+    expect(ledger.usage.cost_usd).toBe(0.12345678901234567);
+    expect(() => ledger.appendPiEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        usage: { cost: { total: 1_000_000 } },
+      },
+    })).toThrow(/cost_usd/i);
+  });
+
   it("does not count tool-result usage as model token usage", () => {
     const ledger = createEventLedger({
       ai_run_id: "run_1",
@@ -158,13 +185,28 @@ describe("event ledger", () => {
       risk_flags: ["unsupported_numeric"],
       error_code: "UNSUPPORTED_CLAIM",
     });
+    ledger.append("model_fallback", {
+      provider: "FULL JD / Resume John john@example.com",
+      fallback_reason: "Resume John john@example.com",
+      risk_flags: [
+        "safe_flag",
+        "FULL JD / Resume John john@example.com",
+      ],
+    });
 
     const serialized = JSON.stringify(ledger.events);
     expect(serialized).not.toContain("张三");
     expect(serialized).not.toContain("13800138000");
     expect(serialized).not.toContain("sk-secret");
     expect(serialized).not.toContain("result");
+    expect(serialized).not.toContain("FULL JD");
+    expect(serialized).not.toContain("FULL_JD");
+    expect(serialized).not.toContain("Resume John");
+    expect(serialized).not.toContain("Resume_John");
+    expect(serialized).not.toContain("john@example.com");
+    expect(serialized).not.toContain("john_example.com");
     expect(serialized).toContain("unsupported_numeric");
+    expect(serialized).toContain("safe_flag");
   });
 
   it("maps nested Agent assistant deltas to first_token then message_update", () => {

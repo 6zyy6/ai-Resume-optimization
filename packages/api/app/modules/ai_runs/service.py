@@ -55,7 +55,7 @@ _USAGE_KEYS = frozenset(
         "cost_usd",
     }
 )
-_UNSAFE_STRING_CHARS = re.compile(r"[^a-zA-Z0-9_$.:/\[\]-]")
+_MACHINE_IDENTIFIER = re.compile(r"[a-zA-Z0-9_$.:/\[\]-]+")
 
 
 class AiRunService:
@@ -178,7 +178,7 @@ def _safe_details(event: TraceEvent) -> dict[str, JsonValue] | None:
             safe[key] = [
                 normalized
                 for item in value
-                if (normalized := _safe_string(item, 128))
+                if (normalized := _machine_identifier(item, 128))
             ]
         elif key in _NUMBER_DETAIL_KEYS and _is_finite_number(value):
             safe[key] = value
@@ -190,15 +190,19 @@ def _safe_details(event: TraceEvent) -> dict[str, JsonValue] | None:
                 for usage_key, usage_value in value.items()
                 if usage_key in _USAGE_KEYS and _is_finite_number(usage_value)
             }
-        elif (normalized := _safe_string(value)) is not None:
+        elif (normalized := _machine_identifier(value)) is not None:
             safe[key] = normalized
     return safe or None
 
 
-def _safe_string(value: object, max_length: int = 256) -> str | None:
-    if not isinstance(value, str):
+def _machine_identifier(value: object, max_length: int = 256) -> str | None:
+    if (
+        not isinstance(value, str)
+        or len(value) > max_length
+        or _MACHINE_IDENTIFIER.fullmatch(value) is None
+    ):
         return None
-    return _UNSAFE_STRING_CHARS.sub("_", value)[:max_length]
+    return value
 
 
 def _is_finite_number(value: object) -> bool:
@@ -277,7 +281,10 @@ async def _assert_replay_matches(
         (
             await session.scalars(
                 select(AiTraceEvent)
-                .where(AiTraceEvent.ai_run_id == existing.id)
+                .where(
+                    AiTraceEvent.ai_run_id == existing.id,
+                    AiTraceEvent.owner_user_id == existing.owner_user_id,
+                )
                 .order_by(AiTraceEvent.event_seq)
             )
         ).all()

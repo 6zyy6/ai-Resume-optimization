@@ -192,7 +192,13 @@ def upgrade() -> None:
         batch_op.alter_column(
             "provider_cost",
             existing_type=sa.Numeric(18, 6),
-            type_=sa.Numeric(24, 12),
+            type_=sa.Numeric(38, 18),
+            nullable=False,
+        )
+        batch_op.alter_column(
+            "prompt_template_version",
+            existing_type=sa.String(length=64),
+            type_=sa.String(length=128),
             nullable=False,
         )
     op.execute(
@@ -253,11 +259,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    non_consumed = op.get_bind().execute(
+    bind = op.get_bind()
+    non_consumed = bind.execute(
         sa.text("SELECT id FROM usage_ledger WHERE state != 'consumed' LIMIT 1")
     ).first()
     if non_consumed is not None:
         raise RuntimeError("cannot downgrade usage ledger with non-consumed rows")
+    precise_cost = bind.execute(
+        sa.text(
+            "SELECT id FROM ai_runs "
+            "WHERE provider_cost != ROUND(provider_cost, 6) LIMIT 1"
+        )
+    ).first()
+    if precise_cost is not None:
+        raise RuntimeError("cannot downgrade AI run provider cost without precision loss")
+    wide_template = bind.execute(
+        sa.text(
+            "SELECT id FROM ai_runs "
+            "WHERE LENGTH(prompt_template_version) > 64 LIMIT 1"
+        )
+    ).first()
+    if wide_template is not None:
+        raise RuntimeError("cannot downgrade AI run prompt template without truncation")
     _drop_usage_update_guard()
     with op.batch_alter_table("usage_ledger") as batch_op:
         batch_op.drop_index("ix_usage_ledger_owner_state_created")
@@ -288,8 +311,14 @@ def downgrade() -> None:
         )
         batch_op.alter_column(
             "provider_cost",
-            existing_type=sa.Numeric(24, 12),
+            existing_type=sa.Numeric(38, 18),
             type_=sa.Numeric(18, 6),
+            nullable=False,
+        )
+        batch_op.alter_column(
+            "prompt_template_version",
+            existing_type=sa.String(length=128),
+            type_=sa.String(length=64),
             nullable=False,
         )
         batch_op.drop_column("workflow_stage")

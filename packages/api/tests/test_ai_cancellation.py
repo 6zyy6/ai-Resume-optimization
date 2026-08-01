@@ -12,6 +12,8 @@ from app.db.models import (
     MatchItem,
     Suggestion,
     SuggestionFactLink,
+    UsageLedger,
+    User,
 )
 from app.integrations.ai_client import (
     InternalAiClient,
@@ -19,7 +21,8 @@ from app.integrations.ai_client import (
     derive_ai_run_id,
 )
 from app.modules.matching.service import MatchingService
-from app.modules.tasks.service import TaskClaimError
+from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
+from app.workers.pipeline import TaskAiCancellation
 from test_ai_receipts import _receipt
 
 
@@ -92,10 +95,75 @@ async def test_terminal_post_receipt_wins_over_pending_cancellation(monkeypatch)
     receipt = await client.run(request, cancellation=probe)
 
     assert receipt.run.status == "failed"
-    assert probe.registered_run_id is None
+    assert probe.registration_count == 1
+    assert probe.registered_run_id == ai_run_id
     assert probe.acknowledged_run_id is None
     assert client_options[0]["trust_env"] is False
     assert requests == [("POST", "/internal/v1/runs")]
+
+
+async def test_terminal_post_receipt_binds_and_consumes_before_return(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_terminal_post"))
+    task_service = TaskService(sql_session_factory)
+    task = await task_service.create_task(
+        "usr_terminal_post",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_receipt",
+        idempotency_key="terminal-post-accounting",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await task_service.claim_task("usr_terminal_post", task.id)
+    assert claim is not None
+    terminal = _receipt(task.id, "parse")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/internal/v1/runs"
+        return httpx.Response(
+            202,
+            json={"receipt": terminal.model_dump(mode="json")},
+        )
+
+    cancellation = TaskAiCancellation(task_service, claim)
+    request = ParseJdRequest(
+        workflow_type="parse_jd",
+        prompt_template_version="jd-parse@2",
+        trace_id="tr_receipt",
+        task_id=task.id,
+        owner_scope_hash="owner_hash",
+        input_version=1,
+        input_hash="input_hash_1",
+        payload={"jd_text": "Python", "allowed_categories": ("must_have",)},
+    )
+    receipt = await InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        transport=httpx.MockTransport(handler),
+    ).run(request, cancellation=cancellation)
+
+    stored = await task_service.get_task("usr_terminal_post", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert receipt == terminal
+    assert stored is not None
+    assert stored.active_ai_run_id == terminal.run.ai_run_id
+    assert reservation is not None
+    assert reservation.state == "consumed"
+    assert reservation.ai_run_id == terminal.run.ai_run_id
+
+    settled = await task_service.settle_ai_run(
+        "usr_terminal_post",
+        task.id,
+        terminal.run.ai_run_id,
+    )
+    assert settled.active_ai_run_id is None
 
 
 async def test_internal_ai_client_cancels_once_then_polls_terminal_receipt():

@@ -10,15 +10,17 @@ import subprocess
 import httpx
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event as sqlalchemy_event, func, select
 
 from app.db.models import AiRun, AiTraceEvent, User
 from app.integrations.ai_client import (
     AI_WORKFLOW_REQUEST_ADAPTER,
     AiExecutionReceipt,
+    AiProtocolError,
     FixtureAiClient,
     InternalAiClient,
     ParseJdRequest,
+    TraceUsage,
     derive_ai_run_id,
     workflow_stage_for,
 )
@@ -63,7 +65,7 @@ def _receipt(
                     "cache_write": 0,
                     "reasoning": 1,
                     "total_tokens": 25,
-                    "cost_usd": 0.123456789012,
+                    "cost_usd": 0.1234567890123,
                 },
                 "events": [
                     {
@@ -75,6 +77,12 @@ def _receipt(
                         "occurred_at": "2026-07-30T08:00:01Z",
                         "details": {
                             "provider": "deepseek",
+                            "model": "FULL JD / Resume John john@example.com",
+                            "fallback_reason": "Resume John john@example.com",
+                            "risk_flags": [
+                                "safe_flag",
+                                "FULL JD / Resume John john@example.com",
+                            ],
                             "duration_ms": 12,
                             "usage": {
                                 "input": 19,
@@ -83,7 +91,7 @@ def _receipt(
                                 "cache_write": 0,
                                 "reasoning": 1,
                                 "total_tokens": 25,
-                                "cost_usd": 0.123456789012,
+                                "cost_usd": 0.1234567890123,
                                 "content": "nested body must not persist",
                             },
                             "context": {"content": "nested user content"},
@@ -207,6 +215,7 @@ def test_python_workflow_schema_matches_real_typebox_validation():
         {**valid, "input_hash": ""},
         {**valid, "input_version": "1"},
         {**valid, "payload": {**valid["payload"], "jd_text": ""}},
+        {**valid, "payload": {**valid["payload"], "job_title": None}},
     ]
     python_results = []
     for sample in samples:
@@ -242,8 +251,189 @@ def test_python_workflow_schema_matches_real_typebox_validation():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout) == [True, False, False, False, False]
-    assert python_results == [True, False, False, False, False]
+    assert json.loads(completed.stdout) == [True, False, False, False, False, False]
+    assert python_results == [True, False, False, False, False, False]
+
+
+async def test_every_posted_workflow_input_passes_the_real_typebox_schema():
+    common = {
+        "workflow_version": "2",
+        "owner_scope_hash": "owner_hash",
+        "locale": "zh-CN",
+        "input_version": 1,
+        "input_hash": "input_hash",
+    }
+    samples = [
+        {
+            **common,
+            "workflow_type": "analyze_intake_answer",
+            "prompt_template_version": "intake-answer@2",
+            "payload": {
+                "session_id_hash": "session_hash",
+                "answer_id": "answer_1",
+                "question_id": "question_1",
+                "question_reason": "项目经历",
+                "answer_text": "我使用 Python。",
+                "answer_state": "answered",
+                "confirmed_facts": [],
+                "covered_slots": [],
+                "missing_slots": ["impact"],
+                "asked_question_ids": [],
+            },
+        },
+        {
+            **common,
+            "workflow_type": "compose_resume_draft",
+            "prompt_template_version": "resume-draft@2",
+            "payload": {
+                "resume_title": "简历",
+                "experience_groups": [],
+                "confirmed_facts": [],
+                "allowed_section_types": ["experience"],
+            },
+        },
+        {
+            **common,
+            "workflow_type": "parse_jd",
+            "prompt_template_version": "jd-parse@2",
+            "payload": {
+                "jd_text": "Python 工程师",
+                "allowed_categories": ["must_have"],
+            },
+        },
+        {
+            **common,
+            "workflow_type": "match_resume_to_jd",
+            "prompt_template_version": "resume-match@2",
+            "payload": {
+                "resume_version_id": "resume_1",
+                "resume_snapshot_hash": "snapshot_hash",
+                "confirmed_facts": [],
+                "confirmed_requirements": [],
+            },
+        },
+        {
+            **common,
+            "workflow_type": "generate_suggestions_batch",
+            "prompt_template_version": "suggestions-batch@2",
+            "payload": {
+                "matches": [
+                    {
+                        "requirement_ref": "requirement_1",
+                        "category": "transferable",
+                        "fact_refs": [],
+                        "target_path": "sections[0].bullets[0]",
+                        "original_hash": "bullet_hash",
+                        "original_text": "开发服务",
+                    }
+                ],
+                "confirmed_facts": [],
+                "confirmed_requirements": [],
+            },
+        },
+    ]
+    posted_inputs = []
+    for index, sample in enumerate(samples):
+        sample = {
+            **sample,
+            "trace_id": f"tr_wire_{index}",
+            "task_id": f"tsk_wire_{index}",
+        }
+        request = AI_WORKFLOW_REQUEST_ADAPTER.validate_json(json.dumps(sample))
+        ai_run_id = derive_ai_run_id(
+            request.task_id,
+            workflow_stage_for(request.workflow_type),
+            request.input_hash,
+        )
+        terminal = AiExecutionReceipt.model_validate_json(
+            json.dumps(
+                {
+                    "run": {
+                        "ai_run_id": ai_run_id,
+                        "trace_id": request.trace_id,
+                        "task_id": request.task_id,
+                        "workflow_type": request.workflow_type,
+                        "workflow_version": "2",
+                        "prompt_template_version": request.prompt_template_version,
+                        "status": "failed",
+                        "error_code": "provider_unavailable",
+                        "provider": None,
+                        "requested_model": None,
+                        "response_model": None,
+                        "started_at": "2026-07-30T08:00:00Z",
+                        "first_token_at": None,
+                        "finished_at": "2026-07-30T08:00:01Z",
+                        "usage": {
+                            "input": 0,
+                            "output": 0,
+                            "cache_read": 0,
+                            "cache_write": 0,
+                            "reasoning": 0,
+                            "total_tokens": 0,
+                            "cost_usd": 0,
+                        },
+                        "events": [
+                            {
+                                "ai_run_id": ai_run_id,
+                                "trace_id": request.trace_id,
+                                "task_id": request.task_id,
+                                "event_seq": 1,
+                                "event_type": "run_failed",
+                                "occurred_at": "2026-07-30T08:00:01Z",
+                                "details": {"error_code": "provider_unavailable"},
+                            }
+                        ],
+                        "turn_count": 0,
+                        "tool_call_count": 0,
+                        "retry_count": 0,
+                        "fallback_count": 0,
+                        "schema_valid": False,
+                        "facts_valid": False,
+                        "input_hash": request.input_hash,
+                        "exportable": False,
+                        "risk_flags": [],
+                    }
+                }
+            )
+        )
+
+        def handler(http_request: httpx.Request) -> httpx.Response:
+            body = json.loads(http_request.content)
+            posted_inputs.append(body["input"])
+            return httpx.Response(
+                202,
+                json={"receipt": terminal.model_dump(mode="json")},
+            )
+
+        await InternalAiClient(
+            "http://pi.internal",
+            "service-token",
+            transport=httpx.MockTransport(handler),
+        ).run(request)
+
+    script = """
+      import { Value } from 'typebox/value';
+      import { WorkflowInputSchema } from './src/contracts.ts';
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      const inputs = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      process.stdout.write(JSON.stringify(inputs.map(
+        input => Value.Check(WorkflowInputSchema, input)
+      )));
+    """
+    completed = subprocess.run(
+        ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+        input=json.dumps(posted_inputs),
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[2] / "ai",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert len(posted_inputs) == 5
+    assert "job_title" not in posted_inputs[2]["payload"]
+    assert json.loads(completed.stdout) == [True, True, True, True, True]
 
 
 @pytest.mark.parametrize(
@@ -263,9 +453,28 @@ def test_terminal_non_success_receipt_preserves_run_metadata(status, error_code)
     assert receipt.run.provider == "deepseek"
     assert receipt.run.response_model == "deepseek-chat-202607"
     assert receipt.run.usage.total_tokens == 25
-    assert receipt.run.usage.cost_usd == Decimal("0.123456789012")
+    assert receipt.run.usage.cost_usd == Decimal("0.1234567890123")
     assert [event.event_seq for event in receipt.run.events] == [1, 2]
     assert receipt.result is None
+
+
+@pytest.mark.parametrize(
+    "cost_usd",
+    ["0.1234567890123456789", "1000000"],
+)
+def test_trace_usage_rejects_cost_outside_the_shared_usd_contract(cost_usd):
+    with pytest.raises(ValidationError):
+        TraceUsage.model_validate(
+            {
+                "input": 0,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "reasoning": 0,
+                "total_tokens": 0,
+                "cost_usd": Decimal(cost_usd),
+            }
+        )
 
 
 async def test_internal_client_posts_strict_envelope_and_returns_failed_receipt():
@@ -291,7 +500,7 @@ async def test_internal_client_posts_strict_envelope_and_returns_failed_receipt(
         body = json.loads(http_request.content)
         assert body == {
             "ai_run_id": expected_id,
-            "input": request.model_dump(mode="json"),
+            "input": request.model_dump(mode="json", exclude_none=True),
         }
         return httpx.Response(
             202,
@@ -309,6 +518,47 @@ async def test_internal_client_posts_strict_envelope_and_returns_failed_receipt(
     assert receipt.run.error_code == "provider_unavailable"
     assert receipt.run.provider == "deepseek"
     assert receipt.workflow_stage == "parse"
+
+
+async def test_internal_client_rejects_wire_cost_with_more_than_18_decimals():
+    request = ParseJdRequest(
+        workflow_type="parse_jd",
+        prompt_template_version="jd-parse@2",
+        trace_id="tr_wire_cost",
+        task_id="tsk_wire_cost",
+        owner_scope_hash="owner_hash",
+        input_version=1,
+        input_hash="input_hash_1",
+        payload={
+            "jd_text": "Python 工程师",
+            "allowed_categories": ("must_have",),
+        },
+    )
+    terminal = _receipt("tsk_wire_cost", "parse")
+    body = {"receipt": terminal.model_dump(mode="json")}
+    body["receipt"]["run"]["usage"]["cost_usd"] = "COST_MARKER"
+    raw_receipt = json.dumps(body).replace(
+        '"COST_MARKER"',
+        "0.1234567890123456789",
+    )
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        if http_request.method == "DELETE":
+            return httpx.Response(202, json={"accepted": True})
+        return httpx.Response(
+            202,
+            content=raw_receipt,
+            headers={"content-type": "application/json"},
+        )
+
+    client = InternalAiClient(
+        "http://pi.internal",
+        "service-token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(AiProtocolError, match="terminal receipt is invalid"):
+        await client.run(request)
 
 
 async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
@@ -368,11 +618,12 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
     assert stored.status == "failed"
     assert stored.error_code == "provider_unavailable"
     assert stored.workflow_stage == "parse"
-    assert stored.provider_cost == Decimal("0.123456789012")
+    assert stored.provider_cost == Decimal("0.1234567890123")
     assert stored.cost_cny == Decimal("0")
     assert [event.event_seq for event in events] == [1, 2]
     assert events[0].payload == {
         "provider": "deepseek",
+        "risk_flags": ["safe_flag"],
         "duration_ms": 12,
         "usage": {
             "input": 19,
@@ -381,7 +632,7 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
             "cache_write": 0,
             "reasoning": 1,
             "total_tokens": 25,
-            "cost_usd": 0.123456789012,
+            "cost_usd": 0.1234567890123,
         },
     }
     assert events[1].payload == {"error_code": "provider_unavailable"}
@@ -391,6 +642,12 @@ async def test_failed_receipt_is_persisted_once_with_safe_sequential_trace(
     assert "never persist provider output" not in persisted_text
     assert "nested user content" not in persisted_text
     assert "nested body must not persist" not in persisted_text
+    assert "FULL JD" not in persisted_text
+    assert "Resume John" not in persisted_text
+    assert "john@example.com" not in persisted_text
+    assert "FULL_JD" not in persisted_text
+    assert "Resume_John" not in persisted_text
+    assert "john_example.com" not in persisted_text
 
 
 async def test_receipt_requires_at_least_one_terminal_trace_event(
@@ -551,3 +808,53 @@ async def test_integrity_error_replay_path_also_rejects_receipt_drift(
                 changed,
                 workflow_stage="parse",
             )
+
+
+async def test_receipt_replay_trace_query_keeps_the_owner_predicate(
+    sql_session_factory,
+):
+    async with sql_session_factory.begin() as session:
+        session.add(User(id="usr_trace_owner"))
+    task = await TaskService(sql_session_factory).create_task(
+        "usr_trace_owner",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_receipt",
+        idempotency_key="trace-owner-query",
+        admission=TaskAdmission.ai(),
+    )
+    receipt = _receipt(task.id, "parse")
+    service = AiRunService()
+    async with sql_session_factory.begin() as session:
+        await service.persist_in_session(
+            session,
+            "usr_trace_owner",
+            receipt,
+            workflow_stage="parse",
+        )
+
+    statements: list[str] = []
+    engine = sql_session_factory.kw["bind"].sync_engine
+
+    def capture_statement(_connection, _cursor, statement, *_args):
+        statements.append(statement)
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        async with sql_session_factory.begin() as session:
+            await service.persist_in_session(
+                session,
+                "usr_trace_owner",
+                receipt,
+                workflow_stage="parse",
+            )
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", capture_statement)
+
+    trace_queries = [
+        statement
+        for statement in statements
+        if "FROM ai_trace_events" in statement
+    ]
+    assert len(trace_queries) == 1
+    assert "ai_trace_events.owner_user_id" in trace_queries[0]

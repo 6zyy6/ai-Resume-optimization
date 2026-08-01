@@ -501,6 +501,9 @@ export interface TraceUsage {
   cost_usd: number;
 }
 
+export const TRACE_COST_USD_MAX = 999_999;
+export const TRACE_COST_USD_DECIMAL_PLACES = 18;
+
 export interface TraceEvent {
   ai_run_id: string;
   trace_id: string;

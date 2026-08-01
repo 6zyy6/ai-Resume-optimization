@@ -19,10 +19,35 @@ from sqlalchemy import (
     event,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class ExactUsdCost(TypeDecorator[Decimal]):
+    impl = Numeric(38, 18)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "sqlite":
+            return dialect.type_descriptor(String(64))
+        return dialect.type_descriptor(Numeric(38, 18))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+        if dialect.name == "sqlite":
+            return format(decimal_value, "f")
+        return decimal_value
+
+    def process_result_value(self, value, dialect):
+        del dialect
+        if value is None or isinstance(value, Decimal):
+            return value
+        return Decimal(str(value))
 
 
 class Base(DeclarativeBase):
@@ -817,7 +842,7 @@ class AiRun(OwnerMixin, Base):
     output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cache_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reasoning_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    provider_cost: Mapped[Decimal] = mapped_column(Numeric(24, 12), nullable=False, default=0)
+    provider_cost: Mapped[Decimal] = mapped_column(ExactUsdCost(), nullable=False, default=0)
     cost_cny: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, default=0)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tool_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -826,7 +851,7 @@ class AiRun(OwnerMixin, Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     fallback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     result_ref: Mapped[str | None] = mapped_column(String(255))
-    prompt_template_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_template_version: Mapped[str] = mapped_column(String(128), nullable=False)
     input_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     receipt_hash: Mapped[str | None] = mapped_column(String(64))
 

@@ -191,6 +191,13 @@ async def test_ai_run_created_during_cancel_is_bound_but_cannot_continue(
     claim = await service.claim_task("usr_tasks", task.id)
     assert claim is not None
     await service.request_cancel("usr_tasks", task.id)
+    async with sql_session_factory() as session:
+        before_registration = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert before_registration is not None
+    assert before_registration.state == "reserved"
 
     with pytest.raises(TaskClaimError):
         await service.register_ai_run(
@@ -349,8 +356,9 @@ async def test_rule_only_ai_task_releases_unused_reservation(sql_session_factory
     claim = await service.claim_task("usr_tasks", task.id)
     assert claim is not None
 
-    await service.release_ai_reservation("usr_tasks", task.id)
-    await service.complete_task("usr_tasks", task.id, claim.token, "rule:done")
+    completed = await service.complete_task(
+        "usr_tasks", task.id, claim.token, "rule:done"
+    )
 
     async with sql_session_factory() as session:
         reservation = await session.scalar(
@@ -363,6 +371,102 @@ async def test_rule_only_ai_task_releases_unused_reservation(sql_session_factory
     assert reservation is not None
     assert reservation.state == "released"
     assert reservation.ai_run_id is None
+    assert completed.status == "succeeded"
+
+
+async def test_queued_ai_cancel_releases_known_unused_reservation(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="parse_job",
+        queue="ai.interactive",
+        trace_id="tr_queued_cancel",
+        idempotency_key="queued-cancel-release",
+        admission=TaskAdmission.ai(),
+    )
+
+    cancelled = await service.request_cancel("usr_tasks", task.id)
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert cancelled.status == "cancelled"
+    assert reservation is not None
+    assert reservation.state == "released"
+    assert reservation.ai_run_id is None
+
+
+async def test_in_session_rule_completion_releases_reservation_atomically(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="deterministic_draft",
+        queue="ai.batch",
+        trace_id="tr_in_session_rule",
+        idempotency_key="in-session-rule-release",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+
+    async with sql_session_factory.begin() as session:
+        claimed_task = await service.claimed_task_in_session(
+            session,
+            "usr_tasks",
+            task.id,
+            claim.token,
+        )
+        completed = await service.complete_task_in_session(
+            session,
+            claimed_task,
+            "resume:deterministic",
+        )
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+        assert completed.status == "succeeded"
+        assert reservation is not None
+        assert reservation.state == "released"
+
+
+async def test_completion_with_an_active_run_keeps_consumed_reservation(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="resume_optimize",
+        queue="ai.batch",
+        trace_id="tr_active_complete",
+        idempotency_key="active-complete-consumed",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+    await service.register_ai_run(
+        "usr_tasks", task.id, claim.token, "run_active_complete"
+    )
+
+    completed = await service.complete_task(
+        "usr_tasks", task.id, claim.token, "result:ai"
+    )
+    async with sql_session_factory() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task.id)
+        )
+
+    assert completed.status == "succeeded"
+    assert reservation is not None
+    assert reservation.state == "consumed"
+    assert reservation.ai_run_id == "run_active_complete"
 
 
 async def test_settling_cancelled_ai_run_only_acknowledges_cancellation(
