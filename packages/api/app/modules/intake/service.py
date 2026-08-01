@@ -155,38 +155,42 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:负责|参与|完成|承担|做过|参加)(?:过)?(?:这个|该|相关)?"
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
-MULTI_NEGATIVE_MARKERS = (
-    "完全没有",
-    "并没有",
-    "没有",
-    "从未",
-    "不曾",
-    "未曾",
-    "并未",
-    "未能",
-    "不再",
-    "未实际",
-    "无实际",
-    "未获得",
-)
-SINGLE_NEGATIVE_MARKERS = frozenset("没不未无")
-NEGATION_CLAUSE_BOUNDARY = re.compile(
-    r"[，,。.!！?？；;：:\n\r]|不过|然而|可是|但|却",
+CONTEXT_RESET = re.compile(
+    r"[。.!！?？\n\r]|不过|然而|可是|但|却",
     re.IGNORECASE,
 )
 SENTENCE_BOUNDARY = re.compile(r"[。.!！?？\n\r]")
+CHINESE_NEGATIVE_CONTEXT = re.compile(
+    r"完全没有|并没有|没有|从未|不曾|未曾|并未|未能|不再|"
+    r"不是|并非|否认|无法|不确定|不清楚|不知道"
+)
+SINGLE_NEGATION_PREFIX = re.compile(
+    r"(?:^|我|本人)[没不未无](?:真正|实际|直接|具体|独立|主动|相关)?$"
+)
+NEGATED_EVIDENCE_START = re.compile(
+    r"^(?:我|本人)?[没不未无](?:真正|实际|直接|具体|独立|主动|相关)*"
+    r"(?:负责|参与|完成|承担|组织|主导|获得|具备|熟悉|项目|经验|经历|实习|"
+    r"工作|任务|活动|课程|比赛|调研|设计|汇报)"
+)
 ENGLISH_NEGATION = re.compile(
-    r"\b(?:not|never|no|without)\b|\bdid\s+not\b|\bdidn't\b|"
-    r"\bwas\s+not\b|\bwasn't\b",
+    r"\b(?:not|never|no|without|cannot|cant|can't|dont|don't|"
+    r"doesnt|doesn't|didnt|didn't|isnt|isn't|arent|aren't|"
+    r"wasnt|wasn't|werent|weren't|havent|haven't|hasnt|hasn't|"
+    r"hadnt|hadn't|wont|won't|wouldnt|wouldn't|couldnt|couldn't|"
+    r"shouldnt|shouldn't)\b",
     re.IGNORECASE,
 )
 RESPONSIBILITY_DISCLAIMERS = (
     "并不是我的职责",
     "不是我的职责",
+    "并不是我做的",
+    "不是我做的",
     "并非由我",
+    "并非本人完成",
+    "并非我完成",
+    "不是本人完成",
     "与我无关",
 )
-EVIDENCE_TRAILING_PUNCTUATION = "。.!?！？"
 
 
 @dataclass
@@ -1873,9 +1877,8 @@ def _candidate_key(candidate) -> tuple[str, str, int, int, str]:
 
 
 def _evidence_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value)
-    collapsed = re.sub(r"\s+", " ", normalized).strip()
-    return collapsed.rstrip(EVIDENCE_TRAILING_PUNCTUATION).rstrip()
+    normalized = unicodedata.normalize("NFC", value)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _source_context_negates_candidate(
@@ -1883,27 +1886,39 @@ def _source_context_negates_candidate(
     start: int,
     end: int,
 ) -> bool:
-    prefix = answer[:start]
-    boundaries = list(NEGATION_CLAUSE_BOUNDARY.finditer(prefix))
+    prefix = _context_text(answer[:start])
+    boundaries = list(CONTEXT_RESET.finditer(prefix))
     clause_prefix = prefix[boundaries[-1].end() if boundaries else 0 :]
-    evidence = answer[start:end]
-    leading_clause = NEGATION_CLAUSE_BOUNDARY.split(evidence, maxsplit=1)[0]
-    sentence_end = SENTENCE_BOUNDARY.search(answer, end)
-    same_sentence_tail = answer[end : sentence_end.start() if sentence_end else len(answer)]
+    evidence = _context_text(answer[start:end])
+    leading_clause = CONTEXT_RESET.split(evidence, maxsplit=1)[0]
+    tail = _context_text(answer[end:])
+    tail_boundaries = list(SENTENCE_BOUNDARY.finditer(tail))
+    tail_window = tail[: tail_boundaries[1].start()] if len(tail_boundaries) > 1 else tail
     trimmed_prefix = clause_prefix.rstrip()
 
     return (
-        any(marker in clause_prefix for marker in MULTI_NEGATIVE_MARKERS)
+        bool(CHINESE_NEGATIVE_CONTEXT.search(clause_prefix))
         or bool(ENGLISH_NEGATION.search(clause_prefix))
+        or bool(SINGLE_NEGATION_PREFIX.search(trimmed_prefix))
         or (
             bool(trimmed_prefix)
-            and trimmed_prefix[-1] in SINGLE_NEGATIVE_MARKERS
+            and trimmed_prefix[-1] in "没不未无"
         )
-        or any(marker in leading_clause for marker in MULTI_NEGATIVE_MARKERS)
+        or bool(CHINESE_NEGATIVE_CONTEXT.search(leading_clause))
+        or bool(NEGATED_EVIDENCE_START.search(leading_clause.lstrip()))
         or any(
-            marker in evidence + same_sentence_tail
+            marker in evidence + tail_window
             for marker in RESPONSIBILITY_DISCLAIMERS
         )
+    )
+
+
+def _context_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value).replace("’", "'")
+    return "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
     )
 
 

@@ -782,12 +782,54 @@ def test_same_clause_negation_has_no_distance_or_language_bypass(answer, evidenc
 
 
 @pytest.mark.parametrize(
+    ("answer", "evidence"),
+    [
+        ("无项目经验", "无项目经验"),
+        ("不负责项目", "不负责项目"),
+        ("不具备项目经验", "不具备项目经验"),
+        ("不熟悉Python", "不熟悉Python"),
+        ("项目不是我负责的", "负责"),
+        ("并非我负责项目", "负责项目"),
+        ("否认负责项目", "负责项目"),
+        ("无相关项目经验", "项目经验"),
+        ("没实际负责项目", "负责项目"),
+        ("不直接负责项目", "负责项目"),
+        ("未直接负责项目", "负责项目"),
+        ("我没有相关经验：负责项目", "负责项目"),
+        ("没\u200b有负责项目", "负责项目"),
+        ("我不确定是否完成项目", "完成项目"),
+        ("我不清楚是否完成项目", "完成项目"),
+        ("我不知道是否完成项目", "完成项目"),
+        ("I don't lead the project", "lead the project"),
+        ("I don’t lead the project", "lead the project"),
+        ("I dont lead the project", "lead the project"),
+        ("I didn’t lead the project", "lead the project"),
+    ],
+)
+def test_negative_or_uncertain_context_cannot_publish_exact_span(answer, evidence):
+    start = answer.index(evidence)
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        start=start,
+        end=start + len(evidence),
+    )
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
     "answer",
     [
         "负责项目，但这并不是我的职责",
         "负责项目，这不是我的职责",
         "负责项目，并非由我完成",
         "负责项目，后续工作与我无关",
+        "负责项目，但不是我做的",
+        "负责项目，并非本人完成",
+        "负责项目。并不是我的职责",
     ],
 )
 def test_same_sentence_responsibility_disclaimer_rejects_candidate(answer):
@@ -805,8 +847,8 @@ def test_same_sentence_responsibility_disclaimer_rejects_candidate(answer):
 
 
 def test_positive_span_after_adversative_is_not_tainted_by_prior_negation():
-    answer = "没有实习，但完成了课程项目。"
-    evidence = "完成了课程项目"
+    answer = "没有实习，但完成课程项目"
+    evidence = "完成课程项目"
     start = answer.index(evidence)
 
     valid, invalid = _validate_candidate_slice(
@@ -856,15 +898,36 @@ def test_edit_only_candidate_cannot_bypass_exact_evidence():
 @pytest.mark.parametrize(
     ("source", "value"),
     [
-        ("  完成   项目。 ", "完成 项目"),
-        ("熟悉Ｐｙｔｈｏｎ！", "熟悉Python"),
+        ("  完成   项目 ", "完成 项目"),
+        ("熟悉Cafe\u0301", "熟悉Café"),
     ],
 )
-def test_evidence_comparison_allows_only_documented_text_normalization(source, value):
+def test_evidence_comparison_allows_whitespace_and_canonical_unicode(source, value):
     valid, invalid = _validate_candidate_slice(source, value)
 
     assert len(valid) == 1
     assert invalid == []
+
+
+@pytest.mark.parametrize(
+    ("source", "value"),
+    [
+        ("结果10⁵", "结果105"),
+        ("结果2³", "结果23"),
+        ("结果10⁻⁵", "结果10−5"),
+        ("完成项目？", "完成项目"),
+        ("完成项目。", "完成项目"),
+        ("熟悉Ｐｙｔｈｏｎ", "熟悉Python"),
+    ],
+)
+def test_evidence_comparison_rejects_compatibility_or_punctuation_rewrites(
+    source,
+    value,
+):
+    valid, invalid = _validate_candidate_slice(source, value)
+
+    assert valid == []
+    assert invalid == [(0, "source_value_mismatch")]
 
 
 def test_candidate_without_exact_source_value_is_rejected():
