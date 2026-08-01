@@ -157,8 +157,9 @@ NEGATIVE_CLAIM = re.compile(
 )
 ATOMIC_CLAUSE_BOUNDARY = re.compile(
     r"[。.!！?？\n\r，,；;]|不过|然而|可是|但|却|"
-    r"并(?=(?:未|没有|没|不|非|负责|使用|完成|参与|实现|获得|掌握|"
-    r"开发|组织|主导|承担|达成|推动|优化|解决))",
+    r"(?:并且|同时|还|且|并)(?=(?:成功|独立|共同|实际|具体|主要|亲自|主动)*"
+    r"(?:未|没有|没|不|非|负责|使用|完成|参与|实现|获得|掌握|开发|"
+    r"组织|主导|承担|达成|推动|优化|解决|帮助|指导|评审|协助))",
     re.IGNORECASE,
 )
 RESPONSIBILITY_DISCLAIMERS = (
@@ -187,6 +188,8 @@ CHINESE_EXPLICIT_NEGATIVE = re.compile(
     r"(?:经验|经历|能力|技能)|"
     r"尚欠(?:相关|实际|具体|项目|工作|实习|课程)*(?:经验|经历|能力|技能)|"
     r"难以(?:胜任|负责|参与|完成|承担|组织|主导|掌握|达成)|"
+    r"(?:从没|未)(?:真正|实际|直接|具体|主动)*接触|"
+    r"不怎么熟悉|不懂|"
     r"无法(?:负责|参与|完成|承担|组织|主导|获得|掌握|达成|做)|"
     r"不确定(?:是否|能否|有没有|可否)|"
     r"(?:没|不|未|无)(?:真正|实际|直接|具体|独立|主动|相关)*"
@@ -199,7 +202,7 @@ CHINESE_OWNER_ASSIGNMENT = re.compile(
     r"是(?P<copula_owner>[^，,。.!！?？；;]{1,32}?)(?:负责|完成|参与|承担|主导|做)的)"
 )
 CHINESE_ACTIVE_OWNER = re.compile(
-    r"^(?P<owner>[^，,。.!！?？；;]{1,16}?)(?:负责|完成|主导|承担|参与)"
+    r"^(?P<owner>[^，,。.!！?？；;]{1,16}?)(?:负责|完成|主导|承担|参与|协助)"
 )
 ENGLISH_BY_OWNER = re.compile(
     r"\b(?:completed|led|owned|handled|delivered|done)\s+by\s+"
@@ -208,14 +211,14 @@ ENGLISH_BY_OWNER = re.compile(
 )
 ENGLISH_ACTIVE_OWNER = re.compile(
     r"^(?P<owner>[A-Za-z][\w'-]*(?:\s+[A-Za-z][\w'-]*){0,3})\s+"
-    r"(?:led|completed|owned|handled|delivered|participated)\b",
+    r"(?:led|completed|owned|handled|delivered|participated|contributed|worked\s+on)\b",
     re.IGNORECASE,
 )
 CHINESE_POSITIVE_ASSERTION = re.compile(
-    r"^(?:(?:我|本人|我们|团队)"
-    r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*)?"
+    r"^(?:(?:我|本人|我们|团队)\s*)?"
+    r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*"
     r"(?:负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|"
-    r"达成|推动|优化|解决|合并|并行计算)"
+    r"达成|推动|优化|解决|帮助|指导|评审|协助|合并|并行计算)"
 )
 CHINESE_TAIL_DENIAL = re.compile(
     r"(?:我|本人).*?(?:没有|没|未|不|缺乏|欠缺).*?"
@@ -231,7 +234,9 @@ ENGLISH_EXPLICIT_NEGATIVE = re.compile(
     r"\bfailed\s+to\b|\bunfamiliar\b|\brefus(?:e|es|ed|ing)\b|"
     r"\b(?:have|has|had)\s+yet\s+to\b|"
     r"\bzero(?:\s+\w+){0,3}\s+experience\b|\binexperienced\b|"
-    r"\bbarely\s+know\b|\bavoid(?:s|ed|ing)?\s+(?:lead|leading)\b",
+    r"\bbarely\s+know\b|\bavoid(?:s|ed|ing)?\s+(?:lead|leading)\b|"
+    r"\bstruggl(?:e|es|ed|ing)\s+to\b|\bdeclin(?:e|es|ed|ing)\b|"
+    r"\blittle(?:\s+\w+){0,3}\s+experience\b",
     re.IGNORECASE,
 )
 ENGLISH_TAIL_DENIAL = re.compile(
@@ -2038,35 +2043,72 @@ def _has_positive_assertion(value: str) -> bool:
     return bool(CHINESE_POSITIVE_ASSERTION.search(_context_text(value)))
 
 
+def _is_chinese_self_owner(owner: str) -> bool:
+    match = re.fullmatch(r"(?:我|本人|我们)(?P<modifier>[\u4e00-\u9fff]{0,16})", owner)
+    if match is None:
+        return False
+    modifier = match.group("modifier")
+    return not bool(
+        re.search(
+            r"和|与|及|导师|老师|同学|同事|队友|供应商|外包|他人|"
+            r"别人|成员|负责|完成|主导|承担|参与|协助",
+            modifier,
+        )
+    )
+
+
+def _is_chinese_adverbial_owner(owner: str) -> bool:
+    return bool(
+        owner in {"团队", "小组", "项目组"}
+        or _is_chinese_self_owner(owner)
+        or re.match(
+            r"^(?:我|本人|我们)(?:在|于|从|通过|采用|利用|按照|按|"
+            r"经过|针对|基于|围绕)",
+            owner,
+        )
+        or re.match(r"^(?:在|于|从|通过|采用|利用|按照|按|经过|针对|基于|围绕)", owner)
+        or re.search(r"(?:中|期间|阶段|过程中|场景下|情况下)$", owner)
+        or re.fullmatch(
+            r"[零〇一二三四五六七八九十百千万两\d]+(?:个)?"
+            r"(?:小时|天|周|月|个月|季度|年)",
+            owner,
+        )
+        or re.fullmatch(r"(?:高|低)?质量|按时|提前", owner)
+        or re.fullmatch(
+            r"独立|共同|亲自|主动|成功|最终|随后|当时|一直|唯一|"
+            r"(?:并且|同时|还|且|并)(?:成功|独立|共同|实际|具体|主要|亲自|主动)*|"
+            r"去年|今年|本月|昨天|今天",
+            owner,
+        )
+    )
+
+
+def _is_english_self_owner(owner: str) -> bool:
+    return bool(
+        re.match(r"^(?:me|myself|us|ourselves|we)\b", owner)
+        or re.fullmatch(
+            r"(?:my|our)(?:\s+[a-z][\w'-]*){0,3}\s+team"
+            r"(?:\s+and\s+(?:me|us))?",
+            owner,
+        )
+    )
+
+
 def _has_other_owner(value: str) -> bool:
     context = _context_text(value)
     compact = re.sub(r"\s+", "", context)
     for match in CHINESE_OWNER_ASSIGNMENT.finditer(compact):
         owner = match.group("by_owner") or match.group("copula_owner") or ""
-        if not re.fullmatch(
-            r"(?:我|本人|我们)(?:(?:的)?团队|共同|独立|亲自|实际|主要|具体)*",
-            owner,
-        ):
+        if not _is_chinese_self_owner(owner):
             return True
     active = CHINESE_ACTIVE_OWNER.search(compact)
     if active is not None:
         owner = active.group("owner")
-        non_owner_prefix = re.match(
-            r"^(?:我|本人|我们|团队|小组|项目组|在|于|通过|采用|利用|"
-            r"按照|经过|针对|独立|共同|亲自|主动|成功|最终|随后|当时|"
-            r"一直|唯一|并|去年|今年|本月|昨天|今天)",
-            owner,
-        )
-        if "由" not in owner and not non_owner_prefix and not owner.endswith(
-            ("团队", "小组", "项目组")
-        ):
+        if "由" not in owner and not _is_chinese_adverbial_owner(owner):
             return True
     for match in ENGLISH_BY_OWNER.finditer(context):
         owner = match.group("owner").strip().lower()
-        if not (
-            re.match(r"^(?:me|myself|us|ourselves|we)\b", owner)
-            or re.fullmatch(r"(?:my|our)\s+team", owner)
-        ):
+        if not _is_english_self_owner(owner):
             return True
     active = ENGLISH_ACTIVE_OWNER.search(context)
     if active is None:
@@ -2088,16 +2130,31 @@ def _prior_clause_has_dangling_negative(prefix: str) -> bool:
 def _is_dangling_negative_clause(value: str) -> bool:
     context = _context_text(value)
     compact = re.sub(r"\s+", "", context)
-    subject = r"(?:(?:我|本人|我们|团队)(?:其实|确实|完全|真的|实际|并|尚)*)?"
+    subject = (
+        r"(?:(?:我|本人|我们|团队))?"
+        r"(?:其实|确实|完全|真的|实际|并|尚|从来|一直)*"
+    )
     return bool(
         re.fullmatch(subject + r"(?:没有|没|不能|不擅长)", compact)
         or re.fullmatch(
-            subject + r"(?:没有|没|缺乏|欠缺)(?:任何)?相关经验",
+            subject + r"(?:没有|没|缺乏|欠缺|缺少)(?:任何)?相关经验",
             compact,
         )
         or re.fullmatch(
             r"(?:I|we)(?:\s+(?:really|completely|actually))?\s+"
             r"(?:cannot|cant|can't|could\s+not|couldnt|couldn't)",
+            context,
+            re.IGNORECASE,
+        )
+        or re.fullmatch(
+            r"(?:I|we)(?:\s+(?:really|completely|actually))?\s+"
+            r"(?:do\s+not|dont|don't)",
+            context,
+            re.IGNORECASE,
+        )
+        or re.fullmatch(
+            r"(?:I|we)(?:\s+(?:really|completely|actually))?\s+"
+            r"lack(?:\s+\w+){0,2}\s+experience",
             context,
             re.IGNORECASE,
         )
@@ -2116,7 +2173,13 @@ def _prior_negative_carries(
     if not boundaries or boundaries[-1].end() != clause_start:
         return False
     separator = boundaries[-1].group()
-    if separator not in ("，", ",", "；", ";") and not separator.startswith("并"):
+    if separator not in ("，", ",", "；", ";") and separator not in (
+        "并且",
+        "同时",
+        "还",
+        "且",
+        "并",
+    ):
         return False
     prior_start = boundaries[-2].end() if len(boundaries) > 1 else 0
     prior_clause = answer[prior_start:boundaries[-1].start()]
@@ -2141,8 +2204,11 @@ def _tail_denies_candidate(tail: str) -> bool:
     if _tail_starts_new_topic(immediate):
         return False
     if cross_sentence:
-        subjectless = re.sub(r"^(?:其实|实际|补充说明)\s*", "", immediate)
-        return bool(re.match(r"^(?:由|是)", subjectless) and _has_other_owner(subjectless))
+        subjectless = _tail_core(immediate)
+        return bool(
+            re.match(r"^(?:(?:该|这个)项目|它)?(?:由|是)", subjectless)
+            and _has_other_owner(subjectless)
+        )
     return (
         any(marker in immediate for marker in RESPONSIBILITY_DISCLAIMERS)
         or bool(RESPONSIBILITY_DENIAL.search(immediate))
@@ -2161,24 +2227,53 @@ def _tail_unit_text(value: str) -> str:
 
 
 def _tail_starts_new_topic(value: str) -> bool:
-    core = re.sub(r"^(?:其实|实际|补充说明)\s*", "", value)
+    core = _tail_core(value)
     return bool(
-        re.match(r"^(?:另一个|另一项|另一份|其他|其它)", core)
+        re.match(
+            r"^(?:另一个|另一项|另一份|其他|其它|"
+            r"第[零〇一二三四五六七八九十百千万两\d]+个?(?:项目|工作|任务)|"
+            r"[A-Za-z]\s*(?:项目|工作|任务))",
+            core,
+        )
         or re.search(r"\b(?:A|B)\s*(?:project|job|task)\b", core, re.IGNORECASE)
+        or re.match(
+            r"^(?:(?:the\s+)?second|another)\s+(?:project|job|task)\b",
+            core,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _tail_core(value: str) -> str:
+    return re.sub(
+        r"^(?:(?:其实|实际上|实际|后来确认|补充说明)\s*)+",
+        "",
+        value,
     )
 
 
 def _is_referential_tail_denial(value: str) -> bool:
     if _tail_starts_new_topic(value):
         return False
-    core = re.sub(r"^(?:其实|实际|补充说明)\s*", "", value)
+    core = _tail_core(value)
     if any(marker in core for marker in RESPONSIBILITY_DISCLAIMERS):
         return True
     return bool(
-        re.fullmatch(
+        (
+            re.match(r"^(?:(?:该|这个)项目|它)?(?:由|是)", core)
+            and _has_other_owner(core)
+        )
+        or re.fullmatch(
+            r"(?:并未|未|没有|没)(?:真正|实际|直接|具体|独立|主动)*"
+            r"(?:负责|完成|参与|承担|主导|做)(?:过)?(?:了|的)?"
+            r"(?:(?:这个|该)项目|它)?",
+            core,
+        )
+        or re.fullmatch(
             r"(?:我|本人)(?:其实|确实|实际|完全)*"
             r"(?:没有|没|未|不)(?:真正|实际|直接|具体|独立|主动)*"
-            r"(?:负责|完成|参与|承担|主导|做)(?:过)?(?:了|的)?",
+            r"(?:负责|完成|参与|承担|主导|做)(?:过)?(?:了|的)?"
+            r"(?:(?:这个|该)项目|它)?",
             core,
         )
         or re.search(
