@@ -1,0 +1,478 @@
+{
+  "api_responses": [
+    {
+      "operation": "answer",
+      "status": 202,
+      "body": {
+        "id": "intake_019fc23b-6777-7fc0-bef3-bf53b01dcf72",
+        "status": "active",
+        "version": 1,
+        "current_question": null,
+        "completed_count": 1,
+        "remaining_estimate": 7,
+        "answered_question_ids": [
+          "experience_radar"
+        ],
+        "skipped_question_ids": [],
+        "fact_summaries": [],
+        "fact_candidates": [],
+        "analysis_task_id": "tsk_019fc23b-67fa-73c4-9114-f588cc099741",
+        "analysis_status": "queued",
+        "task_id": null,
+        "resume_id": null
+      }
+    },
+    {
+      "operation": "draft",
+      "status": 202,
+      "body": {
+        "session_id": "intake_019fc23b-6777-7fc0-bef3-bf53b01dcf72",
+        "task_id": "tsk_019fc23b-6ca7-7a87-93a3-20a5d83e8862",
+        "status": "queued",
+        "version": 4
+      }
+    },
+    {
+      "operation": "parse",
+      "status": 202,
+      "body": {
+        "id": "job_019fc23b-6fed-72a1-bcdc-0eb7644bd785",
+        "title": "产品实习生 qoegjepg",
+        "company": "浏览器合同公司",
+        "raw": "负责用户调研 qoegjepg\n熟悉产品原型 qoegjepg",
+        "status": "queued",
+        "requirements": [],
+        "task_id": "tsk_019fc23b-6ff8-7551-bfad-b04ef0c7df27"
+      }
+    },
+    {
+      "operation": "match",
+      "status": 202,
+      "body": {
+        "id": "match_019fc23b-746e-7d0a-bfc8-1f6e4e638962",
+        "resume_version_id": "rver_019fc23b-7469-7a79-b370-8efeaa7131db",
+        "job_id": "job_019fc23b-6fed-72a1-bcdc-0eb7644bd785",
+        "status": "queued",
+        "generation_mode": "model",
+        "workflow_version": "2",
+        "ai_run_id": null,
+        "input_hash": "dd409444200d353ad77f8fa0c35cd372e2bfbfca09c1a8387fdb405533267423",
+        "updated_at": "2026-08-02T11:28:24.179684Z",
+        "task_id": "tsk_019fc23b-7470-7095-86a6-fb92505ca690",
+        "items": []
+      }
+    }
+  ],
+  "browser": "Google Chrome 150.0.7871.187",
+  "broker_status": "BLOCKED_NO_REDIS",
+  "build_id": "7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55",
+  "captures": [
+    {
+      "name": "01-create-analysis",
+      "route": "/create",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "ddff612fb984cf2f1b5ed1d92c28019935cca78cbcbac6edbafca238f7316349",
+        "visible_proof_kind": "input",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "02-candidate-confirmation",
+      "route": "/create",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "d0fc85b1ad418ddbd5b4193efeabda117b99396c6b68ec7ca3fdf5fb85483612",
+        "visible_proof_kind": "input",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "03-model-draft-provenance",
+      "route": "/resumes/resume_019fc23b-6cc0-7f75-855f-ff7fa9b52da5/edit",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "5e9aef09160230cadaefc266d48483b1f5f2c145847c86b25f5dfd994e66b57c",
+        "visible_proof_kind": "text",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "04-jd-provenance",
+      "route": "/jobs/new",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "e0fc0cbb1078c86181effcea45f8c3e2343bc1ed75cdd4678950d3b9fe85d9af",
+        "visible_proof_kind": "input",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "05-match-categories",
+      "route": "/jobs/job_019fc23b-6fed-72a1-bcdc-0eb7644bd785/match",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "ff44093d4ffc40e79126ba7d97278df5ece96d79839c1fd85dd8ecc47bc7d676",
+        "visible_proof_kind": "text",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "06-pending-suggestion",
+      "route": "/suggestions/match_019fc23b-746e-7d0a-bfc8-1f6e4e638962",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "75a8ebef128e1971f4cdbbbff0500dca61874f0c8eb77ca5bf5f8c84f6d5b0c3",
+        "visible_proof_kind": "text",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "name": "07-blocked-suggestion",
+      "route": "/suggestions/match_019fc23b-746e-7d0a-bfc8-1f6e4e638962",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "fa5623aa00df0f651ab0ac55f096cb66352f0a55a75cd810faa2c8115bb7418c",
+        "visible_proof_kind": "text",
+        "run_nonce_visible": true
+      }
+    },
+    {
+      "evidence_basis": {
+        "task_id": "tsk_019fc23b-6ca7-7a87-93a3-20a5d83e8862",
+        "task_status": "succeeded"
+      },
+      "name": "08-task-success-result",
+      "route": "/tasks",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "da2db02b855193b30371ed16eb9a2e5880354e6328156410e26fb3b87d41b803",
+        "visible_proof_kind": "text",
+        "run_nonce_visible": false
+      }
+    },
+    {
+      "name": "09-recoverable-failure",
+      "route": "/create",
+      "metrics": {
+        "client_width": 390,
+        "horizontal_overflow": false,
+        "runtime_error": false,
+        "scroll_width": 390,
+        "visible_internal_markers": [],
+        "visible_proof_hash": "3d093ee60c7a11da723b3b9b780d1731b60b88115153261a36a014dbef7341d6",
+        "visible_proof_kind": "input",
+        "run_nonce_visible": true
+      }
+    }
+  ],
+  "console_errors": [],
+  "failure_task_assertion": {
+    "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+    "task_id": "tsk_019fc23b-7a10-7370-865b-8ac39e39eecd",
+    "state": {
+      "task_status": "failed",
+      "task_trace_id": "tr_98815b47-5d7d-4c16-af35-1ee61026e12c",
+      "runs": [],
+      "trace_count": 0,
+      "task_event_sequences": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "task_event_stages": [
+        "queued",
+        "running",
+        "running",
+        "running",
+        "failed"
+      ],
+      "outbox_exists": true,
+      "outbox_dispatched": false,
+      "outbox_owner_matches": true,
+      "orphan_trace_count": 0
+    }
+  },
+  "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+  "page_errors": [],
+  "run_nonce_hash": "086611cd37fe40c163f58e0d37bf2ae9ef85cfeaf18b093923c8e7e74cde66b2",
+  "server_errors": [],
+  "task_assertions": [
+    {
+      "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+      "task_id": "tsk_019fc23b-67fa-73c4-9114-f588cc099741",
+      "state": {
+        "task_status": "succeeded",
+        "task_trace_id": "tr_b1a52e47-0df2-4141-8f7d-845c1be00d66",
+        "runs": [
+          {
+            "id": "run_2c4d6d70e71460f686aae525d1683c8ff9da12f8",
+            "owner_user_id": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+            "task_id": "tsk_019fc23b-67fa-73c4-9114-f588cc099741",
+            "trace_id": "tr_b1a52e47-0df2-4141-8f7d-845c1be00d66",
+            "workflow_type": "analyze_intake_answer",
+            "workflow_version": "2",
+            "prompt_template_version": "intake-answer@2",
+            "status": "succeeded",
+            "input_hash": "421c44ef051054c188c28bbfd16c03ff4d585102db9fc7f8bbcc4387290e9b6f",
+            "receipt_hash": "572d92aeceaa017cdcadc27963005dbef9959cfbeee08079812ad5e51421f8e9",
+            "result_ref": "ians_019fc23b-67f8-7c88-8a60-8b4b4b219c10",
+            "trace_sequence": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "trace_types": [
+              "run_queued",
+              "agent_start",
+              "agent_end",
+              "agent_settled",
+              "run_succeeded"
+            ]
+          }
+        ],
+        "trace_count": 5,
+        "task_event_sequences": [
+          1,
+          2,
+          3
+        ],
+        "task_event_stages": [
+          "queued",
+          "running",
+          "succeeded"
+        ],
+        "outbox_exists": true,
+        "outbox_dispatched": false,
+        "outbox_owner_matches": true,
+        "orphan_trace_count": 0
+      }
+    },
+    {
+      "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+      "task_id": "tsk_019fc23b-6ca7-7a87-93a3-20a5d83e8862",
+      "state": {
+        "task_status": "succeeded",
+        "task_trace_id": "tr_d37bd9d7-1ac8-4b06-ba7d-51b7ae2a6df2",
+        "runs": [
+          {
+            "id": "run_bbfabe8e15f04e294f4c47e9171e55aad1000a37",
+            "owner_user_id": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+            "task_id": "tsk_019fc23b-6ca7-7a87-93a3-20a5d83e8862",
+            "trace_id": "tr_d37bd9d7-1ac8-4b06-ba7d-51b7ae2a6df2",
+            "workflow_type": "compose_resume_draft",
+            "workflow_version": "2",
+            "prompt_template_version": "resume-draft@2",
+            "status": "succeeded",
+            "input_hash": "a41fb9f5ed10b0a6564ba164d29ec09e8c149f4e1f366585801dd7d2cd856ea8",
+            "receipt_hash": "bfe0bcab389324e8784a23f0a1346c8070ec11140c41da7748057a139700afe3",
+            "result_ref": "resume_019fc23b-6cc0-7f75-855f-ff7fa9b52da5",
+            "trace_sequence": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "trace_types": [
+              "run_queued",
+              "agent_start",
+              "agent_end",
+              "agent_settled",
+              "run_succeeded"
+            ]
+          }
+        ],
+        "trace_count": 5,
+        "task_event_sequences": [
+          1,
+          2,
+          3
+        ],
+        "task_event_stages": [
+          "queued",
+          "running",
+          "succeeded"
+        ],
+        "outbox_exists": true,
+        "outbox_dispatched": false,
+        "outbox_owner_matches": true,
+        "orphan_trace_count": 0
+      }
+    },
+    {
+      "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+      "task_id": "tsk_019fc23b-6ff8-7551-bfad-b04ef0c7df27",
+      "state": {
+        "task_status": "succeeded",
+        "task_trace_id": "tr_a1214030-ef20-4e69-a8a0-05ab1964636f",
+        "runs": [
+          {
+            "id": "run_725c1f76ef9bff37c4cf761def210751afcdbe4e",
+            "owner_user_id": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+            "task_id": "tsk_019fc23b-6ff8-7551-bfad-b04ef0c7df27",
+            "trace_id": "tr_a1214030-ef20-4e69-a8a0-05ab1964636f",
+            "workflow_type": "parse_jd",
+            "workflow_version": "2",
+            "prompt_template_version": "jd-parse@2",
+            "status": "succeeded",
+            "input_hash": "5b8898243abc9c0eee529db2abfbd15e5ff0a947ff52a8e7c0d728130e517021",
+            "receipt_hash": "ca35ceaf635801e990ab494076cffd2a1cb1d6cea40fd1dda6c907d666a2985a",
+            "result_ref": "job_019fc23b-6fed-72a1-bcdc-0eb7644bd785",
+            "trace_sequence": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "trace_types": [
+              "run_queued",
+              "agent_start",
+              "agent_end",
+              "agent_settled",
+              "run_succeeded"
+            ]
+          }
+        ],
+        "trace_count": 5,
+        "task_event_sequences": [
+          1,
+          2,
+          3
+        ],
+        "task_event_stages": [
+          "queued",
+          "running",
+          "succeeded"
+        ],
+        "outbox_exists": true,
+        "outbox_dispatched": false,
+        "outbox_owner_matches": true,
+        "orphan_trace_count": 0
+      }
+    },
+    {
+      "owner_scope_hash": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+      "task_id": "tsk_019fc23b-7470-7095-86a6-fb92505ca690",
+      "state": {
+        "task_status": "succeeded",
+        "task_trace_id": "tr_b0fdbd57-3719-43a0-bfe9-182aeea4bb4a",
+        "runs": [
+          {
+            "id": "run_cbed0fa2aa52b765888fbb9727d1b2a180f73933",
+            "owner_user_id": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+            "task_id": "tsk_019fc23b-7470-7095-86a6-fb92505ca690",
+            "trace_id": "tr_b0fdbd57-3719-43a0-bfe9-182aeea4bb4a",
+            "workflow_type": "match_resume_to_jd",
+            "workflow_version": "2",
+            "prompt_template_version": "resume-match@2",
+            "status": "succeeded",
+            "input_hash": "dd409444200d353ad77f8fa0c35cd372e2bfbfca09c1a8387fdb405533267423",
+            "receipt_hash": "dfb6ca7f8d71b7c36e19738db9f67ae7255effa393cb91d16eb0a395af5c27d3",
+            "result_ref": "match_019fc23b-746e-7d0a-bfc8-1f6e4e638962",
+            "trace_sequence": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "trace_types": [
+              "run_queued",
+              "agent_start",
+              "agent_end",
+              "agent_settled",
+              "run_succeeded"
+            ]
+          },
+          {
+            "id": "run_8765e44c6f4017aa5e1809911051783283581f48",
+            "owner_user_id": "cba68f1a706be20b0771e965233cefaf9783bb07da99bb86c1ef7db0096541e8",
+            "task_id": "tsk_019fc23b-7470-7095-86a6-fb92505ca690",
+            "trace_id": "tr_b0fdbd57-3719-43a0-bfe9-182aeea4bb4a",
+            "workflow_type": "generate_suggestions_batch",
+            "workflow_version": "2",
+            "prompt_template_version": "suggestions-batch@2",
+            "status": "succeeded",
+            "input_hash": "27b61b484ef76126b9a74031cca4be09193247fd09e4f4352fedf988ab337bce",
+            "receipt_hash": "d3f2d2124ef6f5d0e5a34f1b510711afa032d92ad1d43633ace7403e16865f7c",
+            "result_ref": "match_019fc23b-746e-7d0a-bfc8-1f6e4e638962",
+            "trace_sequence": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "trace_types": [
+              "run_queued",
+              "agent_start",
+              "agent_end",
+              "agent_settled",
+              "run_succeeded"
+            ]
+          }
+        ],
+        "trace_count": 10,
+        "task_event_sequences": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "task_event_stages": [
+          "queued",
+          "running",
+          "match",
+          "succeeded"
+        ],
+        "outbox_exists": true,
+        "outbox_dispatched": false,
+        "outbox_owner_matches": true,
+        "orphan_trace_count": 0
+      }
+    }
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "label": "390x844"
+  }
+}

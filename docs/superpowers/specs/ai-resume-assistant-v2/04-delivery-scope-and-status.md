@@ -6,7 +6,7 @@
 
 | 状态 | 含义 |
 | --- | --- |
-| `DONE-LOCAL` | 本地实现和聚焦测试已通过，但未形成同 commit 全量候选证据 |
+| `DONE-LOCAL` | 本地实现和聚焦测试已通过；可有同 commit 增量证据，但不代表全量或外部验收通过 |
 | `PARTIAL` | 已有可复用实现，但不满足业务完成定义 |
 | `NOT STARTED` | 没有真实实现或只有静态壳 |
 | `BLOCKED` | 实现依赖真实云、设备、模型、账单或用户 |
@@ -52,8 +52,8 @@
 | 设置与隐私 | `DONE-LOCAL` | `/v1/me`、usage、data export、re-auth deletion、logout |
 | 协议和隐私正文 | `DONE-LOCAL` | 独立用户协议和隐私政策页面 |
 | 真实服务 Web E2E | `PARTIAL` | 已完成本地真实 FastAPI + Next 浏览器冒烟；仍缺规格要求的两流程各 10/10 正式 Playwright 证据 |
-| AI 编排 V2.1 本地 HTTP E2E | `DONE-LOCAL` | Next production build/start→FastAPI→实际 Worker operation→TCP Pi deterministic fixture 已覆盖 5 工作流、9 状态×3 视口；无 Redis/Dispatcher/Celery，因此不等同完整 real-services |
-| 响应式截图证据 | `DONE-LOCAL` | 同 build 的 7 视口 × 8 页面共 56 张截图，另有 7 张核心流程截图和 SHA-256 manifest |
+| AI 编排 V2.1 本地 HTTP E2E | `DONE-LOCAL` | 冻结源码 `7877aa4` 的 detached 干净 worktree 已证明 Next production→FastAPI→实际业务 operation→TCP Pi fixture 覆盖 5 工作流、4 Task→5 AiRun、9 状态×3 视口；无 Redis/Dispatcher/Celery，因此不等同完整 real-services |
+| 响应式截图证据 | `PARTIAL` | 候选源码新增 390/1024/1440 × 9 状态共 27 张截图，manifest hash 全部匹配；既有 7 视口证据来自较早提交，当前源码仍缺 320/375/414/768 复采 |
 | 完整多状态证据矩阵 | `PARTIAL` | 仍缺 42 个主矩阵状态、16 个异常矩阵状态的逐项 API/DB/trace 证据 |
 | Safari/Edge/staging | `BLOCKED` | 真实浏览器与 staging 环境 |
 | 30 名学生验证 | `BLOCKED` | 每路径 ≥15 人及原始记录 |
@@ -229,10 +229,10 @@ flowchart LR
 - [x] 岗位优化真实闭环；
 - [x] 导出和隐私真实闭环；
 - [ ] real-service E2E；
-- [x] AI 编排 V2.1 本地 HTTP partial E2E（27 状态截图候选待不可变 commit 复采）；
-- [x] 7 视口 × 8 页面响应式截图；
+- [x] AI 编排 V2.1 本地 HTTP partial E2E（不可变候选 `candidate-7877aa4`，27 张截图）；
+- [ ] 当前源码 7 视口 × 8 页面响应式截图；
 - [x] manifest、哈希、最终报告；
-- [x] Hallmark 58 项审查；
+- [ ] 当前源码 Hallmark 58 项审查（历史报告不可替代当前提交）；
 - [x] `pnpm lint`、`pnpm test`、`pnpm build`；
 - [ ] V2-P0 全部 PASS。
 

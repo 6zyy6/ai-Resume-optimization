@@ -1,36 +1,54 @@
 # AI 业务编排 V2.1 本地验证报告
 
-## 1. 当前证据状态
+## 1. 结论与边界
 
-| 项目 | 状态 | 判断 |
+| 项目 | 状态 | 可核对结论 |
 | --- | --- | --- |
-| 实现冻结提交 | `BLOCKED` | 等待源码提交 S 生成后填入 |
-| 27 张候选截图与 SHA-256 manifest | `BLOCKED` | 必须从干净、detached 的源码提交 S 复采 |
-| 完整 Redis/Dispatcher/Celery 拓扑 | `BLOCKED` | 当前环境未提供 Redis 或容器运行时 |
-| 真实模型、云、外部浏览器、用户研究 | `BLOCKED` | 当前无对应凭据和外部原始证据 |
+| 实现冻结提交 S | `PASS` | `7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55`，在 detached 干净 worktree 采集 |
+| 本地 deterministic HTTP 编排 | `PASS` | Chrome 150 → Next.js production → FastAPI → 实际业务 operation → TCP Pi fixture；3/3 Playwright 通过 |
+| 27 张候选截图与 manifest | `PASS` | 3 个视口 × 9 个状态；27 个 PNG SHA-256 全部匹配且互不重复 |
+| Task/AiRun/Trace/Outbox | `PASS` | 每个视口均为 4 个成功 Task → 5 个成功 AiRun；失败 Task 为 `failed`；owner/outbox/trace 断言通过 |
+| 当前源码 Hallmark 58 项 | `BLOCKED` | 历史报告不与候选源码同 commit；本候选只覆盖 390/1024/1440，不能替代七视口逐项复核 |
+| 完整 Redis/Dispatcher/Celery 拓扑 | `BLOCKED` | 当前证据明确记录 `BLOCKED_NO_REDIS`，未伪造 broker 派发 |
+| 真实模型、云、外部浏览器、用户研究 | `BLOCKED` | 当前没有凭据、部署或外部原始证据 |
 
-本文件在源码冻结前只定义可执行证据模板，不把 dirty worktree 下的开发调试结果写成
-候选 `PASS`。候选证据提交 T 必须明确记录“测试源码提交 S、证据存储提交 T”。
+本报告的 `PASS` 只覆盖本地确定性 HTTP 编排增量，不等同 Web V2 全量验收或公开发布
+就绪。证据存储提交 T 在本目录提交后产生，因此 manifest 只冻结并校验测试源码提交 S；T
+由 Git 历史记录。
 
-## 2. 候选采集命令
+## 2. 不可变候选证据
+
+证据目录：[`candidate-7877aa4`](./candidate-7877aa4/)
+
+关键元数据：
+
+- 源码、构建、Web、API、Pi commit：`7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55`；
+- 浏览器：Google Chrome 150.0.7871.187；
+- 开始：2026-08-02T11:28:05.484Z；结束：2026-08-02T11:28:38.749Z；
+- 测试结果：3/3 通过，31.9 秒，退出码 0；
+- 环境：Next.js production build/start + FastAPI + SQLite + in-process worker operation + TCP Pi deterministic fixture；
+- 敏感模式扫描：邮箱、密码、Authorization、Bearer、access/refresh token 命中 0 个文件。
+
+采集与复核命令：
 
 ```bash
-node scripts/acceptance/capture-ai-orchestration-v2.mjs <new-evidence-directory>
-node scripts/acceptance/hash-ai-orchestration-v2.mjs <new-evidence-directory>
+node scripts/acceptance/capture-ai-orchestration-v2.mjs \
+  docs/superpowers/specs/ai-resume-assistant-v2/evidence/ai-orchestration-v2/candidate-7877aa4
+
+node scripts/acceptance/hash-ai-orchestration-v2.mjs \
+  docs/superpowers/specs/ai-resume-assistant-v2/evidence/ai-orchestration-v2/candidate-7877aa4
 ```
 
-`capture` 必须在干净工作树运行，并自动使用 `git rev-parse HEAD` 作为 Web、API、Pi
-共同的 `APP_COMMIT_SHA`。`hash` 必须拒绝以下任一情况：
+`hash` 输出：
 
-- PNG 不是 `3 × 9 = 27` 张；
-- 任一视口不是 390×844、1024×768、1440×900，或 full-page 高度小于视口；
-- 任一状态存在横向溢出、Runtime Error、console/page error、API 5xx 或可见内部枚举；
-- 9 个固定状态名、route 或 PNG 文件名不完全一致，或 27 张截图内容 hash 不唯一；
-- 每个视口没有证明 4 个成功 Task → 5 个 AiRun → 连续 Trace，或失败 Task 终态不完整；
-- 任一服务 `/version` 与源码提交 S 不一致；
-- broker 状态没有如实记录为 `BLOCKED_NO_REDIS`。
+```text
+Hashed 27 AI orchestration screenshots for 7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55
+```
 
-## 3. 本地 partial 链路
+独立复算结果：manifest 文件 hash 不匹配 0；截图 27；唯一截图 hash 27；三服务 SHA
+不一致 0；三个视口 nonce hash 唯一数 3；console/page/server error 和可见内部标记均为 0。
+
+## 3. 覆盖的真实链路
 
 ```text
 Chrome → Next.js production build/start → FastAPI → TaskExecutor/业务 operation
@@ -40,13 +58,25 @@ Chrome → Next.js production build/start → FastAPI → TaskExecutor/业务 op
                                   Pi deterministic fixture
 ```
 
-浏览器不得拦截 `/api/v1/**`，也不得直接改数据库推进流程。公开测试工具只负责以当前
-登录 owner 触发真实 `TaskExecutor` 和读取脱敏 inspection；Outbox 因无 broker 保持未派发，
-不能伪造为 Celery 已处理。
+浏览器没有拦截 `/api/v1/**`，没有直接修改数据库推进流程。公开测试工具只以当前登录
+owner 触发实际 `TaskExecutor` 并读取脱敏 inspection。因为本环境没有 broker，Outbox 保持
+未派发，不能据此宣称 Redis/Dispatcher/Celery 已通过。
 
-## 4. 必须覆盖的视觉状态
+五条进入业务调用链的工作流：
 
-每个视口都必须保存下列 9 个状态：
+1. `analyze_intake_answer`；
+2. `compose_resume_draft`；
+3. `parse_jd`；
+4. `match_resume_to_jd`；
+5. `generate_suggestions_batch`。
+
+每条成功 AiRun 均核对 workflow version `2`、prompt template `@2`、input/receipt hash、
+result reference 和连续 trace。owner 标识和专用 nonce 元数据使用 SHA-256；为了证明页面
+显示的是当次真实业务数据，确定性测试的简历/JD 文本会包含可见 nonce。
+
+## 4. 视觉状态证据
+
+390×844、1024×768、1440×900 每个视口均保存以下 9 个全页状态：
 
 1. 创建回答分析中；
 2. 事实候选确认；
@@ -55,54 +85,70 @@ Chrome → Next.js production build/start → FastAPI → TaskExecutor/业务 op
 5. 匹配四分类；
 6. 待处理建议；
 7. 缺证据阻断建议；
-8. 任务成功结果（任务中心原生成功状态，并绑定对应 Task 数据库 `succeeded` 断言）；
+8. 任务成功结果；
 9. 可恢复失败。
 
-状态 01–07 和 09 必须通过简历名称、确认事实、岗位名称或 JD 要求展示当次 run 的
-真实业务 nonce；状态 08 通过 `task_id` 同 4 个成功 Task 断言之一绑定。报告只保存 nonce
-和可见 proof 的 SHA-256，不把邮箱或 owner 明文写入证据。
+自动测量结果：横向溢出 0、Runtime Error 0、console error 0、page error 0、API 5xx 0、
+可见内部枚举/工作流名/JSON pointer 0。状态 01–07、09 显示本次业务 nonce；状态 08
+通过 `task_id` 绑定对应数据库 `succeeded` Task。人工抽查了桌面与移动端的模型草稿、
+任务成功和可恢复失败截图，未发现内容裁切或未本地化错误码。
 
-截图中文案不得直接出现 `experience`、`fact_candidate_edit`、
-`proved/underexpressed/needs_confirmation/real_gap`、工作流 snake_case 或简历 JSON
-pointer；对应业务值只允许在 API/DB 报告中保留。
+## 5. 工程验证结果
 
-## 5. 自动验证清单
+下表是本轮在源码提交 S 上执行的本地开发检查；除候选目录中的 Playwright `command.log`
+外，其他命令的完整原始日志没有纳入候选证据，因此不能单独据此把相应 V2 验收 ID 标成
+正式 `PASS`。
 
-| 命令 | 候选要求 |
-| --- | --- |
-| `node --test scripts/tests/dev-supervisor.test.mjs` | `PASS`，0 失败 |
-| `pnpm vitest run tests/contract/ai-orchestration-v2.test.ts --reporter=verbose` | `PASS`，真实 HTTP 覆盖 5 工作流 |
-| `AI_ORCHESTRATION_REAL_SERVICES=1 pnpm exec playwright test --project=ai-orchestration-real --reporter=line` | `PASS`，3/3 viewport、27/27 状态 |
-| `pnpm generate` 后前后 SHA 比较 | `PASS`，generated 文件二次生成不变 |
-| `pnpm lint` | `PASS`，退出码 0 |
-| `pnpm test` | `PASS`，0 失败 |
-| `pnpm build` | `PASS`，退出码 0 |
-| `pnpm acceptance` | 本地项按证据判定；外部项保持 `BLOCKED` |
-
-## 6. Hallmark 58 项报告模板
-
-预检目标：`P5 H5 E5 S5 R5 V4`。本轮不改变结构、Token 或样式，只修复运行时链路和
-用户可见业务标签。候选截图生成后逐项填入 `NO` 或 `N/A`；任一适用项为 `YES`，则
-V2-UI-08 为 `FAIL`，不能交付。
-
-| Gates | 候选检查重点 | 待填答案 |
+| 命令 | 结果 | 说明 |
 | --- | --- | --- |
-| 1–9 | 字体、渐变、卡片、Hero、结构节奏 | `BLOCKED` |
-| 10–19 | 动效、焦点、提示、占位文案 | `BLOCKED` |
-| 20–27 | CSS stamp、Token、间距、八状态、reduced motion | `BLOCKED` |
-| 28–36 | enrichment、图标、ARIA、横向溢出、交互行对齐 | `BLOCKED` |
-| 37–45 | 字体数量、输入状态、对比、导航/页脚/Hero | `BLOCKED` |
-| 46–49 | 真实文案、chrome、Token、可点击文案换行 | `BLOCKED` |
-| 50–58 | 320/375/414/768 响应式与移动安全 | `BLOCKED` |
+| `node --test scripts/tests/dev-supervisor.test.mjs` | `PASS`，6/6 | 含服务启动失败后的 ready 竞态回归 |
+| `pnpm vitest run tests/contract/ai-orchestration-v2.test.ts --reporter=verbose` | `PASS`，1/1 | 真实 HTTP 覆盖五工作流 |
+| `AI_ORCHESTRATION_REAL_SERVICES=1 pnpm exec playwright test --project=ai-orchestration-real --reporter=line` | `PASS`，3/3 | 三视口、27 状态截图 |
+| `pnpm --filter @resume/web test` | `PASS`，70/70 | 含质量问题中文映射与未知值安全回退 |
+| `pnpm lint` | `PASS`，退出码 0 | 根工作区 lint |
+| `pnpm test` | `PASS`，0 失败 | AI 94（另 1 跳过）、Shared 8、Token 2、小程序 12、Web 70、Supervisor 6、API 1387 |
+| `pnpm build` | `PASS`，退出码 0 | evidence E2E 也从干净 worktree 重建 production Web |
+| `pnpm acceptance` | `BLOCKED` | 命令退出码 0，但发布 manifest 的 146/146 项均因缺正式发布证据保持 `BLOCKED` |
 
-已有 CSS 顶部 Hallmark stamp 和历史 58 项报告只能作为审查起点，不能替代当前 source
-commit 的真实浏览器复核。
+原始 capture log 含现有工具链警告：Node `module.register`/`util._extend` 弃用、
+`baseline-browser-mapping` 数据过期、`NO_COLOR`/`FORCE_COLOR` 冲突以及 standalone start
+建议。根测试还产生 8 条既有 aiosqlite 连接线程在 event loop 关闭后的 pytest warning。
+根构建还记录 Taro webpack cache 无法解析 `@tarojs/taro-loader/lib/page` 的 warning。
+它们没有造成测试或构建失败，但根据 V2-ENG-01 的“warning 0”严格阈值，该验收 ID
+仍不能标记为全量 `PASS`。
 
-## 7. 候选结论模板
+## 6. Hallmark 58 项当前状态
 
-| 范围 | 状态 | 边界 |
+历史报告 `docs/superpowers/evidence/task-8-hallmark-review.md` 在较早提交上记录过 58/58
+`PASS`，但从该提交到候选源码 `7877aa4`，Web 已发生实质修改，不能把历史结论直接沿用。
+本次候选只对三个正式视口进行了真实截图和 0 溢出检查，未覆盖 320/375/414/768 的当前
+源码证据；补跑历史 fixture 七视口套件也未在合理时间内完成，因此当前严格状态如下：
+
+| Gates | 结果 | 增量检查 |
 | --- | --- | --- |
-| V2.1 deterministic 本地 HTTP 编排 | `BLOCKED` | 待不可变源码提交 S 的候选 manifest |
-| V2-UI-01 / V2-UI-02 完整矩阵 | `BLOCKED` | 本增量只有 27 张，不是规格 42+16 张 |
+| 1–9 | `BLOCKED` | 需在当前源码逐项复核 |
+| 10–19 | `BLOCKED` | 需在当前源码逐项复核 |
+| 20–27 | `BLOCKED` | 需在当前源码逐项复核八状态与 reduced motion |
+| 28–36 | `BLOCKED` | 本次三视口横向溢出为 0；其余 gate 未形成当前源码证据 |
+| 37–45 | `BLOCKED` | 需在当前源码逐项复核 |
+| 46–49 | `BLOCKED` | 本次截图证明核心文案未泄漏内部枚举；其他 gate 未完整复核 |
+| 50–58 | `BLOCKED` | 390/1024/1440 为 0 溢出；320/375/414/768 当前源码证据缺失 |
+
+结论：当前源码 Hallmark 58 项为 `BLOCKED`，不宣称 58/58 `PASS`。Hallmark 的“58 项
+gate”和 V2-UI-01/02 的“58 张截图”是两种证据，二者目前都未达到全量验收。
+
+## 7. 未完成验收
+
+| 范围 | 状态 | 具体缺口 |
+| --- | --- | --- |
+| V2-UI-01 / V2-UI-02 完整矩阵 | `BLOCKED` | 本增量为 27 张 AI 编排截图，不是 42 张 ready + 16 张异常截图 |
+| V2-UI-08 Hallmark | `BLOCKED` | 历史 58/58 报告不与候选同 commit；当前仅有三视口增量复核 |
 | V2-CREATE-09 / V2-OPT-01 | `BLOCKED` | 未执行各 10/10 完整 PDF 闭环 |
-| 真实 Redis/Celery/DeepSeek/云/外部浏览器/用户研究 | `BLOCKED` | 不由 deterministic fixture 推升状态 |
+| V2-ENG-01 warning 0 | `BLOCKED` | capture 原始日志仍有上述工具链 warning |
+| 真实 Redis/Dispatcher/Celery | `BLOCKED` | 无 Redis/容器运行环境及真实 broker 证据 |
+| 真实 DeepSeek/云/COS | `BLOCKED` | 无生产凭据、账单、部署和真实模型评测证据 |
+| Edge/Safari/真机 | `BLOCKED` | Chrome 开发环境不能替代外部浏览器与真机 |
+| 30 名学生用户研究 | `BLOCKED` | 无每路径至少 15 人的原始记录 |
+
+因此当前准确状态是：**AI 业务编排 V2.1 本地确定性 HTTP 增量已通过；Web V2 全量与
+公开发布仍未通过。**

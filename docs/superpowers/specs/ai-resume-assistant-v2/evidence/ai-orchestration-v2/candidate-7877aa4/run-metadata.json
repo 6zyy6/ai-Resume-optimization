@@ -1,0 +1,18 @@
+{
+  "browser": "Google Chrome 150.0.7871.187",
+  "build_id": "7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55",
+  "command": "AI_ORCHESTRATION_REAL_SERVICES=1 APP_COMMIT_SHA=7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55 pnpm exec playwright test --project=ai-orchestration-real --reporter=line",
+  "commit_sha": "7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55",
+  "ended_at": "2026-08-02T11:28:38.749Z",
+  "environment": "Next.js production build/start + FastAPI + SQLite + in-process worker operation + TCP Pi deterministic fixture",
+  "exit_code": 0,
+  "external_gates": {
+    "cloud_deployment": "BLOCKED",
+    "external_browser_matrix": "BLOCKED",
+    "real_model_accuracy": "BLOCKED",
+    "real_redis_dispatcher_celery": "BLOCKED",
+    "user_study": "BLOCKED"
+  },
+  "source_commit": "7877aa4f5db6a4a9742b92a3046a6a6dc9a09e55",
+  "started_at": "2026-08-02T11:28:05.484Z"
+}
