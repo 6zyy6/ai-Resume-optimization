@@ -2273,6 +2273,135 @@ def test_english_bare_predicate_nested_without_is_not_trace_only(answer):
     assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
 
 
+def test_site_location_preserves_named_other_owner():
+    answer = "在项目现场张三完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["在项目现场我完成任务", "在导师所在现场我完成任务"],
+)
+def test_site_location_preserves_final_self_subject(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_unrecognized_location_without_subject_requires_review():
+    answer = "在未知区域完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_unrecognized_location_with_named_owner_is_trace_only():
+    answer = "在未知区域张三完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_unrecognized_location_quality_modifier_requires_review():
+    answer = "在园区高质量完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["帮助不了用户", "支持不了用户", "服务不了客户", "培训不了学生"],
+)
+def test_positive_support_action_inability_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "帮助不了解情况的用户",
+        "支持不了解系统的用户",
+        "服务不了解系统的客户",
+        "培训不了解系统的学生",
+    ],
+)
+def test_positive_support_action_nested_buliao_is_accepted(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize("answer", ["实现并发布系统", "实现并发现问题"])
+def test_weak_connector_before_fa_prefixed_action_requires_edit(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_concurrency_term_before_task_remains_a_single_action():
+    answer = "实现并发任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped with nothing",
+        "I helped on no projects",
+        "I helped in no projects",
+    ],
+)
+def test_english_help_particle_direct_negative_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped without experience",
+        "I helped users without experience",
+        "I helped on project A1",
+        "I helped in project A1",
+    ],
+)
+def test_english_help_particle_or_nested_without_is_not_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
