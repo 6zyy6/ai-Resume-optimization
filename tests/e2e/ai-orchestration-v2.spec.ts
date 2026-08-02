@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -40,6 +40,11 @@ function ownerHash(ownerUserId: string) {
   return createHash("sha256").update(ownerUserId).digest("hex");
 }
 
+function batchNonce() {
+  const alphabet = "abcdefghijkmnopqrstuvwxyz";
+  return Array.from(randomBytes(8), (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
 function redactOwnerIds(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value, (key, item) => (
     key === "owner_user_id" && typeof item === "string" ? ownerHash(item) : item
@@ -61,15 +66,13 @@ async function capture(
   } else {
     await expect(page.getByText(proof.value, { exact: false }).first()).toBeVisible();
   }
-  const metrics = await page.evaluate(() => ({
-    client_width: document.documentElement.clientWidth,
-    horizontal_overflow:
-      document.documentElement.scrollWidth > document.documentElement.clientWidth,
-    runtime_error: document.body.innerText.includes("Runtime Error"),
-    scroll_width: document.documentElement.scrollWidth,
-    visible_internal_markers: [
+  const metrics = await page.evaluate(() => {
+    const bodyText = document.body.innerText;
+    const normalizedBodyText = bodyText.toLowerCase();
+    const markers = [
       "experience",
       "fact_candidate_edit",
+      "claim_evidence_",
       "proved",
       "underexpressed",
       "needs_confirmation",
@@ -79,8 +82,17 @@ async function capture(
       "parse_job",
       "match_resume_to_job",
       "/sections/",
-    ].filter((value) => document.body.innerText.toLowerCase().includes(value)),
-  }));
+    ].filter((value) => normalizedBodyText.includes(value));
+    const internalCodes = bodyText.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}\b/g) ?? [];
+    return {
+      client_width: document.documentElement.clientWidth,
+      horizontal_overflow:
+        document.documentElement.scrollWidth > document.documentElement.clientWidth,
+      runtime_error: bodyText.includes("Runtime Error"),
+      scroll_width: document.documentElement.scrollWidth,
+      visible_internal_markers: [...new Set([...markers, ...internalCodes])],
+    };
+  });
   expect(metrics.horizontal_overflow).toBe(false);
   expect(metrics.runtime_error).toBe(false);
   expect(metrics.visible_internal_markers).toEqual([]);
@@ -133,7 +145,7 @@ for (const viewport of viewports) {
     await page.setViewportSize(viewport);
     const directory = resolve(evidenceRoot, viewport.label);
     await mkdir(directory, { recursive: true });
-    const nonce = `${viewport.width}-${Date.now()}`;
+    const nonce = batchNonce();
     const nonceHash = ownerHash(nonce);
     const resumeTitle = `验收简历 ${nonce}`;
     const failureResumeTitle = `失败验收简历 ${nonce}`;

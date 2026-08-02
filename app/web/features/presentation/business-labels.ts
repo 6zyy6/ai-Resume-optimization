@@ -79,6 +79,24 @@ const resumeSectionTypes: Record<string, string> = {
   summary: "概览模块",
 };
 
+const qualityIssues: Record<string, { message: string; title: string }> = {
+  bullet_claim_not_covered: { title: "简历表述需要核对", message: "当前表述与已关联事实不完全一致，请检查内容或重新关联事实。" },
+  bullet_fact_cardinality_mismatch: { title: "事实关联需要调整", message: "请为每条独立表述关联一项对应的已确认事实。" },
+  bullet_fact_not_confirmed: { title: "事实尚未确认", message: "请先确认已关联事实，再继续使用这条简历表述。" },
+  bullet_fact_reference_required: { title: "缺少事实依据", message: "请为这条简历表述关联一项有来源且已确认的事实。" },
+  bullet_new_number: { title: "数字缺少依据", message: "当前表述包含事实中没有的数字，请修改内容或补充事实依据。" },
+  bullet_responsibility_strength_unsupported: { title: "职责表述需要核对", message: "当前职责描述强于事实依据，请调整措辞或补充事实。" },
+  claim_evidence_coverage_required: { title: "事实依据不完整", message: "这条简历表述尚未完整关联事实，请检查后重试。" },
+  claim_evidence_duplicate_bullet_id: { title: "简历内容需要刷新", message: "简历内容标识出现冲突，请刷新页面后重试。" },
+  claim_evidence_fact_mismatch: { title: "事实依据需要核对", message: "当前简历表述与已确认事实不完全一致，请检查内容或重新关联事实。" },
+  claim_evidence_fact_not_confirmed: { title: "事实尚未确认", message: "请先确认已关联事实，再继续使用这条简历表述。" },
+  claim_evidence_fact_owner_invalid: { title: "事实无法使用", message: "当前关联事实不可用于这份简历，请重新选择事实。" },
+  claim_evidence_fact_source_required: { title: "事实缺少来源", message: "当前关联事实缺少可核验来源，请先补充来源。" },
+  claim_evidence_range_invalid: { title: "事实关联位置异常", message: "事实与简历内容的关联位置已失效，请刷新页面后重试。" },
+  claim_evidence_range_overlap: { title: "事实关联范围重复", message: "同一段内容存在重复的事实关联，请调整后重试。" },
+  claim_evidence_unknown_bullet: { title: "简历内容已经变化", message: "事实关联对应的内容已经变化，请刷新页面后重试。" },
+};
+
 const normalized = (value: string) => value.trim().toLowerCase();
 
 export const factKindLabel = (value: string) => factKinds[normalized(value)] ?? "其他事实";
@@ -89,6 +107,10 @@ export const taskStatusLabel = (value: string) => taskStatuses[normalized(value)
 export const taskStageLabel = (value: string) => taskStages[normalized(value)] ?? "进度更新";
 export const riskFlagLabel = (value: string) => riskFlags[normalized(value)] ?? "需要人工复核";
 export const resumeSectionTypeLabel = (value: string) => resumeSectionTypes[normalized(value)] ?? "其他模块";
+export const qualityIssueLabel = (value: string) => qualityIssues[normalized(value)] ?? {
+  title: "简历内容需要核对",
+  message: "系统发现一项需要处理的内容，请检查相关简历表述后重试。",
+};
 export function resumeTargetLabel(value: string) {
   const match = /^\/sections\/(\d+)\/items\/(\d+)\/text$/.exec(value);
   return match

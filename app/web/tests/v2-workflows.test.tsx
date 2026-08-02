@@ -74,7 +74,17 @@ describe("V2 real workflow pages", () => {
         });
       }
       if (path.endsWith("/v1/resumes/resume_unique/quality-checks")) {
-        return jsonResponse({ issues: [] });
+        return jsonResponse({
+          issues: [{
+            code: "CLAIM_EVIDENCE_FACT_MISMATCH",
+            message: "Claim evidence does not support high-risk claim entities",
+            path: "claim_evidence",
+          }, {
+            code: "UNEXPECTED_INTERNAL_QUALITY_CODE",
+            message: "Unexpected internal quality message",
+            path: "sections.0",
+          }],
+        });
       }
       if (path.endsWith("/v1/facts?limit=100")) {
         return jsonResponse({
@@ -109,7 +119,15 @@ describe("V2 real workflow pages", () => {
     expect(await screen.findByDisplayValue("唯一服务端经历内容")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /唯一编辑器标题/ })).toBeInTheDocument();
     expect(screen.getByText("经历模块")).toBeInTheDocument();
+    expect(screen.getByText("事实依据需要核对")).toBeInTheDocument();
+    expect(screen.getByText("当前简历表述与已确认事实不完全一致，请检查内容或重新关联事实。")).toBeInTheDocument();
+    expect(screen.getByText("简历内容需要核对")).toBeInTheDocument();
+    expect(screen.getByText("系统发现一项需要处理的内容，请检查相关简历表述后重试。")).toBeInTheDocument();
     expect(screen.queryByText(/experience/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CLAIM_EVIDENCE_FACT_MISMATCH/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Claim evidence does not support/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/UNEXPECTED_INTERNAL_QUALITY_CODE/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unexpected internal quality message/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/课程项目的用户调研/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue("唯一服务端经历内容"), {

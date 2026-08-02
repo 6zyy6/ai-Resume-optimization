@@ -15,7 +15,7 @@ import {
   resumeSnapshotConflicts,
   type SnapshotMergeChoice,
 } from "../../../../features/editor/snapshot-merge";
-import { resumeSectionTypeLabel } from "../../../../features/presentation/business-labels";
+import { qualityIssueLabel, resumeSectionTypeLabel } from "../../../../features/presentation/business-labels";
 import { useAutoSave } from "../../../../features/editor/use-auto-save";
 
 type Resume = components["schemas"]["ResumeResponse"];
@@ -482,7 +482,10 @@ function LoadedEditor({
           <StatusTag tone={issues.length > 0 || unsupported.length > 0 ? "pending" : "success"}>
             {issues.length + unsupported.length} 项需处理
           </StatusTag>
-          {issues.map((issue) => <article className="audit-card" key={`${issue.code}:${issue.path}`}><strong>{issue.code}</strong><p>{issue.message}</p><a href={`#${issue.path.split(".")[0]}`}>定位问题</a></article>)}
+          {issues.map((issue) => {
+            const label = qualityIssueLabel(issue.code);
+            return <article className="audit-card" key={`${issue.code}:${issue.path}`}><strong>{label.title}</strong><p>{label.message}</p><a href={`#${issue.path.split(".")[0]}`}>定位问题</a></article>;
+          })}
           {unsupported.length > 0 ? <article className="audit-card"><strong>修改尚未写入正式版本</strong><p>请关联事实库中已有来源且已确认的事实。当前文字不能给自己充当证据。</p><Link href="/facts">打开事实库</Link></article> : null}
           <Button disabled={history.length === 0} onClick={undo} variant="secondary">撤销（{history.length}/20）</Button>
           <Link className="button button--primary" href={`/jobs/new?version=${effectiveVersionId}`}>继续岗位匹配</Link>
