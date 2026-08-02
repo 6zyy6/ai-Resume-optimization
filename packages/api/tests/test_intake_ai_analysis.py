@@ -2627,7 +2627,7 @@ def test_support_action_buhao_modified_direct_object_is_trace_only(answer):
     "answer",
     [
         "服务不好沟通且容易误解需求的客户",
-        "帮助不好刚加入团队且仍在熟悉流程的同事",
+        "帮助不好刚开始且仍在熟悉流程的同事",
     ],
 )
 def test_support_action_buhao_long_modifier_is_not_a_result_complement(answer):
@@ -2664,6 +2664,103 @@ def test_english_unhyphenated_negative_prefix_term_is_not_a_denial(answer):
     assert invalid == []
     assert len(valid) == 1
     assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "在科技园区高峰阶段完成任务",
+        "在大型办公室夏令营期间完成任务",
+        "在未知区域实习阶段完成任务",
+    ],
+)
+def test_modified_complex_leading_location_prefix_requires_review(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "服务不好这些非常重要的企业客户的需求",
+        "帮助不好刚刚加入研发部门的新同事的项目",
+    ],
+)
+def test_support_action_buhao_long_direct_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_support_action_buhao_abstract_attributive_remains_non_hard():
+    answer = "服务不好沟通且容易误解需求的客户"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I implemented no-code tools",
+        "I implemented zero‐trust security",
+        "I implemented no‑code platform",
+        "I implemented zero‒trust network",
+        "I implemented no–code development",
+        "I implemented zero—trust architecture",
+        "I implemented no−code solution",
+    ],
+)
+def test_english_unicode_hyphen_negative_prefix_term_is_not_a_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I implemented no code tools",
+        "I implemented no code platform",
+        "I implemented no code development",
+        "I implemented no code solution",
+        "I implemented zero trust security",
+        "I implemented zero trust architecture",
+        "I implemented zero trust model",
+        "I implemented zero trust network",
+    ],
+)
+def test_english_domain_negative_prefix_term_is_not_a_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I completed no code reviews",
+        "I completed no code changes",
+        "I helped with no code at all",
+        "I completed not even one project",
+    ],
+)
+def test_english_non_domain_or_even_one_direct_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
 
 
 @pytest.mark.parametrize(

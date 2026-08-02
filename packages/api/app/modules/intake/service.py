@@ -2076,13 +2076,22 @@ def _has_positive_assertion(value: str) -> bool:
 
 def _has_english_direct_object_negative(value: str) -> bool:
     object_head = value.strip()
-    if re.match(r"^(?:no\s+code|zero\s+trust)\b", object_head, re.IGNORECASE):
+    if re.match(
+        r"^(?:no[-‐‑‒–—−]code|zero[-‐‑‒–—−]trust)\b",
+        object_head,
+        re.IGNORECASE,
+    ) or re.match(
+        r"^(?:no\s+code\s+(?:tools?|platforms?|development|solutions?)|"
+        r"zero\s+trust\s+(?:security|architecture|models?|networks?))\b",
+        object_head,
+        re.IGNORECASE,
+    ):
         return False
     return bool(
         re.match(
             r"^(?:(?:(?:absolutely|virtually|almost)\s+)?"
             r"(?:nothing|nobody|no\s+one|none|neither|no(?!-)\b|zero(?!-)\b)|"
-            r"not\s+(?:a\s+single|one|any)\b|hardly\s+any\b|"
+            r"not\s+(?:a\s+single|even\s+one|one|any)\b|hardly\s+any\b|"
             r"barely\s+any\b|scarcely\s+any\b)",
             object_head,
             re.IGNORECASE,
@@ -2096,11 +2105,11 @@ def _has_chinese_support_bad_result(value: str) -> bool:
         value,
     ):
         tail = re.split(r"[，,。.!！?？；;]", value[match.end() :], maxsplit=1)[0]
-        attributive_end = tail.find("的")
+        attributive_end = tail.rfind("的")
         if attributive_end < 0:
             return True
-        if len(tail[:attributive_end]) <= 6 and re.search(
-            r"客户|用户|同事|学生|员工|项目|任务|需求|老师|导师|队友|"
+        if re.search(
+            r"客户|用户|同事|学生|员工|项目|任务|老师|导师|队友|"
             r"供应商|团队|部门|产品|系统|业务|工作|活动",
             tail[:attributive_end],
         ):
@@ -2111,7 +2120,7 @@ def _has_chinese_support_bad_result(value: str) -> bool:
 def _leading_adverbial_is_ambiguous(value: str) -> bool:
     return bool(
         re.match(
-            r"^(?:在|于)(?:园区|办公室|场地|区域|环境|地点)"
+            r"^(?:在|于)[\u4e00-\u9fff]{0,8}?(?:园区|办公室|场地|区域|环境|地点)"
             r"[^，,。.!！?？；;]{1,12}?(?:阶段|期间)",
             re.sub(r"\s+", "", value),
         )
@@ -2121,6 +2130,7 @@ def _leading_adverbial_is_ambiguous(value: str) -> bool:
 def _main_assertion_kind(value: str) -> str:
     context = _context_text(value)
     ambiguous_leading_adverbial = _leading_adverbial_is_ambiguous(context)
+    positive_kind = "unknown" if ambiguous_leading_adverbial else "positive"
     context = _strip_chinese_leading_adverbial(context)
     compact = re.sub(r"[\s、]+", "", context)
     if CHINESE_POSTPOSITIVE_INABILITY.search(
@@ -2156,13 +2166,13 @@ def _main_assertion_kind(value: str) -> str:
             )[0]
             if _has_english_direct_object_negative(object_head):
                 return "hard"
-            return "positive"
+            return positive_kind
         if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
             return "hard"
         return "unknown"
 
     if _has_positive_assertion(context):
-        return "unknown" if ambiguous_leading_adverbial else "positive"
+        return positive_kind
 
     if CHINESE_EXPLICIT_NEGATIVE.search(compact) or RESPONSIBILITY_DENIAL.search(
         compact
@@ -2176,7 +2186,7 @@ def _main_assertion_kind(value: str) -> str:
             or chinese_assignment.group("copula_owner")
             or ""
         )
-        return "positive" if _is_chinese_self_owner(owner) else "hard"
+        return positive_kind if _is_chinese_self_owner(owner) else "hard"
 
     chinese_active = CHINESE_ACTIVE_OWNER.search(compact)
     if chinese_active is not None:
@@ -2190,18 +2200,18 @@ def _main_assertion_kind(value: str) -> str:
                     if _unresolved_location_has_other_owner(owner)
                     else "unknown"
                 )
-            return "positive" if _is_chinese_adverbial_owner(owner) else "hard"
+            return positive_kind if _is_chinese_adverbial_owner(owner) else "hard"
 
     english_assignment = ENGLISH_BY_OWNER.search(context)
     if english_assignment is not None:
         owner = english_assignment.group("owner").strip().lower()
-        return "positive" if _is_english_self_owner(owner) else "hard"
+        return positive_kind if _is_english_self_owner(owner) else "hard"
 
     english_active = ENGLISH_ACTIVE_OWNER.search(context)
     if english_active is not None:
         owner = english_active.group("owner").strip().lower()
         if _is_english_self_owner(owner) or re.search(r"\b(?:i|we|us)\b", owner):
-            return "positive"
+            return positive_kind
         return "hard"
 
     if CHINESE_EXPLICIT_OTHER_SUBJECT.search(compact) or _has_other_owner(context):
