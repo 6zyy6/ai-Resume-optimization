@@ -266,7 +266,7 @@ CHINESE_POSTPOSITIVE_INABILITY = re.compile(
     rf"(?:(?:{CHINESE_RESULT_ACTION_PREDICATE})"
     r"(?:不了(?!解)|不(?:来|成|下|起|掉|到|动|完|好|住|牢|稳|准|清|透|够))|"
     rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})"
-    r"(?:不了(?!解)|不好(?!的)))"
+    r"(?:不了(?!解)|不好(?![^，,。.!！?？；;]{0,8}的)))"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2074,6 +2074,17 @@ def _has_positive_assertion(value: str) -> bool:
     return bool(CHINESE_POSITIVE_ASSERTION.search(_context_text(value)))
 
 
+def _has_english_direct_object_negative(value: str) -> bool:
+    return bool(
+        re.match(
+            r"^(?:(?:almost\s+)?nothing|nobody|no\s+one|none|neither|"
+            r"no\b|zero\b|hardly\s+any\b|barely\s+any\b)",
+            value.strip(),
+            re.IGNORECASE,
+        )
+    )
+
+
 def _main_assertion_kind(value: str) -> str:
     context = _context_text(value)
     context = _strip_chinese_leading_adverbial(context)
@@ -2107,11 +2118,7 @@ def _main_assertion_kind(value: str) -> str:
                 maxsplit=1,
                 flags=re.IGNORECASE,
             )[0]
-            if ENGLISH_EXPLICIT_NEGATIVE.search(object_head) or re.search(
-                r"\b(?:nobody|nothing|no\s+one)\b",
-                object_head,
-                re.IGNORECASE,
-            ):
+            if _has_english_direct_object_negative(object_head):
                 return "hard"
             return "positive"
         if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
@@ -2282,6 +2289,11 @@ def _unresolved_location_has_other_owner(owner: str) -> bool:
     subject_value = subject.group("subject")
     if _is_chinese_self_owner(subject_value) or _is_chinese_adverbial_owner(
         subject_value
+    ):
+        return False
+    if re.fullmatch(
+        r"(?:[\u4e00-\u9fff]{0,4}(?:期|季|时|阶段|期间|场景)|高峰(?:期|时段)?)",
+        subject_value,
     ):
         return False
     return bool(

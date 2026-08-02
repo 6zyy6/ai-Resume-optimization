@@ -2470,6 +2470,55 @@ def test_english_extended_help_particle_nested_without_is_not_trace_only(answer)
     assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
 
 
+@pytest.mark.parametrize("answer", ["在园区高峰期完成任务", "在园区夏季完成任务"])
+def test_unrecognized_location_time_phrase_requires_review(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize("answer", ["帮助不好意思的用户", "服务不好沟通的客户"])
+def test_support_action_buhao_attributive_is_not_a_result_complement(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped with neither",
+        "I helped with zero project",
+        "I completed almost nothing",
+    ],
+)
+def test_english_anchored_direct_object_negative_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped to ensure no errors",
+        "I helped without experience",
+        "I helped with users with no experience",
+    ],
+)
+def test_english_nested_negative_is_not_a_direct_object_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
