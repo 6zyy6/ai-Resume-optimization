@@ -68,7 +68,7 @@ def configure_pipeline_operations(
     legacy_ai_client = (
         LegacyAiClientAdapter(ai_client) if ai_client is not None else None
     )
-    jobs = JobService(sessions, legacy_ai_client)
+    jobs = JobService(sessions, ai_client)
     matching = MatchingService(sessions, legacy_ai_client)
     exports = ExportService(sessions, storage)
     privacy = PrivacyWorker(sessions, storage)
@@ -89,6 +89,20 @@ def configure_pipeline_operations(
             claim_token=claim.token,
             task_service=task_service,
             cancellation=TaskAiCancellation(task_service, claim),
+        )
+
+    async def fail_parse_job(
+        claim: TaskClaim,
+        failure: TerminalFailure,
+    ) -> None:
+        task = await _task(task_service, claim)
+        await jobs.fail_parse(
+            claim.owner_user_id,
+            _resource(task, "job_description"),
+            task.id,
+            claim.token,
+            failure.error_code,
+            task_service=task_service,
         )
 
     async def match_resume_to_job(claim: TaskClaim) -> str:
@@ -168,7 +182,11 @@ def configure_pipeline_operations(
         return await privacy.delete_account(claim.owner_user_id, claim.task_id)
 
     register_operation("parse_resume_import", parse_resume_import)
-    register_operation("parse_job", parse_job)
+    register_operation(
+        "parse_job",
+        parse_job,
+        terminal_failure_handler=fail_parse_job,
+    )
     register_operation("match_resume_to_job", match_resume_to_job)
     register_operation("render_resume_export", render_resume_export)
     register_operation(

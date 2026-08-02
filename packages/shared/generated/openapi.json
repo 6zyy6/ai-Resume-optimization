@@ -1736,17 +1736,66 @@
       "RequirementResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Run Id"
+          },
+          "confidence_band": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Confidence Band",
+            "type": "string"
+          },
           "confirmed": {
             "title": "Confirmed",
             "type": "boolean"
+          },
+          "explicitness": {
+            "enum": [
+              "explicit",
+              "implicit"
+            ],
+            "title": "Explicitness",
+            "type": "string"
+          },
+          "generation_mode": {
+            "enum": [
+              "model",
+              "rule_fallback"
+            ],
+            "title": "Generation Mode",
+            "type": "string"
           },
           "id": {
             "title": "Id",
             "type": "string"
           },
+          "input_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Input Hash",
+            "type": "string"
+          },
           "priority": {
             "title": "Priority",
             "type": "integer"
+          },
+          "source_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Source Hash",
+            "type": "string"
+          },
+          "source_range": {
+            "$ref": "#/components/schemas/RequirementSourceRange"
           },
           "text": {
             "title": "Text",
@@ -1755,6 +1804,10 @@
           "type": {
             "title": "Type",
             "type": "string"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
           }
         },
         "required": [
@@ -1762,9 +1815,38 @@
           "type",
           "priority",
           "text",
-          "confirmed"
+          "confirmed",
+          "source_range",
+          "source_hash",
+          "explicitness",
+          "confidence_band",
+          "generation_mode",
+          "workflow_version",
+          "ai_run_id",
+          "input_hash"
         ],
         "title": "RequirementResponse",
+        "type": "object"
+      },
+      "RequirementSourceRange": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "exclusiveMinimum": 0.0,
+            "title": "End",
+            "type": "integer"
+          },
+          "start": {
+            "minimum": 0.0,
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "RequirementSourceRange",
         "type": "object"
       },
       "RequirementUpdate": {

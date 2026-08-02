@@ -1615,16 +1615,47 @@ export interface components {
         };
         /** RequirementResponse */
         RequirementResponse: {
+            /** Ai Run Id */
+            ai_run_id: string | null;
+            /**
+             * Confidence Band
+             * @enum {string}
+             */
+            confidence_band: "high" | "medium" | "low";
             /** Confirmed */
             confirmed: boolean;
+            /**
+             * Explicitness
+             * @enum {string}
+             */
+            explicitness: "explicit" | "implicit";
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "model" | "rule_fallback";
             /** Id */
             id: string;
+            /** Input Hash */
+            input_hash: string;
             /** Priority */
             priority: number;
+            /** Source Hash */
+            source_hash: string;
+            source_range: components["schemas"]["RequirementSourceRange"];
             /** Text */
             text: string;
             /** Type */
             type: string;
+            /** Workflow Version */
+            workflow_version: string;
+        };
+        /** RequirementSourceRange */
+        RequirementSourceRange: {
+            /** End */
+            end: number;
+            /** Start */
+            start: number;
         };
         /** RequirementUpdate */
         RequirementUpdate: {

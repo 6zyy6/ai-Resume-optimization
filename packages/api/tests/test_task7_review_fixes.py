@@ -516,15 +516,20 @@ def test_completed_job_is_readable_with_real_requirements(pipeline_client):
 
     assert response.status_code == 200
     assert response.json()["status"] == "parsed"
-    assert response.json()["requirements"] == [
-        {
-            "id": requirement_id,
-            "type": "must_have",
-            "priority": 1,
-            "text": "必须熟练 Python",
-            "confirmed": False,
-        }
-    ]
+    assert len(response.json()["requirements"]) == 1
+    requirement = response.json()["requirements"][0]
+    assert {
+        "id": requirement_id,
+        "type": "must_have",
+        "priority": 1,
+        "text": "必须熟练 Python",
+        "confirmed": False,
+    }.items() <= requirement.items()
+    assert requirement["source_range"] == {"start": 0, "end": 11}
+    assert requirement["source_hash"] == hashlib.sha256(
+        "必须熟练 Python".encode()
+    ).hexdigest()
+    assert requirement["generation_mode"] == "rule_fallback"
 
 
 def test_cos_download_uses_rfc5987_utf8_filename():
@@ -1034,6 +1039,15 @@ async def _seed_alias_owned_match_input(sessions):
                 priority=1,
                 text_encrypted="Python",
                 confirmed=True,
+                source_start=0,
+                source_end=6,
+                source_hash=hashlib.sha256(b"Python").hexdigest(),
+                explicitness="explicit",
+                confidence_band="high",
+                generation_mode="rule_fallback",
+                workflow_version="legacy-rule-fallback@1",
+                ai_run_id=None,
+                input_hash="a" * 64,
             )
         )
     return version.id, job.id

@@ -690,6 +690,32 @@ class JdRequirement(OwnerMixin, Base):
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_jd_requirement_job_owner",
         ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_jd_requirement_ai_run_owner",
+        ),
+        CheckConstraint(
+            "source_start >= 0 AND source_end > source_start",
+            name="ck_jd_requirement_source_range",
+        ),
+        CheckConstraint(
+            "explicitness IN ('explicit', 'implicit')",
+            name="ck_jd_requirement_explicitness",
+        ),
+        CheckConstraint(
+            "confidence_band IN ('high', 'medium', 'low')",
+            name="ck_jd_requirement_confidence_band",
+        ),
+        CheckConstraint(
+            "generation_mode IN ('model', 'rule_fallback')",
+            name="ck_jd_requirement_generation_mode",
+        ),
+        CheckConstraint(
+            "(generation_mode = 'model' AND ai_run_id IS NOT NULL) OR "
+            "(generation_mode = 'rule_fallback' AND ai_run_id IS NULL)",
+            name="ck_jd_requirement_generation_provenance",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -698,6 +724,15 @@ class JdRequirement(OwnerMixin, Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     text_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    source_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    explicitness: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence_band: Mapped[str] = mapped_column(String(16), nullable=False)
+    generation_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    ai_run_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class MatchAnalysis(OwnerMixin, Base):

@@ -151,6 +151,25 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
         == "JOB_REQUIREMENTS_NOT_CONFIRMED"
     )
     parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()
+    assert {
+        "source_range",
+        "source_hash",
+        "explicitness",
+        "confidence_band",
+        "generation_mode",
+        "workflow_version",
+        "ai_run_id",
+        "input_hash",
+    } <= set(parsed_job["requirements"][0])
+    assert parsed_job["requirements"][0]["source_range"] == {
+        "start": 0,
+        "end": len("Python SQL"),
+    }
+    assert parsed_job["requirements"][0]["source_hash"] == hashlib.sha256(
+        b"Python SQL"
+    ).hexdigest()
+    assert parsed_job["requirements"][0]["generation_mode"] == "rule_fallback"
+    assert parsed_job["requirements"][0]["ai_run_id"] is None
     for index, requirement in enumerate(parsed_job["requirements"]):
         confirmed = client.patch(
             f"/v1/jobs/{job.json()['id']}/requirements/{requirement['id']}",
@@ -425,6 +444,15 @@ async def _seed_other_owner_pipeline(sessions) -> None:
             priority=1,
             text_encrypted="Python",
             confirmed=True,
+            source_start=0,
+            source_end=6,
+            source_hash=hashlib.sha256(b"Python").hexdigest(),
+            explicitness="explicit",
+            confidence_band="high",
+            generation_mode="rule_fallback",
+            workflow_version="legacy-rule-fallback@1",
+            ai_run_id=None,
+            input_hash="a" * 64,
         )
         imported = ResumeImport(
             id="import_b",

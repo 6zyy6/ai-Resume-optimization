@@ -39,6 +39,13 @@ class RequirementUpdate(BaseModel):
     confirmed: bool | None = None
 
 
+class RequirementSourceRange(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+
 class RequirementResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -47,6 +54,14 @@ class RequirementResponse(BaseModel):
     priority: int
     text: str
     confirmed: bool
+    source_range: RequirementSourceRange
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    explicitness: Literal["explicit", "implicit"]
+    confidence_band: Literal["high", "medium", "low"]
+    generation_mode: Literal["model", "rule_fallback"]
+    workflow_version: str
+    ai_run_id: str | None
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class JobResponse(BaseModel):
@@ -96,6 +111,14 @@ def _requirement(row) -> RequirementResponse:
         priority=row.priority,
         text=row.text_encrypted,
         confirmed=row.confirmed,
+        source_range={"start": row.source_start, "end": row.source_end},
+        source_hash=row.source_hash,
+        explicitness=row.explicitness,
+        confidence_band=row.confidence_band,
+        generation_mode=row.generation_mode,
+        workflow_version=row.workflow_version,
+        ai_run_id=row.ai_run_id,
+        input_hash=row.input_hash,
     )
 
 
