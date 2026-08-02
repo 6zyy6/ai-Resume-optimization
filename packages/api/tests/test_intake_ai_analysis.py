@@ -2403,6 +2403,74 @@ def test_english_help_particle_or_nested_without_is_not_trace_only(answer):
 
 
 @pytest.mark.parametrize(
+    "answer",
+    [
+        "在园区顺利完成任务",
+        "在园区顺畅完成任务",
+        "在园区高效完成任务",
+        "在园区快速完成任务",
+    ],
+)
+def test_unrecognized_location_manner_modifier_requires_review(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_support_action_explicit_bad_result_is_trace_only():
+    answer = "服务不好客户"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize("answer", ["服务不好的客户", "帮助不熟练的用户"])
+def test_support_action_negative_attributive_is_not_a_result_complement(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize("answer", ["实现并发展业务", "实现并发挥作用"])
+def test_weak_connector_before_extended_fa_action_requires_edit(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize("answer", ["I helped for no one", "I helped to no one"])
+def test_english_extended_help_particle_negative_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped without experience",
+        "I helped for users without experience",
+        "I helped to users without experience",
+    ],
+)
+def test_english_extended_help_particle_nested_without_is_not_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),

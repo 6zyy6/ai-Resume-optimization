@@ -159,9 +159,12 @@ CHINESE_ACTION_PREDICATE = (
     r"负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|帮助|指导|评审|协助|支持|培训|分析|服务|维护|"
     r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|牵头|执行|"
-    r"发起|发布|发现|做"
+    r"发起|发布|发现|发展|发挥|做"
 )
-CHINESE_COMPOUND_ACTION_PREDICATE = r"实现并发(?!起|布|现)|执行并行计算"
+CHINESE_COMPOUND_ACTION_PREDICATE = (
+    r"实现并发(?=$|任务|处理|计算|系统|模型|请求|能力|控制|程序|代码|场景|机制)|"
+    r"执行并行计算"
+)
 CHINESE_RESULT_ACTION_PREDICATE = (
     r"负责|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|分析|处理|调研|牵头|执行|做"
@@ -262,7 +265,8 @@ ENGLISH_TAIL_DENIAL = re.compile(
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
     rf"(?:(?:{CHINESE_RESULT_ACTION_PREDICATE})"
     r"(?:不了(?!解)|不(?:来|成|下|起|掉|到|动|完|好|住|牢|稳|准|清|透|够))|"
-    rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})不了(?!解))"
+    rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})"
+    r"(?:不了(?!解)|不好(?!的)))"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2088,7 +2092,7 @@ def _main_assertion_kind(value: str) -> str:
         positive = re.match(
             r"^(?:i|we)\s+(?:(?:successfully|independently|personally)\s+)*"
             r"(?:lead|led|complete(?:d)?|own(?:ed)?|handle(?:d)?|deliver(?:ed)?|"
-            r"help(?:ed)?\s+(?:with|on|in)|participate(?:d)?\s+in|"
+            r"help(?:ed)?\s+(?:with|on|in|for|to)|participate(?:d)?\s+in|"
             r"contribute(?:d)?\s+to|work(?:ed)?\s+on|support(?:ed)?|"
             r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?|"
             r"participate(?:d)?|contribute(?:d)?)\b",
@@ -2247,7 +2251,10 @@ def _is_chinese_adverbial_owner(owner: str) -> bool:
             r"(?:小时|天|周|月|个月|季度|年)",
             owner,
         )
-        or re.fullmatch(r"(?:高|低)?质量|按时|提前", owner)
+        or re.fullmatch(
+            r"(?:高|低)?质量|按时|提前|顺利|顺畅|高效|快速|及时|平稳|稳妥",
+            owner,
+        )
         or re.fullmatch(r"(?:同时)?(?:序列|批量|并行)", owner)
         or re.fullmatch(r"[\u4e00-\u9fff]{1,8}(?:省|市|县|区)", owner)
         or re.fullmatch(
@@ -2270,10 +2277,23 @@ def _unresolved_location_has_other_owner(owner: str) -> bool:
         r"(?P<subject>[\u4e00-\u9fff]{2,4})$",
         owner,
     )
+    if subject is None:
+        return False
+    subject_value = subject.group("subject")
+    if _is_chinese_self_owner(subject_value) or _is_chinese_adverbial_owner(
+        subject_value
+    ):
+        return False
     return bool(
-        subject is not None
-        and not _is_chinese_self_owner(subject.group("subject"))
-        and not _is_chinese_adverbial_owner(subject.group("subject"))
+        re.fullmatch(
+            r"(?:欧阳|司马|上官|诸葛|夏侯|皇甫|尉迟|公孙|慕容|令狐|宇文|"
+            r"[赵钱孙李周吴郑王冯陈蒋沈韩杨朱秦许何吕施张孔曹严华金魏陶姜"
+            r"谢邹苏潘范彭鲁韦马方任袁柳唐薛雷贺罗郝安常于傅康余顾孟黄萧"
+            r"尹姚邵汪毛戴宋熊纪舒项董梁杜阮蓝贾江郭梅林钟徐邱高夏蔡田胡"
+            r"霍万卢莫房丁邓洪包左石崔吉龚程陆翁段巫焦侯龙叶白廖曾关])"
+            r"[\u4e00-\u9fff]{1,2}",
+            subject_value,
+        )
     )
 
 
