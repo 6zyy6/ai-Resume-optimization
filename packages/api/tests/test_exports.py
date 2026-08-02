@@ -13,6 +13,7 @@ from app.modules.exports.templates import (
     render_resume_pdf,
     sanitize_download_name,
 )
+from app.modules.exports.service import ExportServiceError
 from reportlab.pdfbase.ttfonts import TTFont
 
 
@@ -171,6 +172,93 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
     assert any(
         value.content.startswith(b"%PDF-") for value in storage.objects.values()
     )
+
+
+@pytest.mark.parametrize(
+    ("claim", "evidence", "suffix"),
+    [
+        ("负责用户调研", "参与用户调研", "zh-owner"),
+        ("推动用户调研", "参与用户调研", "zh-drive"),
+        ("managed customer research", "supported customer research", "en-manage"),
+    ],
+)
+def test_export_service_blocks_written_responsibility_inflation(
+    pipeline_client,
+    claim,
+    evidence,
+    suffix,
+):
+    client, _, _ = pipeline_client
+    fact = client.post(
+        "/v1/facts",
+        json={
+            "kind": "responsibility",
+            "value": evidence,
+            "status": "confirmed",
+            "sources": [
+                {"source_type": "user_confirmation", "content": evidence}
+            ],
+        },
+        headers={"Idempotency-Key": f"responsibility-fact-{suffix}"},
+    )
+    resume = client.post(
+        "/v1/resumes",
+        json={"kind": "base", "title": "职责强度简历"},
+        headers={"Idempotency-Key": f"responsibility-resume-{suffix}"},
+    )
+    version = client.post(
+        f"/v1/resumes/{resume.json()['id']}/versions",
+        json={
+            "base_version": 0,
+            "snapshot": {
+                "schema_version": "1",
+                "title": "职责强度简历",
+                "target": None,
+                "sections": [
+                    {
+                        "id": "experience",
+                        "type": "experience",
+                        "title": "项目经历",
+                        "items": [
+                            {
+                                "id": "bullet_research",
+                                "text": claim,
+                                "fact_refs": [fact.json()["id"]],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "claim_evidence": [
+                {
+                    "bullet_id": "bullet_research",
+                    "start": 0,
+                    "end": len(claim),
+                    "fact_refs": [fact.json()["id"]],
+                }
+            ],
+        },
+        headers={"Idempotency-Key": f"responsibility-version-{suffix}"},
+    )
+    assert version.status_code == 201
+    created = client.post(
+        "/v1/exports",
+        json={
+            "resume_version_id": version.json()["id"],
+            "template_version": "clear-standard",
+        },
+        headers={"Idempotency-Key": f"responsibility-export-{suffix}"},
+    )
+
+    with pytest.raises(ExportServiceError) as captured:
+        asyncio.run(
+            client.app.state.export_service.process_export(
+                "usr_a",
+                created.json()["id"],
+            )
+        )
+
+    assert captured.value.code == "EXPORT_BLOCKED_BY_FACTS"
 
 
 def _create_exportable_version(client):

@@ -41,7 +41,7 @@ from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.service import IntakeService
 from app.integrations.storage import MemoryStorage
-from app.workers.execution import resolve_operation
+from app.workers.execution import TaskExecutor, resolve_operation
 from app.workers.pipeline import configure_pipeline_operations
 
 
@@ -139,6 +139,15 @@ class CancellingDraftReceiptClient(DraftReceiptClient):
         assert await cancellation.is_cancel_requested() is True
         await cancellation.acknowledge_cancel(ai_run_id)
         return await super().run(input)
+
+
+class RaisingDraftClient:
+    def __init__(self):
+        self.calls = 0
+
+    async def run(self, input, cancellation=None):
+        self.calls += 1
+        raise ValueError("invalid draft response")
 
 
 def _run(awaitable):
@@ -676,6 +685,7 @@ def test_public_cancel_restores_unclaimed_draft_and_allows_explicit_fallback(
     assert _run(_usage_for_task(sessions, task_id)).state == "released"
     assert _run(_model_count(sessions, Resume)) == 0
     assert _run(_model_count(sessions, ResumeVersion)) == 0
+    assert "draft_snapshot" not in _run(_outbox_payload(sessions, task_id))
 
     fallback = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
@@ -721,7 +731,7 @@ def test_direct_cancel_restores_only_unclaimed_intake_draft(intake_client):
     assert _run(_model_count(sessions, ResumeVersion)) == 0
 
 
-def test_running_draft_cancel_waits_for_worker_receipt_before_restoring_intake(
+def test_running_unstarted_draft_cancel_restores_intake_and_releases_reservation(
     intake_client,
 ):
     client, sessions, application, _ = intake_client
@@ -749,7 +759,8 @@ def test_running_draft_cancel_waits_for_worker_receipt_before_restoring_intake(
 
     _run(application.state.task_service.request_cancel("usr_a", task_id))
 
-    assert _run(_intake_draft_state(sessions, session_id)) == ("drafting", 1)
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "released"
 
 
 def test_draft_snapshot_keeps_same_title_experiences_in_distinct_groups(
@@ -914,6 +925,85 @@ def test_model_draft_persists_only_supported_claims_with_ai_provenance(
     assert _run(_model_count(sessions, AiRun)) == 1
     assert _run(_only_ai_run(sessions)).result_ref == resume_id
     assert _run(_model_count(sessions, BulletFactLink)) == 1
+    terminal_payload = _run(_outbox_payload(sessions, task_id))
+    assert "draft_snapshot" not in terminal_payload
+    assert terminal_payload["generation_mode"] == "model"
+    assert terminal_payload["draft_input_hash"] == version.input_hash
+
+
+def test_model_draft_omits_responsibility_inflation_and_records_reason(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "responsibility-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["参与用户调研", "完成产品原型"],
+        )
+    )
+    ai_client = DraftReceiptClient(
+        sections=[
+            {
+                "type": "experience",
+                "title": "课程项目",
+                "bullets": [
+                    {
+                        "text": "负责用户调研；完成产品原型",
+                        "atomic_claims": [
+                            {
+                                "text": "负责用户调研",
+                                "fact_refs": ["fact_draft_0"],
+                                "claim_order": 0,
+                            },
+                            {
+                                "text": "完成产品原型",
+                                "fact_refs": ["fact_draft_1"],
+                                "claim_order": 1,
+                            },
+                        ],
+                        "risk_flags": [],
+                    }
+                ],
+            }
+        ]
+    )
+    application.state.intake_service = IntakeService(sessions, ai_client)
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "职责强度草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("responsibility-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    resume_id = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    version = _run(_resume_version(sessions, resume_id))
+    assert [
+        item["text"]
+        for section in version.snapshot_json["sections"]
+        for item in section["items"]
+    ] == ["完成产品原型"]
+    assert any(
+        "CLAIM_RESPONSIBILITY_STRENGTH_UNSUPPORTED"
+        in (payload or {}).get("risk_flags", [])
+        for payload in _run(_trace_payloads(sessions, version.ai_run_id))
+    )
 
 
 def test_failed_model_creates_no_resume_then_allows_explicit_literal_fallback(
@@ -952,6 +1042,10 @@ def test_failed_model_creates_no_resume_then_allows_explicit_literal_fallback(
 
     assert _run(_model_count(sessions, Resume)) == 0
     assert _run(_model_count(sessions, ResumeVersion)) == 0
+    failed_payload = _run(_outbox_payload(sessions, task_id))
+    assert "draft_snapshot" not in failed_payload
+    assert failed_payload["generation_mode"] == "model"
+    assert len(failed_payload["draft_input_hash"]) == 64
     restored = client.get(f"/v1/intake-sessions/{session_id}").json()
     assert restored["status"] == "active"
     fallback = client.post(
@@ -1037,6 +1131,129 @@ def test_cancelled_draft_receipt_persists_audit_and_recovers_intake(
     assert _run(_trace_sequences(sessions, ai_run.id)) == [1, 2]
     assert _run(_model_count(sessions, Resume)) == 0
     assert _run(_model_count(sessions, ResumeVersion)) == 0
+    assert "draft_snapshot" not in _run(_outbox_payload(sessions, task_id))
+
+
+def test_cancel_before_draft_operation_prevents_ai_and_allows_fallback(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "executor-cancel-race-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "竞态取消草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("executor-cancel-race-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    ai_client = DraftReceiptClient()
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+
+    async def race():
+        service = application.state.task_service
+        original_claim = service.claim_task
+        claimed = asyncio.Event()
+        continue_to_operation = asyncio.Event()
+
+        async def claim_then_pause(*args, **kwargs):
+            claim = await original_claim(*args, **kwargs)
+            claimed.set()
+            await continue_to_operation.wait()
+            return claim
+
+        service.claim_task = claim_then_pause
+        try:
+            execution = asyncio.create_task(
+                TaskExecutor(service).execute("usr_a", task_id, resolve_operation)
+            )
+            await claimed.wait()
+            await service.request_cancel("usr_a", task_id)
+            continue_to_operation.set()
+            return await execution
+        finally:
+            service.claim_task = original_claim
+
+    result = _run(race())
+
+    assert result["status"] == "cancelled"
+    assert ai_client.requests == []
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "released"
+    assert "draft_snapshot" not in _run(_outbox_payload(sessions, task_id))
+    fallback = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 2,
+            "title": "竞态后的事实草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("fallback-after-executor-cancel"),
+    )
+    assert fallback.status_code == 202
+
+
+def test_draft_terminal_failure_handler_clears_private_snapshot(intake_client):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "terminal-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "终态失败草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("terminal-failure-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    ai_client = RaisingDraftClient()
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+
+    result = _run(
+        TaskExecutor(application.state.task_service).execute(
+            "usr_a",
+            task_id,
+            resolve_operation,
+        )
+    )
+
+    assert result["status"] == "failed"
+    assert ai_client.calls == 1
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    payload = _run(_outbox_payload(sessions, task_id))
+    assert "draft_snapshot" not in payload
+    assert payload["generation_mode"] == "model"
+    assert len(payload["draft_input_hash"]) == 64
 
 
 def test_model_draft_persists_supported_non_literal_rewrite_with_exact_link(

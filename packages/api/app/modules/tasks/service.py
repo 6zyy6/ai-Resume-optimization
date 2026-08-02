@@ -477,13 +477,18 @@ class TaskService:
             task.ai_cancel_requested_at = (
                 task.ai_cancel_requested_at or self.clock.now()
             )
-            if task.status == "queued" and task.claim_token is None:
+            unstarted_draft = self._is_unstarted_intake_draft(task)
+            if (task.status == "queued" and task.claim_token is None) or unstarted_draft:
                 await self._release_unused_ai_reservation_in_session(
                     session,
                     task,
                 )
                 await self._restore_cancelled_intake_draft(session, task)
             await self._finish(session, task, "cancelled")
+            if unstarted_draft:
+                task.claim_token = None
+                task.claim_lease_expires_at = None
+                await session.flush()
             return task
 
     async def request_cancel_idempotent(
@@ -536,13 +541,18 @@ class TaskService:
                 task.ai_cancel_requested_at = (
                     task.ai_cancel_requested_at or self.clock.now()
                 )
-                if task.status == "queued" and task.claim_token is None:
+                unstarted_draft = self._is_unstarted_intake_draft(task)
+                if (task.status == "queued" and task.claim_token is None) or unstarted_draft:
                     await self._release_unused_ai_reservation_in_session(
                         session,
                         task,
                     )
                     await self._restore_cancelled_intake_draft(session, task)
                 await self._finish(session, task, "cancelled")
+                if unstarted_draft:
+                    task.claim_token = None
+                    task.claim_lease_expires_at = None
+                    await session.flush()
             response = self._task_payload(task)
             await self.idempotency.complete(session, claim, 200, response)
             return task
@@ -574,6 +584,36 @@ class TaskService:
         intake.status = "active"
         intake.version += 1
         intake.updated_at = self.clock.now()
+        await session.flush()
+
+    @staticmethod
+    def _is_unstarted_intake_draft(task: Task) -> bool:
+        if task.type != "generate_intake_draft" or task.active_ai_run_id is not None:
+            return False
+        return (task.status == "queued" and task.claim_token is None) or (
+            task.status == "running" and task.stage == "running"
+        )
+
+    async def clear_terminal_payload_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+    ) -> None:
+        if task.type != "generate_intake_draft":
+            return
+        outbox = await session.scalar(
+            select(Outbox)
+            .where(
+                Outbox.task_id == task.id,
+                Outbox.owner_user_id == task.owner_user_id,
+            )
+            .with_for_update()
+        )
+        if outbox is None or "draft_snapshot" not in outbox.payload:
+            return
+        payload = dict(outbox.payload)
+        payload.pop("draft_snapshot", None)
+        outbox.payload = payload
         await session.flush()
 
     async def register_ai_run(
@@ -1219,6 +1259,7 @@ class TaskService:
         progress: int | None = None,
     ) -> None:
         require_transition(task.status, status)
+        previous_stage = task.stage
         now = self.clock.now()
         task.status = status
         task.stage = status
@@ -1230,6 +1271,8 @@ class TaskService:
             task.claim_lease_expires_at = None
         if progress is not None:
             task.progress = progress
+        if status != "cancelled" or previous_stage != "draft_processing":
+            await self.clear_terminal_payload_in_session(session, task)
         await session.flush()
         await self._append_event(session, task, status, task.progress, now)
         await session.flush()

@@ -17,7 +17,11 @@ from app.modules.exports.templates import (
 )
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.resumes.evidence_projection import load_version_evidence
-from app.modules.resumes.quality import high_risk_terms, supports_high_risk_entities
+from app.modules.resumes.quality import (
+    high_risk_terms,
+    responsibility_claim_supported,
+    supports_high_risk_entities,
+)
 from app.modules.tasks.service import TaskAdmission, TaskService
 
 
@@ -366,6 +370,11 @@ class ExportService:
                 evidence = " ".join(
                     fact.value_encrypted for fact in claim.facts
                 )
+                if not responsibility_claim_supported(
+                    claim_text,
+                    (fact.value_encrypted for fact in claim.facts),
+                ):
+                    self._blocked()
                 claim_terms = high_risk_terms(claim_text)
                 exact_fact_match = any(
                     claim_text.strip().casefold()

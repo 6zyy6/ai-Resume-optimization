@@ -254,6 +254,41 @@ def test_number_bearing_claim_still_requires_textual_evidence():
 @pytest.mark.parametrize(
     ("claim", "evidence"),
     [
+        ("负责用户调研", "参与用户调研"),
+        ("推动用户调研", "参与用户调研"),
+        ("managed customer research", "supported customer research"),
+    ],
+)
+def test_quality_rejects_responsibility_strength_inflation(claim, evidence):
+    facts = [
+        SimpleNamespace(
+            id="fact_research",
+            status="confirmed",
+            value_encrypted=evidence,
+        )
+    ]
+    snapshot = {
+        "sections": [
+            {
+                "items": [
+                    {
+                        "id": "bullet_research",
+                        "text": claim,
+                        "fact_refs": ["fact_research"],
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert [issue.code for issue in check_exportable(snapshot, facts)] == [
+        "BULLET_RESPONSIBILITY_STRENGTH_UNSUPPORTED"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
         ("Increased revenue with 20%", "Resolved tickets with 20%"),
         ("Increased revenue and retention", "Resolved tickets and incidents"),
         ("Increased the conversion rate", "Reduced the response time"),

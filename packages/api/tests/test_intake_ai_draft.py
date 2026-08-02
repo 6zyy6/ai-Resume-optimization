@@ -12,6 +12,7 @@ from app.modules.resumes.fact_policy import (
     DraftClaim,
     fact_policy_check,
 )
+from app.modules.resumes import quality as resume_quality
 
 
 def test_resume_version_model_declares_generation_provenance_and_owner_fk():
@@ -148,6 +149,87 @@ def test_fact_policy_accepts_exact_sourced_claim_and_returns_range():
         (text, 0, len(text))
     ]
     assert result.issues == ()
+
+
+@pytest.mark.parametrize(
+    ("claim", "fact"),
+    [
+        ("负责用户调研", "参与用户调研"),
+        ("推动用户调研", "参与用户调研"),
+        ("managed customer research", "supported customer research"),
+    ],
+)
+def test_fact_policy_rejects_responsibility_strength_inflation(claim, fact):
+    result = fact_policy_check(
+        claim,
+        [DraftClaim(text=claim, fact_refs=("fact_research",), claim_order=0)],
+        [
+            ConfirmedFactProjection(
+                id="fact_research",
+                value=fact,
+                status="confirmed",
+                source_hashes=("source_hash",),
+            )
+        ],
+    )
+
+    assert result.supported_claims == ()
+    assert [issue.code for issue in result.issues] == [
+        "CLAIM_RESPONSIBILITY_STRENGTH_UNSUPPORTED"
+    ]
+
+
+def test_fact_policy_allows_responsibility_strength_downgrade():
+    result = fact_policy_check(
+        "用户调研",
+        [DraftClaim(text="用户调研", fact_refs=("fact_research",), claim_order=0)],
+        [
+            ConfirmedFactProjection(
+                id="fact_research",
+                value="负责用户调研",
+                status="confirmed",
+                source_hashes=("source_hash",),
+            )
+        ],
+    )
+
+    assert [claim.text for claim in result.supported_claims] == ["用户调研"]
+    assert result.issues == ()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("参与用户调研", 1),
+        ("推动用户调研", 2),
+        ("负责用户调研", 2),
+        ("supported customer research", 1),
+        ("managed customer research", 2),
+        ("用户调研", 0),
+    ],
+)
+def test_responsibility_strength_has_explicit_chinese_and_english_levels(
+    text,
+    expected,
+):
+    assert resume_quality.responsibility_strength(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("claim", "evidence", "expected"),
+    [
+        ("负责用户调研", "参与用户调研", False),
+        ("managed customer research", "supported customer research", False),
+        ("用户调研", "负责用户调研", True),
+        ("负责用户调研", "负责市场分析", True),
+    ],
+)
+def test_responsibility_helper_checks_strength_only_for_equivalent_subjects(
+    claim,
+    evidence,
+    expected,
+):
+    assert resume_quality.responsibility_claim_supported(claim, [evidence]) is expected
 
 
 @pytest.mark.parametrize(

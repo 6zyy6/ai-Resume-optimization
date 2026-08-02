@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-from app.modules.resumes.quality import high_risk_terms, supports_high_risk_entities
+from app.modules.resumes.quality import (
+    high_risk_terms,
+    responsibility_claim_supported,
+    supports_high_risk_entities,
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,18 @@ def fact_policy_check(
             continue
 
         evidence = " ".join(fact.value for fact in evidence_facts)
+        if not responsibility_claim_supported(
+            claim.text,
+            (fact.value for fact in evidence_facts),
+        ):
+            issues.append(
+                FactPolicyIssue(
+                    "CLAIM_RESPONSIBILITY_STRENGTH_UNSUPPORTED",
+                    claim.claim_order,
+                    "Atomic claim has stronger responsibility than its fact evidence",
+                )
+            )
+            continue
         claim_terms = high_risk_terms(claim.text)
         exact_match = any(
             claim.text.strip().casefold() == fact.value.strip().casefold()

@@ -1659,6 +1659,8 @@ class IntakeService:
                     row.resume_id,
                 )
                 return row.resume_id
+            task.stage = "draft_processing"
+            await session.flush()
             generation_mode, input_hash, payload = await self._draft_input(
                 session,
                 task,
@@ -2091,6 +2093,7 @@ class IntakeService:
         row.version += 1
         row.updated_at = datetime.now(timezone.utc)
         if task.status == "cancelled":
+            await task_service.clear_terminal_payload_in_session(session, task)
             await session.flush()
             return
         await task_service.fail_task_in_session(

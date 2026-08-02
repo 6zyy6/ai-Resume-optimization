@@ -51,6 +51,29 @@ _CHINESE_STOPWORDS = {
     "降低",
 }
 
+_RESPONSIBILITY_LEVELS = (
+    (
+        2,
+        (
+            r"\b(?:drove|led|managed|owned|oversaw)\b",
+            r"\b(?:was\s+)?responsible\s+for\b",
+            r"主导|牵头|推动|管理|负责",
+        ),
+    ),
+    (
+        1,
+        (
+            r"\b(?:assisted|contributed|helped|participated|supported)\b",
+            r"协助|参与|支持",
+        ),
+    ),
+)
+_RESPONSIBILITY_MARKERS = tuple(
+    pattern
+    for _, patterns in _RESPONSIBILITY_LEVELS
+    for pattern in patterns
+)
+
 
 @dataclass(frozen=True)
 class QualityIssue:
@@ -90,6 +113,14 @@ def check_exportable(snapshot: dict[str, Any], facts: Iterable[Any]) -> list[Qua
                 evidence_numbers = _numbers(evidence)
                 if claim_numbers - evidence_numbers:
                     issues.append(QualityIssue("BULLET_NEW_NUMBER", f"{path}.claims.{index}", "Bullet introduces an unsupported number"))
+                elif not responsibility_claim_supported(claim[0], [evidence]):
+                    issues.append(
+                        QualityIssue(
+                            "BULLET_RESPONSIBILITY_STRENGTH_UNSUPPORTED",
+                            f"{path}.claims.{index}",
+                            "Bullet claims stronger responsibility than its fact evidence",
+                        )
+                    )
                 elif not supports_high_risk_entities(claim[0], evidence) or (
                     not _numbers(claim[0])
                     and not _high_risk_terms(claim[0]) <= _high_risk_terms(evidence)
@@ -145,6 +176,53 @@ def supports_high_risk_entities(claim: str, evidence: str) -> bool:
 
 def high_risk_terms(text: str) -> set[str]:
     return _high_risk_terms(text)
+
+
+def responsibility_strength(text: str) -> int:
+    normalized = text.casefold()
+    return max(
+        (
+            level
+            for level, patterns in _RESPONSIBILITY_LEVELS
+            if any(re.search(pattern, normalized) for pattern in patterns)
+        ),
+        default=0,
+    )
+
+
+def responsibility_equivalent(left: str, right: str) -> bool:
+    left_terms = _high_risk_terms(_without_responsibility_markers(left))
+    right_terms = _high_risk_terms(_without_responsibility_markers(right))
+    return bool(
+        left_terms
+        and right_terms
+        and (left_terms <= right_terms or right_terms <= left_terms)
+    )
+
+
+def responsibility_claim_supported(
+    claim: str,
+    evidence_values: Iterable[str],
+) -> bool:
+    claim_strength = responsibility_strength(claim)
+    if claim_strength == 0:
+        return True
+    equivalent = [
+        evidence
+        for evidence in evidence_values
+        if responsibility_equivalent(claim, evidence)
+    ]
+    return not equivalent or any(
+        responsibility_strength(evidence) >= claim_strength
+        for evidence in equivalent
+    )
+
+
+def _without_responsibility_markers(text: str) -> str:
+    normalized = text.casefold()
+    for marker in _RESPONSIBILITY_MARKERS:
+        normalized = re.sub(marker, " ", normalized)
+    return " ".join(normalized.split())
 
 
 _NUMBER_TOKEN = r"(?<![\d.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?(?![\d.,])"
