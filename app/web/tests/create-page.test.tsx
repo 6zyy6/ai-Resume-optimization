@@ -301,14 +301,30 @@ describe("V2 persisted intake", () => {
       ],
       version: 2,
     };
+    let draftPosts = 0;
+    let taskReads = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/v1/me")) return jsonResponse(me);
       if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(readySession, 201);
       if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        draftPosts += 1;
         return jsonResponse({ session_id: "intake_unique", status: "queued", task_id: "task_draft_uncertain", version: 3 }, 202);
       }
-      if (path.endsWith("/v1/tasks/task_draft_uncertain")) throw new TypeError("temporary network failure");
+      if (path.endsWith("/v1/tasks/task_draft_uncertain")) {
+        taskReads += 1;
+        if (taskReads === 1) throw new TypeError("temporary network failure");
+        return jsonResponse({ error_code: null, id: "task_draft_uncertain", status: "succeeded" });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        return jsonResponse({
+          ...readySession,
+          resume_id: "resume_after_task_retry",
+          status: "completed",
+          task_id: "task_draft_uncertain",
+          version: 4,
+        });
+      }
       return jsonResponse({}, 404);
     }));
 
@@ -317,6 +333,13 @@ describe("V2 persisted intake", () => {
 
     expect(await screen.findByText(/网络请求没有完成/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成基础简历" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新检查草稿状态" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/resumes/resume_after_task_retry/edit"));
+    expect(taskReads).toBe(2);
+    expect(draftPosts).toBe(1);
   });
 
   it("does not offer a fallback when the draft task succeeded but session reload failed", async () => {
@@ -330,6 +353,7 @@ describe("V2 persisted intake", () => {
       ],
       version: 2,
     };
+    let sessionReads = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/v1/me")) return jsonResponse(me);
@@ -341,7 +365,15 @@ describe("V2 persisted intake", () => {
         return jsonResponse({ error_code: null, id: "task_draft_success", status: "succeeded" });
       }
       if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
-        throw new TypeError("session reload failed");
+        sessionReads += 1;
+        if (sessionReads === 1) throw new TypeError("session reload failed");
+        return jsonResponse({
+          ...readySession,
+          resume_id: "resume_after_session_retry",
+          status: "completed",
+          task_id: "task_draft_success",
+          version: 4,
+        });
       }
       return jsonResponse({}, 404);
     }));
@@ -351,6 +383,153 @@ describe("V2 persisted intake", () => {
 
     expect(await screen.findByText(/网络请求没有完成/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "生成基础简历" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新检查草稿状态" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/resumes/resume_after_session_retry/edit"));
+    expect(sessionReads).toBe(2);
+  });
+
+  it("allows a new draft with the latest version and a new key after cancellation is confirmed", async () => {
+    const readySession = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      version: 2,
+    };
+    const draftBodies: Array<{ base_version: number }> = [];
+    const draftKeys: string[] = [];
+    let sessionReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(readySession, 201);
+      if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        draftBodies.push(JSON.parse(String(init.body)));
+        draftKeys.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+        const retry = draftBodies.length === 2;
+        return jsonResponse({
+          session_id: "intake_unique",
+          status: "queued",
+          task_id: retry ? "task_after_cancel" : "task_cancelled",
+          version: retry ? 5 : 3,
+        }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_cancelled")) {
+        return jsonResponse({ error_code: "CANCELLED", id: "task_cancelled", status: "cancelled" });
+      }
+      if (path.endsWith("/v1/tasks/task_after_cancel")) {
+        return jsonResponse({ error_code: "MODEL_FAILED", id: "task_after_cancel", status: "failed" });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        sessionReads += 1;
+        return jsonResponse({
+          ...readySession,
+          status: "active",
+          task_id: sessionReads === 1 ? "task_cancelled" : "task_after_cancel",
+          version: sessionReads === 1 ? 4 : 6,
+        });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成基础简历" }));
+
+    expect(await screen.findByText(/任务已取消/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新检查草稿状态" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "生成基础简历" }));
+
+    await waitFor(() => expect(draftBodies).toHaveLength(2));
+    expect(draftBodies[1]).toMatchObject({ base_version: 4 });
+    expect(draftKeys[0]).not.toBe("");
+    expect(draftKeys[1]).not.toBe(draftKeys[0]);
+  });
+
+  it("allows normal generation after a rule fallback has terminally failed", async () => {
+    const readySession = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      version: 2,
+    };
+    const draftBodies: Array<{ base_version: number; generation_mode: string }> = [];
+    const draftKeys: string[] = [];
+    let sessionReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(readySession, 201);
+      if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        draftBodies.push(JSON.parse(String(init.body)));
+        draftKeys.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+        return jsonResponse({
+          session_id: "intake_unique",
+          status: "queued",
+          task_id: `task_terminal_failure_${draftBodies.length}`,
+          version: draftBodies.length * 2 + 1,
+        }, 202);
+      }
+      if (path.includes("/v1/tasks/task_terminal_failure_")) {
+        return jsonResponse({ error_code: "MODEL_FAILED", id: path.split("/").at(-1), status: "failed" });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        sessionReads += 1;
+        return jsonResponse({
+          ...readySession,
+          status: "active",
+          task_id: `task_terminal_failure_${sessionReads}`,
+          version: sessionReads * 2 + 2,
+        });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成基础简历" }));
+    fireEvent.click(await screen.findByRole("button", { name: "使用事实原文创建基础草稿" }));
+
+    expect(await screen.findByText(/任务没有完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "重新检查草稿状态" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "生成基础简历" }));
+
+    await waitFor(() => expect(draftBodies).toHaveLength(3));
+    expect(draftBodies[2]).toMatchObject({ base_version: 6, generation_mode: "model" });
+    expect(new Set(draftKeys).size).toBe(3);
+  });
+
+  it("opens a completed draft restored from the session URL", async () => {
+    window.history.replaceState({}, "", "/create?session=intake_unique");
+    const completed = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      resume_id: "resume_completed_refresh",
+      status: "completed",
+      task_id: "task_completed_refresh",
+      version: 4,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions/intake_unique")) return jsonResponse(completed);
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/resumes/resume_completed_refresh/edit"));
   });
 
   it("recovers fallback availability from an active session with a persisted failed draft task", async () => {

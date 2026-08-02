@@ -173,3 +173,54 @@ PASS
 ```
 
 The build retained only the existing non-fatal `baseline-browser-mapping` age warning. User-owned `AGENTS.md` and both root Chinese documents remain excluded.
+
+## Review fix round 2
+
+Reviewer result: `0 Critical / 1 Important`. The remaining draft-continuity gap was reproduced before implementation.
+
+### RED evidence
+
+```text
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx
+13 tests: 10 passed, 3 failed
+```
+
+The failures proved that a Task transport error or a successful Task followed by an IntakeSession read error left draft generation enabled without a same-page recovery action, and that a completed session restored from the URL did not open its resume.
+
+A final terminal-state review added two more tests before the state model changed:
+
+```text
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx
+15 tests: 13 passed, 2 failed
+```
+
+Those failures proved that a confirmed cancelled Task and a terminally failed rule fallback were incorrectly classified as transport uncertainty, permanently disabling normal generation.
+
+### Fix rationale
+
+- Draft uncertainty now exposes only `重新检查草稿状态`, which replays the existing Task read and then reloads the same IntakeSession. It never creates a second draft or exposes fallback while the terminal state is unknown.
+- Transport uncertainty is explicit component state rather than inferred from `active`/`drafting` plus `task_id`. A confirmed cancellation or non-model terminal failure clears uncertainty, keeps the error visible, and allows a new model generation from the server's incremented version.
+- The draft POST is disabled in the UI and guarded in the handler while a persisted draft Task remains uncertain. A terminal retry uses the latest `base_version` and a new idempotency key.
+- The recovery action retains whether the original model path was fallback-eligible, so retrying a failed rule fallback cannot expose a second fallback.
+- A restored `completed` IntakeSession with `resume_id` automatically opens the immutable resume version for editing. A ref prevents duplicate navigation when the same completion is observed through polling and session state.
+
+### GREEN evidence
+
+```text
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx
+15 passed
+
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx tests/v2-workflows.test.tsx tests/v2-real-pages.test.tsx
+45 passed
+
+pnpm --filter @resume/web test
+70 passed
+
+pnpm --filter @resume/web lint
+PASS
+
+pnpm --filter @resume/web build
+PASS
+```
+
+The build retained only the existing non-fatal `baseline-browser-mapping` age warning. No styles or generated contracts changed; user-owned `AGENTS.md` and both root Chinese documents remain excluded.

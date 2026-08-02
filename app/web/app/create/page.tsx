@@ -50,6 +50,9 @@ export default function CreatePage() {
   const [editingCandidateId, setEditingCandidateId] = useState("");
   const [candidateEdits, setCandidateEdits] = useState<Record<string, string>>({});
   const [draftFallbackAvailable, setDraftFallbackAvailable] = useState(false);
+  const [draftStatusUncertain, setDraftStatusUncertain] = useState(false);
+  const draftAllowsFallback = useRef(true);
+  const openedResume = useRef("");
   const resumedTask = useRef("");
   const resumedAnalysisTask = useRef("");
   const answerOperation = useRef({ fingerprint: "", key: "" });
@@ -59,8 +62,11 @@ export default function CreatePage() {
   const openCompletedDraft = async (current: IntakeSession, allowFallback = true) => {
     if (!current.task_id) return;
     const api = createWebApiClient();
+    draftAllowsFallback.current = allowFallback;
     setState("drafting");
+    setError("");
     setDraftFallbackAvailable(false);
+    setDraftStatusUncertain(false);
     try {
       await waitForTask(
         () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${current.task_id}`),
@@ -72,11 +78,15 @@ export default function CreatePage() {
           const latest = await api.get<IntakeSession>(`/v1/intake-sessions/${current.id}`);
           setSession(latest);
           setDraftFallbackAvailable(allowFallback && requestError.status === "failed");
+          setDraftStatusUncertain(false);
         } catch (reloadError) {
+          setDraftStatusUncertain(true);
           setError(messageFor(reloadError));
           setState("error");
           return;
         }
+      } else {
+        setDraftStatusUncertain(true);
       }
       setError(messageFor(requestError));
       setState("error");
@@ -86,8 +96,10 @@ export default function CreatePage() {
       const completed = await api.get<IntakeSession>(`/v1/intake-sessions/${current.id}`);
       setSession(completed);
       if (!completed.resume_id) throw new Error("Draft task completed without a resume");
+      openedResume.current = completed.resume_id;
       router.push(`/resumes/${completed.resume_id}/edit`);
     } catch (requestError) {
+      setDraftStatusUncertain(true);
       setError(messageFor(requestError));
       setState("error");
     }
@@ -97,6 +109,7 @@ export default function CreatePage() {
     setSession(current);
     setState(["queued", "running"].includes(current.analysis_status) ? "analyzing" : "ready");
     setError("");
+    setDraftStatusUncertain(false);
     window.history.replaceState({}, "", `/create?session=${encodeURIComponent(current.id)}`);
   };
 
@@ -158,6 +171,15 @@ export default function CreatePage() {
   }, []);
 
   useEffect(() => {
+    if (
+      session?.status === "completed"
+      && session.resume_id
+      && openedResume.current !== session.resume_id
+    ) {
+      openedResume.current = session.resume_id;
+      router.push(`/resumes/${session.resume_id}/edit`);
+      return;
+    }
     if (
       session
       && ["active", "drafting"].includes(session.status)
@@ -381,10 +403,11 @@ export default function CreatePage() {
   const createDraft = async (
     generationMode: components["schemas"]["IntakeDraftRequest"]["generation_mode"] = "model",
   ) => {
-    if (!session || state === "drafting") return;
+    if (!session || state === "drafting" || draftStatusUncertain) return;
     setState("drafting");
     setError("");
     setDraftFallbackAvailable(false);
+    setDraftStatusUncertain(false);
     try {
       const body: components["schemas"]["IntakeDraftRequest"] = {
         base_version: session.version,
@@ -436,7 +459,6 @@ export default function CreatePage() {
   const analysisFailed = session.analysis_status === "failed";
   const analysisPollingFailed = analyzing && state === "error";
   const draftFailed = draftFallbackAvailable;
-  const draftStatusUncertain = session.status === "drafting" && state === "error" && !draftFallbackAvailable;
   const busy = ["saving", "analyzing", "confirming", "drafting", "loading"].includes(state);
   const question = session.current_question;
   const reason = question?.reason ? reasonLabels[question.reason] : null;
@@ -480,7 +502,18 @@ export default function CreatePage() {
         </aside>
 
         <section className="editor-main">
-          {analysisPollingFailed ? (
+          {draftStatusUncertain ? (
+            <div role="alert">
+              <h2>草稿状态暂时无法确认</h2>
+              <p>{error}</p>
+              <Button
+                onClick={() => void openCompletedDraft(session, draftAllowsFallback.current)}
+                variant="secondary"
+              >
+                重新检查草稿状态
+              </Button>
+            </div>
+          ) : analysisPollingFailed ? (
             <div role="alert">
               <h2>整理状态暂时无法确认</h2>
               <p>{error}</p>
@@ -662,7 +695,7 @@ export default function CreatePage() {
             value={title}
           />
           <Button
-            disabled={busy || confirmedCount < 2 || !title.trim()}
+            disabled={busy || draftStatusUncertain || confirmedCount < 2 || !title.trim()}
             onClick={() => void createDraft()}
             state={state === "drafting" ? "loading" : "default"}
           >
@@ -679,7 +712,7 @@ export default function CreatePage() {
             </Button>
           ) : null}
           {confirmedCount < 2 ? <p>至少确认两条有来源的事实后才可生成。</p> : null}
-          {error && !question ? <p role="alert">{error}</p> : null}
+          {error && !question && !draftStatusUncertain ? <p role="alert">{error}</p> : null}
         </aside>
       </div>
     </Page>
