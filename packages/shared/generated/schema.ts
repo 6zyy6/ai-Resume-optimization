@@ -1333,6 +1333,11 @@ export interface components {
         IntakeDraftRequest: {
             /** Base Version */
             base_version: number;
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "model" | "rule_fallback";
             /** Title */
             title: string;
         };
@@ -1714,13 +1719,22 @@ export interface components {
         };
         /** ResumeVersionResponse */
         ResumeVersionResponse: {
+            /** Ai Run Id */
+            ai_run_id: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "manual" | "model" | "rule_fallback";
             /** Id */
             id: string;
+            /** Input Hash */
+            input_hash: string | null;
             /** Operation */
             operation: string;
             /** Parent Version Id */
@@ -1733,6 +1747,8 @@ export interface components {
             };
             /** Snapshot Hash */
             snapshot_hash: string;
+            /** Workflow Version */
+            workflow_version: string | null;
         };
         /** ResumeVersionsResponse */
         ResumeVersionsResponse: {

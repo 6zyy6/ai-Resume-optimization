@@ -153,6 +153,8 @@ def test_seeded_0001_upgrade_backfills_head_and_keeps_next_parent(
         "ck_resume_job_reference_paired",
     } <= resume_checks
 
+    command.upgrade(config, "head")
+
     async def save_next():
         async_engine = create_async_engine(
             f"sqlite+aiosqlite:///{database_path}"

@@ -78,6 +78,10 @@ class ResumeVersionResponse(BaseModel):
     parent_version_id: str | None
     snapshot: dict[str, Any]
     snapshot_hash: str
+    generation_mode: Literal["manual", "model", "rule_fallback"]
+    workflow_version: str | None
+    ai_run_id: str | None
+    input_hash: str | None
     operation: str
     created_at: datetime
 

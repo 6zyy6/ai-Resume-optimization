@@ -36,7 +36,7 @@ def _version(saved: SavedVersion) -> ResumeVersionResponse:
     if saved.response:
         return ResumeVersionResponse.model_validate(saved.response, strict=False)
     row = saved.row
-    return ResumeVersionResponse(id=row.id, resume_id=row.resume_id, parent_version_id=row.parent_version_id, snapshot=row.snapshot_json, snapshot_hash=row.snapshot_hash, operation=saved.operation, created_at=row.created_at)
+    return ResumeVersionResponse(id=row.id, resume_id=row.resume_id, parent_version_id=row.parent_version_id, snapshot=row.snapshot_json, snapshot_hash=row.snapshot_hash, generation_mode=row.generation_mode, workflow_version=row.workflow_version, ai_run_id=row.ai_run_id, input_hash=row.input_hash, operation=saved.operation, created_at=row.created_at)
 
 
 @router.get("", response_model=ResumeListResponse)

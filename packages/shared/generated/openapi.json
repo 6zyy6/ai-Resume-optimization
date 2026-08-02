@@ -918,6 +918,14 @@
             "title": "Base Version",
             "type": "integer"
           },
+          "generation_mode": {
+            "enum": [
+              "model",
+              "rule_fallback"
+            ],
+            "title": "Generation Mode",
+            "type": "string"
+          },
           "title": {
             "maxLength": 255,
             "minLength": 1,
@@ -927,7 +935,8 @@
         },
         "required": [
           "base_version",
-          "title"
+          "title",
+          "generation_mode"
         ],
         "title": "IntakeDraftRequest",
         "type": "object"
@@ -2075,14 +2084,45 @@
       "ResumeVersionResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Run Id"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
             "type": "string"
           },
+          "generation_mode": {
+            "enum": [
+              "manual",
+              "model",
+              "rule_fallback"
+            ],
+            "title": "Generation Mode",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "input_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Hash"
           },
           "operation": {
             "title": "Operation",
@@ -2111,6 +2151,17 @@
           "snapshot_hash": {
             "title": "Snapshot Hash",
             "type": "string"
+          },
+          "workflow_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Version"
           }
         },
         "required": [
@@ -2119,6 +2170,10 @@
           "parent_version_id",
           "snapshot",
           "snapshot_hash",
+          "generation_mode",
+          "workflow_version",
+          "ai_run_id",
+          "input_hash",
           "operation",
           "created_at"
         ],

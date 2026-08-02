@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.core.config import Settings
 from app.db.models import (
     Base,
+    AiRun,
+    AiTraceEvent,
     BulletFactLink,
     Fact,
     FactCandidate,
@@ -28,8 +31,95 @@ from app.db.models import (
     UserIdentity,
 )
 from app.main import create_app
+from app.integrations.ai_client import (
+    AiExecutionReceipt,
+    ComposeResumeDraftRequest,
+    derive_ai_run_id,
+)
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
+from app.modules.intake.service import IntakeService
+
+
+class DraftReceiptClient:
+    def __init__(self, sections=(), *, status="succeeded", error_code=None):
+        self.sections = sections
+        self.status = status
+        self.error_code = error_code
+        self.requests = []
+
+    async def run(self, input, cancellation=None):
+        assert isinstance(input, ComposeResumeDraftRequest)
+        self.requests.append(input)
+        ai_run_id = derive_ai_run_id(input.task_id, "draft", input.input_hash)
+        result = {"sections": self.sections} if self.status == "succeeded" else None
+        terminal = {
+            "succeeded": "run_succeeded",
+            "failed": "run_failed",
+            "cancelled": "run_cancelled",
+        }[self.status]
+        return AiExecutionReceipt.model_validate_json(
+            json.dumps(
+                {
+                    "run": {
+                        "ai_run_id": ai_run_id,
+                        "trace_id": input.trace_id,
+                        "task_id": input.task_id,
+                        "workflow_type": "compose_resume_draft",
+                        "workflow_version": "2",
+                        "prompt_template_version": "resume-draft@2",
+                        "status": self.status,
+                        "error_code": self.error_code,
+                        "provider": "test-faux",
+                        "requested_model": "faux-1",
+                        "response_model": "faux-1.1",
+                        "started_at": "2026-08-02T08:00:00Z",
+                        "first_token_at": "2026-08-02T08:00:01Z",
+                        "finished_at": "2026-08-02T08:00:02Z",
+                        "usage": {
+                            "input": 10,
+                            "output": 5,
+                            "cache_read": 0,
+                            "cache_write": 0,
+                            "reasoning": 0,
+                            "total_tokens": 15,
+                            "cost_usd": "0.001",
+                        },
+                        "events": [
+                            {
+                                "ai_run_id": ai_run_id,
+                                "trace_id": input.trace_id,
+                                "task_id": input.task_id,
+                                "event_seq": 1,
+                                "event_type": "agent_start",
+                                "occurred_at": "2026-08-02T08:00:00Z",
+                                "details": {"provider": "test-faux"},
+                            },
+                            {
+                                "ai_run_id": ai_run_id,
+                                "trace_id": input.trace_id,
+                                "task_id": input.task_id,
+                                "event_seq": 2,
+                                "event_type": terminal,
+                                "occurred_at": "2026-08-02T08:00:02Z",
+                                "details": {"error_code": self.error_code},
+                            },
+                        ],
+                        "turn_count": 1,
+                        "tool_call_count": 0,
+                        "retry_count": 0,
+                        "fallback_count": 0,
+                        "schema_valid": True,
+                        "facts_valid": self.status == "succeeded",
+                        "input_hash": input.input_hash,
+                        "exportable": self.status == "succeeded",
+                        "risk_flags": [],
+                    },
+                    "result": result,
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 def _run(awaitable):
@@ -430,7 +520,11 @@ def test_draft_worker_atomically_creates_resume_version_evidence_and_task_result
 
     queued = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 0, "title": "产品经理基础简历"},
+        json={
+            "base_version": 0,
+            "title": "产品经理基础简历",
+            "generation_mode": "rule_fallback",
+        },
         headers=_headers("draft-create"),
     )
 
@@ -454,6 +548,7 @@ def test_draft_worker_atomically_creates_resume_version_evidence_and_task_result
     assert _run(_model_count(sessions, Resume)) == 1
     assert _run(_model_count(sessions, ResumeVersion)) == 1
     assert _run(_model_count(sessions, BulletFactLink)) == 2
+    assert _run(_model_count(sessions, UsageLedger)) == 0
     assert _run(_resume_head(sessions, resume_id)) == (1, 1)
     assert _run(_task_result(sessions, task_id)) == ("succeeded", resume_id)
     restored = client.get(f"/v1/intake-sessions/{session_id}")
@@ -468,7 +563,11 @@ def test_draft_requires_two_confirmed_sourced_facts(intake_client):
     session_id = started.json()["id"]
     response = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 0, "title": "不应生成"},
+        json={
+            "base_version": 0,
+            "title": "不应生成",
+            "generation_mode": "model",
+        },
         headers=_headers("draft-rejected"),
     )
 
@@ -476,6 +575,401 @@ def test_draft_requires_two_confirmed_sourced_facts(intake_client):
     assert response.json()["error"]["code"] == "INTAKE_FACTS_NOT_READY"
     assert _run(_model_count(sessions, Task)) == 0
     assert _run(_model_count(sessions, Resume)) == 0
+
+
+def test_model_draft_queues_an_immutable_sourced_input_snapshot(intake_client):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "draft-snapshot-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "模型草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("draft-snapshot"),
+    )
+
+    assert queued.status_code == 202
+    payload = _run(_outbox_payload(sessions, queued.json()["task_id"]))
+    assert payload["generation_mode"] == "model"
+    assert len(payload["draft_input_hash"]) == 64
+    assert payload["draft_snapshot"]["workflow_type"] == "compose_resume_draft"
+    assert [
+        fact["value"]
+        for fact in payload["draft_snapshot"]["payload"]["confirmed_facts"]
+    ] == ["负责用户调研", "完成产品原型"]
+    assert all(
+        fact["source_hashes"]
+        for fact in payload["draft_snapshot"]["payload"]["confirmed_facts"]
+    )
+    assert _run(_model_count(sessions, UsageLedger)) == 1
+
+
+def test_draft_generation_mode_is_required(intake_client):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "draft-mode-start")
+
+    response = client.post(
+        f"/v1/intake-sessions/{started.json()['id']}/drafts",
+        json={"base_version": 0, "title": "缺少模式"},
+        headers=_headers("draft-mode-required"),
+    )
+
+    assert response.status_code == 422
+    assert _run(_model_count(sessions, Task)) == 0
+
+
+def test_model_draft_persists_only_supported_claims_with_ai_provenance(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "model-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    ai_client = DraftReceiptClient(
+        sections=[
+            {
+                "type": "experience",
+                "title": "课程项目",
+                "bullets": [
+                    {
+                        "text": "负责用户调研；获得国家级一等奖",
+                        "atomic_claims": [
+                            {
+                                "text": "负责用户调研",
+                                "fact_refs": ["fact_draft_0"],
+                                "claim_order": 0,
+                            },
+                            {
+                                "text": "获得国家级一等奖",
+                                "fact_refs": ["fact_draft_0"],
+                                "claim_order": 1,
+                            },
+                        ],
+                        "risk_flags": [],
+                    }
+                ],
+            }
+        ]
+    )
+    application.state.intake_service = IntakeService(sessions, ai_client)
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "模型草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    resume_id = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    version = _run(_resume_version(sessions, resume_id))
+    assert ai_client.requests[0].payload.confirmed_facts[0].source_hashes
+    assert version.snapshot_json["sections"][0]["items"] == [
+        {
+            "id": version.snapshot_json["sections"][0]["items"][0]["id"],
+            "text": "负责用户调研",
+            "fact_refs": ["fact_draft_0"],
+        }
+    ]
+    assert version.generation_mode == "model"
+    assert version.workflow_version == "2"
+    assert version.ai_run_id == derive_ai_run_id(
+        task_id,
+        "draft",
+        version.input_hash,
+    )
+    assert _run(_model_count(sessions, AiRun)) == 1
+    assert _run(_only_ai_run(sessions)).result_ref == resume_id
+    assert _run(_model_count(sessions, BulletFactLink)) == 1
+
+
+def test_failed_model_creates_no_resume_then_allows_explicit_literal_fallback(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "failed-draft-start")
+    session_id = started.json()["id"]
+    values = ["负责用户调研", "完成产品原型"]
+    _run(_seed_confirmed_intake_facts(sessions, session_id, values))
+    application.state.intake_service = IntakeService(
+        sessions,
+        DraftReceiptClient(status="failed", error_code="provider_unavailable"),
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "模型草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("failed-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+    restored = client.get(f"/v1/intake-sessions/{session_id}").json()
+    assert restored["status"] == "active"
+    fallback = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": restored["version"],
+            "title": "事实原文草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("explicit-fallback-draft"),
+    )
+    assert fallback.status_code == 202
+    fallback_task_id = fallback.json()["task_id"]
+    assert _run(_usage_for_task(sessions, fallback_task_id)) is None
+    claim = _run(
+        application.state.task_service.claim_task("usr_a", fallback_task_id)
+    )
+    resume_id = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=fallback_task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    version = _run(_resume_version(sessions, resume_id))
+    assert [
+        item["text"]
+        for section in version.snapshot_json["sections"]
+        for item in section["items"]
+    ] == values
+    assert version.generation_mode == "rule_fallback"
+    assert version.workflow_version == "2"
+    assert version.ai_run_id is None
+    assert version.input_hash is not None
+
+
+def test_model_draft_with_no_supported_claims_has_no_dangling_result_ref(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "unsupported-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    unsupported = "获得国家级一等奖"
+    application.state.intake_service = IntakeService(
+        sessions,
+        DraftReceiptClient(
+            sections=[
+                {
+                    "type": "experience",
+                    "title": "课程项目",
+                    "bullets": [
+                        {
+                            "text": unsupported,
+                            "atomic_claims": [
+                                {
+                                    "text": unsupported,
+                                    "fact_refs": ["fact_draft_0"],
+                                    "claim_order": 0,
+                                }
+                            ],
+                            "risk_flags": [],
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "不支持草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("unsupported-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    result_ref = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert result_ref == session_id
+    assert _run(_model_count(sessions, Resume)) == 0
+    ai_run = _run(_only_ai_run(sessions))
+    assert ai_run.result_ref == session_id
+    assert _run(_task_result(sessions, task_id))[0] == "failed"
+    trace_payloads = _run(_trace_payloads(sessions, ai_run.id))
+    assert any(
+        payload and payload.get("risk_flags") == ["CLAIM_FACT_MISMATCH"]
+        for payload in trace_payloads
+    )
+    assert unsupported not in json.dumps(trace_payloads, ensure_ascii=False)
+
+
+def test_draft_worker_rejects_fact_state_changed_after_queue(intake_client):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "changed-fact-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    ai_client = DraftReceiptClient(
+        sections=[
+            {
+                "type": "experience",
+                "title": "课程项目",
+                "bullets": [
+                    {
+                        "text": "负责用户调研",
+                        "atomic_claims": [
+                            {
+                                "text": "负责用户调研",
+                                "fact_refs": ["fact_draft_0"],
+                                "claim_order": 0,
+                            }
+                        ],
+                        "risk_flags": [],
+                    }
+                ],
+            }
+        ]
+    )
+    application.state.intake_service = IntakeService(
+        sessions,
+        ai_client,
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "事实变化草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("changed-fact-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    _run(_reject_fact(sessions, "fact_draft_1"))
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    result_ref = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+    assert result_ref == session_id
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+    assert _run(_model_count(sessions, AiRun)) == 1
+    assert _run(_only_ai_run(sessions)).result_ref == session_id
+    assert _run(_usage_for_task(sessions, task_id)).state == "consumed"
+    assert _run(_task_result(sessions, task_id))[0] == "failed"
+    assert len(ai_client.requests) == 1
+    assert client.get(f"/v1/intake-sessions/{session_id}").json()["status"] == "active"
+
+
+def test_rule_fallback_rejects_changed_queued_fact_without_ai_ledger(intake_client):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "changed-fallback-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "事实原文草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("changed-fallback"),
+    )
+    task_id = queued.json()["task_id"]
+    _run(_reject_fact(sessions, "fact_draft_1"))
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    result_ref = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    assert result_ref == session_id
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+    assert _run(_model_count(sessions, AiRun)) == 0
+    assert _run(_usage_for_task(sessions, task_id)) is None
+    assert _run(_task_result(sessions, task_id))[0] == "failed"
+    assert client.get(f"/v1/intake-sessions/{session_id}").json()["status"] == "active"
 
 
 async def _table_count(sessions, table_name: str) -> int:
@@ -488,6 +982,50 @@ async def _table_count(sessions, table_name: str) -> int:
 async def _model_count(sessions, model) -> int:
     async with sessions() as session:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+async def _outbox_payload(sessions, task_id):
+    async with sessions() as session:
+        outbox = await session.scalar(select(Outbox).where(Outbox.task_id == task_id))
+        return dict(outbox.payload)
+
+
+async def _resume_version(sessions, resume_id):
+    async with sessions() as session:
+        return await session.scalar(
+            select(ResumeVersion).where(ResumeVersion.resume_id == resume_id)
+        )
+
+
+async def _usage_for_task(sessions, task_id):
+    async with sessions() as session:
+        return await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task_id)
+        )
+
+
+async def _only_ai_run(sessions):
+    async with sessions() as session:
+        return await session.scalar(select(AiRun))
+
+
+async def _trace_payloads(sessions, ai_run_id):
+    async with sessions() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(AiTraceEvent.payload)
+                    .where(AiTraceEvent.ai_run_id == ai_run_id)
+                    .order_by(AiTraceEvent.event_seq)
+                )
+            ).all()
+        )
+
+
+async def _reject_fact(sessions, fact_id):
+    async with sessions.begin() as session:
+        fact = await session.scalar(select(Fact).where(Fact.id == fact_id))
+        fact.status = "rejected"
 
 
 async def _answer_state(sessions) -> str:

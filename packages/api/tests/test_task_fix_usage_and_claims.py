@@ -87,6 +87,49 @@ async def test_ai_queues_reject_non_ai_admission_without_writes(
         )
 
 
+@pytest.mark.parametrize(
+    ("queue", "resource_type", "resource_id", "payload_session_id"),
+    (
+        ("ai.batch", "intake_session", "intake_1", "intake_1"),
+        ("ai.interactive", "resume", "intake_1", "intake_1"),
+        ("ai.interactive", "intake_session", "intake_1", "intake_other"),
+    ),
+)
+async def test_unmetered_intake_fallback_cannot_forge_queue_or_resource(
+    sql_session_factory,
+    queue,
+    resource_type,
+    resource_id,
+    payload_session_id,
+):
+    await _seed_users(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    payload = {
+        "intake_session_id": payload_session_id,
+        "generation_mode": "rule_fallback",
+        "draft_input_hash": "a" * 64,
+        "draft_snapshot": {"workflow_type": "compose_resume_draft"},
+    }
+
+    with pytest.raises(TaskServiceError) as rejected:
+        await service.create_task(
+            "usr_claim_a",
+            task_type="generate_intake_draft",
+            queue=queue,
+            trace_id=f"tr_{queue}_{resource_type}",
+            idempotency_key=f"fallback-{queue}-{resource_type}-{payload_session_id}",
+            admission=TaskAdmission.unmetered(),
+            resource_type=resource_type,
+            resource_id=resource_id,
+            payload=payload,
+        )
+
+    assert rejected.value.code == "TASK_ADMISSION_INVALID"
+    async with sql_session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert await session.scalar(select(func.count()).select_from(UsageLedger)) == 0
+
+
 async def test_concurrent_admission_consumes_one_slot_and_replay_does_not_recount(
     sql_session_factory,
 ):

@@ -117,6 +117,21 @@ def configure_pipeline_operations(
             task_id=task.id,
             claim_token=claim.token,
             task_service=task_service,
+            cancellation=TaskAiCancellation(task_service, claim),
+        )
+
+    async def fail_intake_draft(
+        claim: TaskClaim,
+        failure: TerminalFailure,
+    ) -> None:
+        task = await _task(task_service, claim)
+        await intake.fail_draft(
+            claim.owner_user_id,
+            _resource(task, "intake_session"),
+            task.id,
+            claim.token,
+            failure.error_code,
+            task_service=task_service,
         )
 
     async def analyze_intake_answer(claim: TaskClaim) -> str:
@@ -161,7 +176,11 @@ def configure_pipeline_operations(
         analyze_intake_answer,
         terminal_failure_handler=fail_intake_answer_analysis,
     )
-    register_operation("generate_intake_draft", generate_intake_draft)
+    register_operation(
+        "generate_intake_draft",
+        generate_intake_draft,
+        terminal_failure_handler=fail_intake_draft,
+    )
     register_operation("data_export", export_private_data)
     register_operation("account_deletion", delete_private_data)
 

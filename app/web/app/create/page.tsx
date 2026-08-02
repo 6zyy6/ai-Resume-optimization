@@ -228,6 +228,7 @@ export default function CreatePage() {
       const body: components["schemas"]["IntakeDraftRequest"] = {
         base_version: session.version,
         title: title.trim(),
+        generation_mode: "model",
       };
       const fingerprint = JSON.stringify(body);
       if (draftOperation.current.fingerprint !== fingerprint) {

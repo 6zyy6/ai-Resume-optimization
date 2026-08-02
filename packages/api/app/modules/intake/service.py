@@ -15,6 +15,7 @@ from app.core.ids import new_id
 from app.db.models import (
     BulletFactLink,
     AiTraceEvent,
+    Experience,
     Fact,
     FactCandidate,
     FactSource,
@@ -35,11 +36,22 @@ from app.integrations.ai_client import (
     AnalyzeIntakeRequest,
     AnalyzeIntakeResult,
     AnalyzeIntakePayload,
+    ComposeFact,
+    ComposeResumeDraftPayload,
+    ComposeResumeDraftRequest,
+    ComposeResumeDraftResult,
+    ExperienceGroup,
     FactProjection,
 )
 from app.modules.ai_runs.service import AiRunService
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.resumes.service import canonical_snapshot
+from app.modules.resumes.fact_policy import (
+    ConfirmedFactProjection,
+    DraftClaim,
+    FactPolicyIssue,
+    fact_policy_check,
+)
 from app.modules.tasks.service import TaskAdmission, TaskService, TaskServiceError
 
 
@@ -1460,6 +1472,24 @@ class IntakeService:
                     "Confirm at least two sourced facts before generating a draft",
                     422,
                 )
+            generation_mode = values["generation_mode"]
+            if (
+                generation_mode == "rule_fallback"
+                and self.ai_client is not None
+                and not await self._failed_model_draft_exists(session, row)
+            ):
+                raise IntakeError(
+                    "INTAKE_DRAFT_FALLBACK_NOT_AVAILABLE",
+                    "Rule fallback is available only after model generation fails",
+                    409,
+                )
+            draft_snapshot = await self._build_draft_snapshot(
+                session,
+                row,
+                values["title"],
+                ready_facts,
+            )
+            draft_input_hash = _semantic_hash(draft_snapshot)
             try:
                 task = await task_service.create_task_in_session(
                     session,
@@ -1468,10 +1498,19 @@ class IntakeService:
                     queue="ai.interactive",
                     trace_id=trace_id,
                     idempotency_key=f"intake-draft:{idempotency_key}",
-                    admission=TaskAdmission.ai(),
+                    admission=(
+                        TaskAdmission.unmetered()
+                        if generation_mode == "rule_fallback"
+                        else TaskAdmission.ai()
+                    ),
                     resource_type="intake_session",
                     resource_id=row.id,
-                    payload={"intake_session_id": row.id},
+                    payload={
+                        "intake_session_id": row.id,
+                        "generation_mode": generation_mode,
+                        "draft_input_hash": draft_input_hash,
+                        "draft_snapshot": draft_snapshot,
+                    },
                 )
             except TaskServiceError as error:
                 raise IntakeError(error.code, error.message, error.status_code) from error
@@ -1489,6 +1528,96 @@ class IntakeService:
             await self.idempotency.complete(session, claim, 202, response)
             return response
 
+    async def _failed_model_draft_exists(
+        self,
+        session: AsyncSession,
+        row: IntakeSession,
+    ) -> bool:
+        if row.task_id is None:
+            return False
+        task = await session.scalar(
+            select(Task).where(
+                Task.id == row.task_id,
+                Task.owner_user_id == row.owner_user_id,
+                Task.type == "generate_intake_draft",
+                Task.resource_type == "intake_session",
+                Task.resource_id == row.id,
+                Task.status.in_(("failed", "cancelled")),
+            )
+        )
+        if task is None:
+            return False
+        outbox = await session.scalar(
+            select(Outbox).where(
+                Outbox.task_id == task.id,
+                Outbox.owner_user_id == task.owner_user_id,
+            )
+        )
+        return bool(
+            outbox is not None
+            and isinstance(outbox.payload, dict)
+            and outbox.payload.get("generation_mode") == "model"
+        )
+
+    async def _build_draft_snapshot(
+        self,
+        session: AsyncSession,
+        row: IntakeSession,
+        title: str,
+        ready_facts: list[tuple[Fact, tuple[str, ...]]],
+    ) -> dict[str, Any]:
+        experience_ids = {
+            fact.experience_id for fact, _ in ready_facts if fact.experience_id
+        }
+        experiences = (
+            list(
+                (
+                    await session.scalars(
+                        select(Experience).where(
+                            Experience.id.in_(experience_ids),
+                            Experience.owner_user_id == row.owner_user_id,
+                        )
+                    )
+                ).all()
+            )
+            if experience_ids
+            else []
+        )
+        experience_titles = {item.id: item.title for item in experiences}
+        grouped: dict[str, list[str]] = {}
+        compose_facts: list[ComposeFact] = []
+        for fact, source_hashes in ready_facts:
+            group_title = experience_titles.get(
+                fact.experience_id or "",
+                fact.kind,
+            )
+            grouped.setdefault(group_title, []).append(fact.id)
+            compose_facts.append(
+                ComposeFact(
+                    id=fact.id,
+                    kind=fact.kind,
+                    value=fact.value_encrypted,
+                    source_hashes=source_hashes,
+                )
+            )
+        payload = ComposeResumeDraftPayload(
+            resume_title=title,
+            experience_groups=tuple(
+                ExperienceGroup(title=group, fact_refs=tuple(refs))
+                for group, refs in grouped.items()
+            ),
+            confirmed_facts=tuple(compose_facts),
+            allowed_section_types=("experience", "project", "skills", "education"),
+        )
+        return {
+            "workflow_type": "compose_resume_draft",
+            "workflow_version": "2",
+            "prompt_template_version": "resume-draft@2",
+            "locale": "zh-CN",
+            "input_version": 1,
+            "payload": payload.model_dump(mode="json"),
+        }
+
     async def process_draft(
         self,
         owner_id: str,
@@ -1497,6 +1626,7 @@ class IntakeService:
         task_id: str,
         claim_token: str,
         task_service: TaskService,
+        cancellation: AiCancellation | None = None,
     ) -> str:
         async with self.sessions.begin() as session:
             task = await task_service.claimed_task_in_session(
@@ -1520,106 +1650,481 @@ class IntakeService:
                     row.resume_id,
                 )
                 return row.resume_id
-            ready_facts = await self._ready_facts(session, row)
-            if len(ready_facts) < 2:
+            generation_mode, input_hash, payload = await self._draft_input(
+                session,
+                task,
+                row,
+            )
+            if generation_mode == "rule_fallback":
+                if not await self._draft_facts_match(session, row, payload):
+                    await self._fail_draft_in_session(
+                        session,
+                        task,
+                        row,
+                        task_service,
+                        "INTAKE_DRAFT_FACTS_CHANGED",
+                        release_unused_ai_reservation=True,
+                    )
+                    return row.id
+                sections, evidence = _fallback_draft(payload)
+                return await self._persist_draft(
+                    session,
+                    task,
+                    row,
+                    task_service,
+                    sections=sections,
+                    evidence=evidence,
+                    generation_mode=generation_mode,
+                    input_hash=input_hash,
+                    ai_run_id=None,
+                )
+            if self.ai_client is None:
                 raise IntakeError(
-                    "INTAKE_FACTS_NOT_READY",
-                    "Confirmed facts changed before draft generation",
-                    422,
+                    "AI_NOT_CONFIGURED",
+                    "Model draft generation is not configured",
+                    503,
                 )
-            resume_id = new_id("resume")
-            version_id = new_id("rver")
-            items: list[dict[str, Any]] = []
-            evidence: list[tuple[str, Fact, tuple[str, ...]]] = []
-            for fact, source_hashes in ready_facts:
-                bullet_id = new_id("bullet")
-                items.append(
-                    {
-                        "id": bullet_id,
-                        "text": fact.value_encrypted,
-                        "fact_refs": [fact.id],
-                    }
+            request = ComposeResumeDraftRequest(
+                workflow_type="compose_resume_draft",
+                workflow_version="2",
+                prompt_template_version="resume-draft@2",
+                trace_id=task.trace_id,
+                task_id=task.id,
+                owner_scope_hash=hashlib.sha256(row.owner_user_id.encode()).hexdigest(),
+                locale="zh-CN",
+                input_version=1,
+                input_hash=input_hash,
+                payload=payload,
+            )
+
+        receipt = await self.ai_client.run(request, cancellation)
+
+        async with self.sessions.begin() as session:
+            task = await task_service.ai_receipt_task_in_session(
+                session,
+                owner_id,
+                task_id,
+                claim_token,
+                receipt.run.ai_run_id,
+                receipt.run.status,
+            )
+            row = await self._session(session, owner_id, session_id, lock=True)
+            if row is None or row.task_id != task.id:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            generation_mode, input_hash, payload = await self._draft_input(
+                session,
+                task,
+                row,
+            )
+            if (
+                generation_mode != "model"
+                or receipt.run.task_id != task.id
+                or receipt.run.trace_id != task.trace_id
+                or receipt.run.input_hash != input_hash
+            ):
+                raise IntakeError(
+                    "AI_RECEIPT_MISMATCH",
+                    "AI receipt does not match the immutable draft input",
+                    502,
                 )
-                evidence.append((bullet_id, fact, source_hashes))
-            snapshot, snapshot_hash = canonical_snapshot(
-                {
-                    "schema_version": "1",
-                    "title": row.draft_title or "基础简历",
-                    "target": None,
-                    "sections": [
-                        {
-                            "id": new_id("section"),
-                            "type": "experience",
-                            "title": "经历",
-                            "items": items,
-                        }
+            sections: list[dict[str, Any]] = []
+            evidence: list[tuple[str, str, tuple[ComposeFact, ...]]] = []
+            issues: list[FactPolicyIssue] = []
+            facts_match = True
+            if receipt.run.status == "succeeded":
+                if not isinstance(receipt.result, ComposeResumeDraftResult):
+                    raise IntakeError(
+                        "AI_SCHEMA_INVALID",
+                        "AI resume draft result is missing",
+                        502,
+                    )
+                sections, evidence, issues = _model_draft(receipt.result, payload)
+                facts_match = await self._draft_facts_match(session, row, payload)
+            resume_id = (
+                new_id("resume")
+                if receipt.run.status == "succeeded" and evidence and facts_match
+                else None
+            )
+            ai_run = await self.ai_runs.persist_in_session(
+                session,
+                row.owner_user_id,
+                receipt,
+                workflow_stage="draft",
+                result_ref=resume_id or row.id,
+            )
+            await task_service.consume_ai_reservation_in_session(
+                session,
+                row.owner_user_id,
+                task.id,
+                ai_run.id,
+            )
+            if task.active_ai_run_id == ai_run.id:
+                await task_service.settle_ai_run_in_session(
+                    session,
+                    row.owner_user_id,
+                    task.id,
+                    ai_run.id,
+                )
+            if receipt.run.status != "succeeded":
+                await self._fail_draft_in_session(
+                    session,
+                    task,
+                    row,
+                    task_service,
+                    receipt.run.error_code or f"ai_{receipt.run.status}",
+                )
+                return row.id
+            if not facts_match:
+                await self._append_draft_policy_events(
+                    session,
+                    row.owner_user_id,
+                    ai_run.id,
+                    [
+                        FactPolicyIssue(
+                            "INTAKE_DRAFT_FACTS_CHANGED",
+                            0,
+                            "Confirmed fact evidence changed after queueing",
+                        )
                     ],
-                }
+                )
+                await self._fail_draft_in_session(
+                    session,
+                    task,
+                    row,
+                    task_service,
+                    "INTAKE_DRAFT_FACTS_CHANGED",
+                )
+                return row.id
+            await self._append_draft_policy_events(
+                session,
+                row.owner_user_id,
+                ai_run.id,
+                issues,
             )
-            resume = Resume(
-                id=resume_id,
-                owner_user_id=row.owner_user_id,
-                kind="base",
-                title=row.draft_title or "基础简历",
-                head_version=0,
-                head_version_id=None,
+            if not evidence:
+                await self._fail_draft_in_session(
+                    session,
+                    task,
+                    row,
+                    task_service,
+                    "INTAKE_DRAFT_NO_SUPPORTED_CLAIMS",
+                )
+                return row.id
+            return await self._persist_draft(
+                session,
+                task,
+                row,
+                task_service,
+                sections=sections,
+                evidence=evidence,
+                generation_mode="model",
+                input_hash=input_hash,
+                ai_run_id=ai_run.id,
+                resume_id=resume_id,
             )
-            session.add(resume)
-            await session.flush()
-            version = ResumeVersion(
+
+    async def fail_draft(
+        self,
+        owner_id: str,
+        session_id: str,
+        task_id: str,
+        claim_token: str,
+        error_code: str,
+        *,
+        task_service: TaskService,
+    ) -> None:
+        async with self.sessions.begin() as session:
+            task = await task_service.claimed_task_in_session(
+                session,
+                owner_id,
+                task_id,
+                claim_token,
+            )
+            row = await self._session(session, owner_id, session_id, lock=True)
+            if row is None or row.task_id != task.id:
+                raise IntakeError("RESOURCE_NOT_FOUND", "Intake session not found", 404)
+            await self._fail_draft_in_session(
+                session,
+                task,
+                row,
+                task_service,
+                error_code,
+                release_unused_ai_reservation=True,
+            )
+
+    async def _draft_input(
+        self,
+        session: AsyncSession,
+        task: Task,
+        row: IntakeSession,
+    ) -> tuple[str, str, ComposeResumeDraftPayload]:
+        outbox = await session.scalar(
+            select(Outbox).where(
+                Outbox.task_id == task.id,
+                Outbox.owner_user_id == task.owner_user_id,
+            )
+        )
+        task_payload = outbox.payload if outbox is not None else None
+        snapshot = (
+            task_payload.get("draft_snapshot")
+            if isinstance(task_payload, dict)
+            else None
+        )
+        try:
+            payload = ComposeResumeDraftPayload.model_validate(
+                snapshot.get("payload") if isinstance(snapshot, dict) else None,
+                strict=False,
+            )
+        except Exception as error:
+            raise IntakeError(
+                "INTAKE_DRAFT_SNAPSHOT_INVALID",
+                "Saved draft input snapshot is invalid",
+                409,
+            ) from error
+        generation_mode = (
+            task_payload.get("generation_mode")
+            if isinstance(task_payload, dict)
+            else None
+        )
+        input_hash = (
+            task_payload.get("draft_input_hash")
+            if isinstance(task_payload, dict)
+            else None
+        )
+        valid = (
+            outbox is not None
+            and outbox.task_id == task.id
+            and outbox.owner_user_id == task.owner_user_id
+            and isinstance(task_payload, dict)
+            and task_payload.get("task_id") == task.id
+            and task_payload.get("intake_session_id") == row.id
+            and generation_mode in {"model", "rule_fallback"}
+            and isinstance(input_hash, str)
+            and re.fullmatch(r"[0-9a-f]{64}", input_hash) is not None
+            and isinstance(snapshot, dict)
+            and set(snapshot)
+            == {
+                "workflow_type",
+                "workflow_version",
+                "prompt_template_version",
+                "locale",
+                "input_version",
+                "payload",
+            }
+            and snapshot.get("workflow_type") == "compose_resume_draft"
+            and snapshot.get("workflow_version") == "2"
+            and snapshot.get("prompt_template_version") == "resume-draft@2"
+            and snapshot.get("locale") == "zh-CN"
+            and snapshot.get("input_version") == 1
+            and payload.resume_title == row.draft_title
+            and len(payload.confirmed_facts) >= 2
+            and _semantic_hash(snapshot) == input_hash
+        )
+        if not valid:
+            raise IntakeError(
+                "INTAKE_DRAFT_SNAPSHOT_INVALID",
+                "Saved draft input snapshot is invalid",
+                409,
+            )
+        return generation_mode, input_hash, payload
+
+    async def _draft_facts_match(
+        self,
+        session: AsyncSession,
+        row: IntakeSession,
+        payload: ComposeResumeDraftPayload,
+    ) -> bool:
+        snapshots = {fact.id: fact for fact in payload.confirmed_facts}
+        if len(snapshots) != len(payload.confirmed_facts):
+            return False
+        current_facts = list(
+            (
+                await session.scalars(
+                    select(Fact)
+                    .where(
+                        Fact.id.in_(snapshots),
+                        Fact.owner_user_id == row.owner_user_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        current_by_id = {fact.id: fact for fact in current_facts}
+        source_rows = (
+            await session.execute(
+                select(FactSource.fact_id, FactSource.source_hash)
+                .where(
+                    FactSource.fact_id.in_(snapshots),
+                    FactSource.owner_user_id == row.owner_user_id,
+                )
+                .with_for_update()
+            )
+        ).tuples()
+        current_hashes: dict[str, list[str]] = {
+            fact_id: [] for fact_id in snapshots
+        }
+        for fact_id, source_hash in source_rows:
+            current_hashes[fact_id].append(source_hash)
+        return all(
+            (current := current_by_id.get(fact_id)) is not None
+            and current.status == "confirmed"
+            and current.value_encrypted == snapshot.value
+            and tuple(sorted(current_hashes[fact_id]))
+            == tuple(sorted(snapshot.source_hashes))
+            for fact_id, snapshot in snapshots.items()
+        )
+
+    async def _persist_draft(
+        self,
+        session: AsyncSession,
+        task: Task,
+        row: IntakeSession,
+        task_service: TaskService,
+        *,
+        sections: list[dict[str, Any]],
+        evidence: list[tuple[str, str, tuple[ComposeFact, ...]]],
+        generation_mode: str,
+        input_hash: str,
+        ai_run_id: str | None,
+        resume_id: str | None = None,
+    ) -> str:
+        resume_id = resume_id or new_id("resume")
+        version_id = new_id("rver")
+        snapshot, snapshot_hash = canonical_snapshot(
+            {
+                "schema_version": "1",
+                "title": row.draft_title or "基础简历",
+                "target": None,
+                "sections": sections,
+            }
+        )
+        resume = Resume(
+            id=resume_id,
+            owner_user_id=row.owner_user_id,
+            kind="base",
+            title=row.draft_title or "基础简历",
+            head_version=0,
+            head_version_id=None,
+        )
+        session.add(resume)
+        await session.flush()
+        session.add(
+            ResumeVersion(
                 id=version_id,
                 owner_user_id=row.owner_user_id,
                 resume_id=resume_id,
                 parent_version_id=None,
                 snapshot_json=snapshot,
                 snapshot_hash=snapshot_hash,
+                generation_mode=generation_mode,
+                workflow_version="2",
+                ai_run_id=ai_run_id,
+                input_hash=input_hash,
                 created_by=row.owner_user_id,
             )
-            session.add(version)
-            await session.flush()
-            resume.head_version = 1
-            resume.head_version_id = version_id
-            session.add(
-                VersionOperation(
-                    id=new_id("vop"),
-                    owner_user_id=row.owner_user_id,
-                    version_id=version_id,
-                    operation_type="save",
-                    actor=row.owner_user_id,
-                    metadata_json={"source": "intake_session", "session_id": row.id},
-                )
+        )
+        await session.flush()
+        resume.head_version = 1
+        resume.head_version_id = version_id
+        session.add(
+            VersionOperation(
+                id=new_id("vop"),
+                owner_user_id=row.owner_user_id,
+                version_id=version_id,
+                operation_type="save",
+                actor=row.owner_user_id,
+                metadata_json={
+                    "source": "intake_session",
+                    "session_id": row.id,
+                    "generation_mode": generation_mode,
+                    "input_hash": input_hash,
+                    "ai_run_id": ai_run_id,
+                },
             )
-            for bullet_id, fact, source_hashes in evidence:
+        )
+        for bullet_id, claim_text, facts in evidence:
+            for fact in facts:
                 session.add(
                     BulletFactLink(
                         resume_version_id=version_id,
                         bullet_id=bullet_id,
                         fact_id=fact.id,
-                        fact_owner_user_id=fact.owner_user_id,
+                        fact_owner_user_id=row.owner_user_id,
                         owner_user_id=row.owner_user_id,
                         claim_start=0,
-                        claim_end=len(fact.value_encrypted),
-                        claim_range={
-                            "start": 0,
-                            "end": len(fact.value_encrypted),
-                        },
-                        fact_value_encrypted_at_link=fact.value_encrypted,
-                        fact_status_at_link=fact.status,
-                        fact_source_hashes_at_link=list(source_hashes),
+                        claim_end=len(claim_text),
+                        claim_range={"start": 0, "end": len(claim_text)},
+                        fact_value_encrypted_at_link=fact.value,
+                        fact_status_at_link="confirmed",
+                        fact_source_hashes_at_link=list(fact.source_hashes),
                     )
                 )
-            row.resume_id = resume_id
-            row.status = "completed"
-            row.active_owner_key = None
-            row.current_question = None
-            row.updated_at = datetime.now(timezone.utc)
-            await task_service.complete_task_in_session(
-                session,
-                task,
-                resume_id,
+        row.resume_id = resume_id
+        row.status = "completed"
+        row.active_owner_key = None
+        row.current_question = None
+        row.updated_at = datetime.now(timezone.utc)
+        await task_service.complete_task_in_session(session, task, resume_id)
+        await session.flush()
+        return resume_id
+
+    async def _fail_draft_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+        row: IntakeSession,
+        task_service: TaskService,
+        error_code: str,
+        *,
+        release_unused_ai_reservation: bool = False,
+    ) -> None:
+        row.status = "active"
+        row.version += 1
+        row.updated_at = datetime.now(timezone.utc)
+        await task_service.fail_task_in_session(
+            session,
+            task,
+            error_code,
+            release_unused_ai_reservation=release_unused_ai_reservation,
+        )
+
+    @staticmethod
+    async def _append_draft_policy_events(
+        session: AsyncSession,
+        owner_id: str,
+        ai_run_id: str,
+        issues: list[FactPolicyIssue],
+    ) -> None:
+        if not issues:
+            return
+        last_seq = int(
+            await session.scalar(
+                select(func.coalesce(func.max(AiTraceEvent.event_seq), 0)).where(
+                    AiTraceEvent.ai_run_id == ai_run_id,
+                    AiTraceEvent.owner_user_id == owner_id,
+                )
             )
-            await session.flush()
-            return resume_id
+            or 0
+        )
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                AiTraceEvent(
+                    id=new_id("aie"),
+                    owner_user_id=owner_id,
+                    ai_run_id=ai_run_id,
+                    event_seq=last_seq + offset,
+                    event_type="fact_validation_failed",
+                    payload={
+                        "error_code": "fact_validation_failed",
+                        "schema_path": f"$.atomic_claims[{issue.claim_order}]",
+                        "risk_flags": [issue.code],
+                    },
+                    created_at=now,
+                )
+                for offset, issue in enumerate(issues, start=1)
+            ]
+        )
 
     async def _claim(
         self,
@@ -1850,6 +2355,109 @@ def _semantic_hash(snapshot: dict[str, Any]) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _fallback_draft(
+    payload: ComposeResumeDraftPayload,
+) -> tuple[
+    list[dict[str, Any]],
+    list[tuple[str, str, tuple[ComposeFact, ...]]],
+]:
+    facts = {fact.id: fact for fact in payload.confirmed_facts}
+    sections: list[dict[str, Any]] = []
+    evidence: list[tuple[str, str, tuple[ComposeFact, ...]]] = []
+    for group in payload.experience_groups:
+        items: list[dict[str, Any]] = []
+        for fact_id in group.fact_refs:
+            fact = facts.get(fact_id)
+            if fact is None:
+                continue
+            bullet_id = new_id("bullet")
+            items.append(
+                {"id": bullet_id, "text": fact.value, "fact_refs": [fact.id]}
+            )
+            evidence.append((bullet_id, fact.value, (fact,)))
+        if items:
+            sections.append(
+                {
+                    "id": new_id("section"),
+                    "type": "experience",
+                    "title": group.title,
+                    "items": items,
+                }
+            )
+    return sections, evidence
+
+
+def _model_draft(
+    result: ComposeResumeDraftResult,
+    payload: ComposeResumeDraftPayload,
+) -> tuple[
+    list[dict[str, Any]],
+    list[tuple[str, str, tuple[ComposeFact, ...]]],
+    list[FactPolicyIssue],
+]:
+    facts = {fact.id: fact for fact in payload.confirmed_facts}
+    projections = tuple(
+        ConfirmedFactProjection(
+            id=fact.id,
+            value=fact.value,
+            status="confirmed",
+            source_hashes=fact.source_hashes,
+        )
+        for fact in payload.confirmed_facts
+    )
+    allowed_types = set(payload.allowed_section_types)
+    sections: list[dict[str, Any]] = []
+    evidence: list[tuple[str, str, tuple[ComposeFact, ...]]] = []
+    issues: list[FactPolicyIssue] = []
+    for section in result.sections:
+        if section.type not in allowed_types:
+            continue
+        items: list[dict[str, Any]] = []
+        for bullet in section.bullets:
+            if "needs_confirmation" in bullet.risk_flags:
+                continue
+            checked = fact_policy_check(
+                bullet.text,
+                (
+                    DraftClaim(
+                        text=claim.text,
+                        fact_refs=claim.fact_refs,
+                        claim_order=claim.claim_order,
+                    )
+                    for claim in bullet.atomic_claims
+                ),
+                projections,
+            )
+            issues.extend(checked.issues)
+            for claim in checked.supported_claims:
+                referenced = tuple(
+                    facts[fact_id]
+                    for fact_id in claim.fact_refs
+                    if fact_id in facts
+                )
+                if len(referenced) != len(claim.fact_refs):
+                    continue
+                bullet_id = new_id("bullet")
+                items.append(
+                    {
+                        "id": bullet_id,
+                        "text": claim.text,
+                        "fact_refs": list(claim.fact_refs),
+                    }
+                )
+                evidence.append((bullet_id, claim.text, referenced))
+        if items:
+            sections.append(
+                {
+                    "id": new_id("section"),
+                    "type": section.type,
+                    "title": section.title,
+                    "items": items,
+                }
+            )
+    return sections, evidence, issues
 
 
 def _validated_analysis_snapshot(

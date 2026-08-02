@@ -4425,7 +4425,11 @@ def test_draft_rejects_pending_fact_review_without_mutating_intake(
 
     blocked = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 1, "title": "不应生成"},
+        json={
+            "base_version": 1,
+            "title": "不应生成",
+            "generation_mode": "model",
+        },
         headers={"Idempotency-Key": "draft-before-candidate-review"},
     )
 
@@ -4481,7 +4485,11 @@ def test_draft_rejects_unresolved_latest_answer_analysis(
 
     blocked = client.post(
         f"/v1/intake-sessions/{session_id}/drafts",
-        json={"base_version": 1, "title": "不应生成"},
+        json={
+            "base_version": 1,
+            "title": "不应生成",
+            "generation_mode": "model",
+        },
         headers={"Idempotency-Key": f"draft-{analysis_status}"},
     )
 

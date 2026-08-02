@@ -154,11 +154,23 @@ class TaskService:
                 "AI task cost must be a finite non-negative Decimal",
                 422,
             )
+        deterministic_intake_fallback = (
+            task_type == "generate_intake_draft"
+            and queue == "ai.interactive"
+            and resource_type == "intake_session"
+            and resource_id is not None
+            and isinstance(payload, dict)
+            and payload.get("intake_session_id") == resource_id
+            and payload.get("generation_mode") == "rule_fallback"
+            and isinstance(payload.get("draft_input_hash"), str)
+            and isinstance(payload.get("draft_snapshot"), dict)
+        )
         if (
             admission.usage_type not in SUPPORTED_ADMISSION_USAGE_TYPES
             or (
                 queue in AI_QUEUE_NAMES
                 and admission.usage_type != "ai_task"
+                and not deterministic_intake_fallback
             )
         ):
             raise TaskServiceError(

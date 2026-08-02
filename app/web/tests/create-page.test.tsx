@@ -254,6 +254,7 @@ describe("V2 persisted intake", () => {
     ));
     expect(JSON.parse(String(draftCall?.[1]?.body))).toEqual({
       base_version: 2,
+      generation_mode: "model",
       title: "我的真实基础简历",
     });
   });

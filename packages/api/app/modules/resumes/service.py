@@ -637,6 +637,10 @@ class ResumeService:
             "parent_version_id": version.parent_version_id,
             "snapshot": version.snapshot_json,
             "snapshot_hash": version.snapshot_hash,
+            "generation_mode": version.generation_mode,
+            "workflow_version": version.workflow_version,
+            "ai_run_id": version.ai_run_id,
+            "input_hash": version.input_hash,
             "operation": operation,
             "created_at": version.created_at.isoformat(),
         }

@@ -538,6 +538,19 @@ class ResumeVersion(OwnerMixin, Base):
     __tablename__ = "resume_versions"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uq_resume_version_owner"),
+        CheckConstraint(
+            "generation_mode IN ('manual', 'model', 'rule_fallback')",
+            name="ck_resume_version_generation_mode",
+        ),
+        CheckConstraint(
+            "(generation_mode = 'manual' AND workflow_version IS NULL "
+            "AND ai_run_id IS NULL AND input_hash IS NULL) OR "
+            "(generation_mode = 'model' AND workflow_version IS NOT NULL "
+            "AND ai_run_id IS NOT NULL AND input_hash IS NOT NULL) OR "
+            "(generation_mode = 'rule_fallback' AND workflow_version IS NOT NULL "
+            "AND ai_run_id IS NULL AND input_hash IS NOT NULL)",
+            name="ck_resume_version_generation_provenance",
+        ),
         ForeignKeyConstraint(
             ["resume_id", "owner_user_id"],
             ["resumes.id", "resumes.owner_user_id"],
@@ -548,6 +561,12 @@ class ResumeVersion(OwnerMixin, Base):
             ["resume_versions.id", "resume_versions.owner_user_id"],
             name="fk_resume_version_parent_owner",
         ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_resume_version_ai_run_owner",
+        ),
+        Index("ix_resume_versions_ai_run_id", "ai_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -555,6 +574,14 @@ class ResumeVersion(OwnerMixin, Base):
     parent_version_id: Mapped[str | None] = mapped_column(String(64))
     snapshot_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    generation_mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="manual",
+    )
+    workflow_version: Mapped[str | None] = mapped_column(String(64))
+    ai_run_id: Mapped[str | None] = mapped_column(String(64))
+    input_hash: Mapped[str | None] = mapped_column(String(128))
     created_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
