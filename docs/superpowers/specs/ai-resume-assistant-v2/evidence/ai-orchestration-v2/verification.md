@@ -24,7 +24,9 @@ node scripts/acceptance/hash-ai-orchestration-v2.mjs <new-evidence-directory>
 
 - PNG 不是 `3 × 9 = 27` 张；
 - 任一视口不是 390×844、1024×768、1440×900，或 full-page 高度小于视口；
-- 任一状态存在横向溢出、Runtime Error、page error、API 5xx 或可见内部枚举；
+- 任一状态存在横向溢出、Runtime Error、console/page error、API 5xx 或可见内部枚举；
+- 9 个固定状态名、route 或 PNG 文件名不完全一致，或 27 张截图内容 hash 不唯一；
+- 每个视口没有证明 4 个成功 Task → 5 个 AiRun → 连续 Trace，或失败 Task 终态不完整；
 - 任一服务 `/version` 与源码提交 S 不一致；
 - broker 状态没有如实记录为 `BLOCKED_NO_REDIS`。
 
@@ -53,8 +55,12 @@ Chrome → Next.js production build/start → FastAPI → TaskExecutor/业务 op
 5. 匹配四分类；
 6. 待处理建议；
 7. 缺证据阻断建议；
-8. 任务成功；
+8. 任务成功结果（任务中心原生成功状态，并绑定对应 Task 数据库 `succeeded` 断言）；
 9. 可恢复失败。
+
+状态 01–07 和 09 必须通过简历名称、确认事实、岗位名称或 JD 要求展示当次 run 的
+真实业务 nonce；状态 08 通过 `task_id` 同 4 个成功 Task 断言之一绑定。报告只保存 nonce
+和可见 proof 的 SHA-256，不把邮箱或 owner 明文写入证据。
 
 截图中文案不得直接出现 `experience`、`fact_candidate_edit`、
 `proved/underexpressed/needs_confirmation/real_gap`、工作流 snake_case 或简历 JSON

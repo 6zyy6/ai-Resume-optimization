@@ -46,7 +46,21 @@ function redactOwnerIds(value: unknown): unknown {
   )));
 }
 
-async function capture(page: Page, directory: string, name: string) {
+type VisibleProof =
+  | { kind: "input"; label: string; runNonceVisible: boolean; value: string }
+  | { kind: "text"; runNonceVisible: boolean; value: string };
+
+async function capture(
+  page: Page,
+  directory: string,
+  name: string,
+  proof: VisibleProof,
+) {
+  if (proof.kind === "input") {
+    await expect(page.getByLabel(proof.label)).toHaveValue(proof.value);
+  } else {
+    await expect(page.getByText(proof.value, { exact: false }).first()).toBeVisible();
+  }
   const metrics = await page.evaluate(() => ({
     client_width: document.documentElement.clientWidth,
     horizontal_overflow:
@@ -65,7 +79,7 @@ async function capture(page: Page, directory: string, name: string) {
       "parse_job",
       "match_resume_to_job",
       "/sections/",
-    ].filter((value) => document.body.innerText.includes(value)),
+    ].filter((value) => document.body.innerText.toLowerCase().includes(value)),
   }));
   expect(metrics.horizontal_overflow).toBe(false);
   expect(metrics.runtime_error).toBe(false);
@@ -74,7 +88,14 @@ async function capture(page: Page, directory: string, name: string) {
     fullPage: true,
     path: resolve(directory, `${name}.png`),
   });
-  return metrics;
+  return {
+    ...metrics,
+    visible_proof_hash: createHash("sha256")
+      .update(`${name}\0${proof.value}`)
+      .digest("hex"),
+    visible_proof_kind: proof.kind,
+    run_nonce_visible: proof.runNonceVisible,
+  };
 }
 
 async function register(page: Page, nonce: string) {
@@ -107,17 +128,27 @@ async function register(page: Page, nonce: string) {
 }
 
 for (const viewport of viewports) {
-  test(`${viewport.label} captures nine AI orchestration states without API interception`, async ({ page }) => {
+  test(`${viewport.label} captures nine AI orchestration states without API interception`, async ({ browser, page }) => {
     test.setTimeout(120_000);
     await page.setViewportSize(viewport);
     const directory = resolve(evidenceRoot, viewport.label);
     await mkdir(directory, { recursive: true });
     const nonce = `${viewport.width}-${Date.now()}`;
+    const nonceHash = ownerHash(nonce);
+    const resumeTitle = `验收简历 ${nonce}`;
+    const failureResumeTitle = `失败验收简历 ${nonce}`;
+    const jobTitle = `产品实习生 ${nonce}`;
+    const firstRequirement = `负责用户调研 ${nonce}`;
+    const secondRequirement = `熟悉产品原型 ${nonce}`;
     const user = await register(page, nonce);
     const apiResponses: Array<Record<string, unknown>> = [];
+    const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
     const serverErrors: Array<{ status: number; url: string }> = [];
     const tasks: Array<{ owner_user_id: string; task_id: string }> = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("response", (response) => {
       const url = new URL(response.url());
@@ -128,7 +159,10 @@ for (const viewport of viewports) {
 
     await page.goto("/create");
     await expect(page.getByLabel("你的回答")).toBeVisible();
-    await page.getByLabel("你的回答").fill("负责用户调研。完成产品原型。");
+    await page.getByLabel("简历名称").fill(resumeTitle);
+    await page.getByLabel("你的回答").fill(
+      `${firstRequirement}。完成产品原型 ${nonce}。`,
+    );
     const answerResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST"
       && /\/api\/v1\/intake-sessions\/[^/]+\/answers$/.test(new URL(response.url()).pathname)
@@ -145,7 +179,12 @@ for (const viewport of viewports) {
     const captures = [{
       name: "01-create-analysis",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "01-create-analysis"),
+      metrics: await capture(page, directory, "01-create-analysis", {
+        kind: "input",
+        label: "简历名称",
+        runNonceVisible: true,
+        value: resumeTitle,
+      }),
     }];
 
     expect((await runWorker(page, answered.analysis_task_id)).status).toBe("succeeded");
@@ -154,13 +193,18 @@ for (const viewport of viewports) {
     captures.push({
       name: "02-candidate-confirmation",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "02-candidate-confirmation"),
+      metrics: await capture(page, directory, "02-candidate-confirmation", {
+        kind: "input",
+        label: "简历名称",
+        runNonceVisible: true,
+        value: resumeTitle,
+      }),
     });
 
     for (let index = 0; index < 2; index += 1) {
       await page.getByRole("button", { name: "编辑候选 1", exact: true }).click();
       const field = page.locator("textarea[name^='candidate-']");
-      await field.fill(`${await field.inputValue()}（已确认）`);
+      await field.fill(`${await field.inputValue()}（验收 ${nonce}）`);
       await page.getByRole("button", { name: "保存编辑候选 1", exact: true }).click();
     }
     const draftResponsePromise = page.waitForResponse((response) => (
@@ -178,7 +222,11 @@ for (const viewport of viewports) {
     captures.push({
       name: "03-model-draft-provenance",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "03-model-draft-provenance"),
+      metrics: await capture(page, directory, "03-model-draft-provenance", {
+        kind: "text",
+        runNonceVisible: true,
+        value: resumeTitle,
+      }),
     });
     const resumeId = new URL(page.url()).pathname.split("/")[2]!;
     const versionsResponse = await page.request.get(
@@ -189,11 +237,10 @@ for (const viewport of viewports) {
     };
     const resumeVersionId = versions.items[0].id;
     expect(versions.items[0].generation_mode).toBe("model");
-
     await page.goto(`/jobs/new?version=${resumeVersionId}`);
-    await page.getByLabel("岗位名称").fill("产品实习生");
+    await page.getByLabel("岗位名称").fill(jobTitle);
     await page.getByLabel("公司（可选）").fill("浏览器合同公司");
-    await page.getByLabel("JD 原文").fill("负责用户调研\n熟悉产品原型");
+    await page.getByLabel("JD 原文").fill(`${firstRequirement}\n${secondRequirement}`);
     const parseResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST"
       && /\/api\/v1\/jobs\/[^/]+\/parse$/.test(new URL(response.url()).pathname)
@@ -209,7 +256,12 @@ for (const viewport of viewports) {
     captures.push({
       name: "04-jd-provenance",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "04-jd-provenance"),
+      metrics: await capture(page, directory, "04-jd-provenance", {
+        kind: "input",
+        label: "岗位名称",
+        runNonceVisible: true,
+        value: jobTitle,
+      }),
     });
 
     await page.getByRole("button", { name: "确认全部要求" }).click();
@@ -229,7 +281,11 @@ for (const viewport of viewports) {
     captures.push({
       name: "05-match-categories",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "05-match-categories"),
+      metrics: await capture(page, directory, "05-match-categories", {
+        kind: "text",
+        runNonceVisible: true,
+        value: firstRequirement,
+      }),
     });
 
     await page.getByRole("button", { name: "逐条处理建议" }).click();
@@ -238,22 +294,22 @@ for (const viewport of viewports) {
     captures.push({
       name: "06-pending-suggestion",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "06-pending-suggestion"),
+      metrics: await capture(page, directory, "06-pending-suggestion", {
+        kind: "text",
+        runNonceVisible: true,
+        value: firstRequirement,
+      }),
     });
     await page.getByRole("button", { name: "下一条建议" }).click();
     await expect(page.getByText("等待补充事实", { exact: true })).toBeVisible();
     captures.push({
       name: "07-blocked-suggestion",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "07-blocked-suggestion"),
-    });
-
-    await page.goto("/tasks");
-    await expect(page.getByText("已完成 · 处理完成").first()).toBeVisible();
-    captures.push({
-      name: "08-task-success",
-      route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "08-task-success"),
+      metrics: await capture(page, directory, "07-blocked-suggestion", {
+        kind: "text",
+        runNonceVisible: true,
+        value: secondRequirement,
+      }),
     });
 
     const primaryAssertions = await Promise.all(tasks.map(async ({ owner_user_id, task_id }) => ({
@@ -261,6 +317,26 @@ for (const viewport of viewports) {
       task_id,
       state: redactOwnerIds(await inspectTask(page, task_id)),
     })));
+    expect(primaryAssertions).toHaveLength(4);
+    expect(primaryAssertions.every(({ state }) => state.task_status === "succeeded"))
+      .toBe(true);
+    await page.goto("/tasks");
+    await expect(page.getByText("已完成 · 处理完成").first()).toBeVisible();
+    captures.push({
+      evidence_basis: {
+        task_id: drafted.task_id,
+        task_status: primaryAssertions.find(({ task_id }) => task_id === drafted.task_id)
+          ?.state.task_status,
+      },
+      name: "08-task-success-result",
+      route: new URL(page.url()).pathname,
+      metrics: await capture(page, directory, "08-task-success-result", {
+        kind: "text",
+        runNonceVisible: false,
+        value: "已完成 · 处理完成",
+      }),
+    });
+
     const restartedResponse = await page.request.post("/api/v1/intake-sessions", {
       data: { restart: true },
       headers: { "Idempotency-Key": crypto.randomUUID() },
@@ -269,7 +345,8 @@ for (const viewport of viewports) {
     const restarted = await restartedResponse.json() as { id: string };
     await page.goto(`/create?session=${restarted.id}`);
     await expect(page.getByLabel("你的回答")).toBeVisible();
-    await page.getByLabel("你的回答").fill("组织校园活动并完成复盘。");
+    await page.getByLabel("简历名称").fill(failureResumeTitle);
+    await page.getByLabel("你的回答").fill(`组织校园活动并完成复盘 ${nonce}。`);
     const failureResponsePromise = page.waitForResponse((response) => (
       response.request().method() === "POST"
       && /\/api\/v1\/intake-sessions\/[^/]+\/answers$/.test(new URL(response.url()).pathname)
@@ -277,10 +354,6 @@ for (const viewport of viewports) {
     await page.getByRole("button", { name: "保存并继续" }).click();
     const failureResponse = await failureResponsePromise;
     const failureAnswer = await failureResponse.json() as { analysis_task_id: string };
-    tasks.push({
-      owner_user_id: user.user_id,
-      task_id: failureAnswer.analysis_task_id,
-    });
     const failedWorker = await runWorker(page, failureAnswer.analysis_task_id, true);
     expect(failedWorker.status).toBe("failed");
     await expect(page.getByRole("heading", { name: "这段经历暂时没有整理完成" }))
@@ -289,33 +362,44 @@ for (const viewport of viewports) {
     captures.push({
       name: "09-recoverable-failure",
       route: new URL(page.url()).pathname,
-      metrics: await capture(page, directory, "09-recoverable-failure"),
+      metrics: await capture(page, directory, "09-recoverable-failure", {
+        kind: "input",
+        label: "简历名称",
+        runNonceVisible: true,
+        value: failureResumeTitle,
+      }),
     });
 
-    const dbAssertions = [
-      ...primaryAssertions,
-      {
-        owner_scope_hash: ownerHash(user.user_id),
-        task_id: failureAnswer.analysis_task_id,
-        state: redactOwnerIds(
-          await inspectTask(page, failureAnswer.analysis_task_id),
-        ),
-      },
-    ];
+    const failureTaskAssertion = {
+      owner_scope_hash: ownerHash(user.user_id),
+      task_id: failureAnswer.analysis_task_id,
+      state: redactOwnerIds(
+        await inspectTask(page, failureAnswer.analysis_task_id),
+      ),
+    };
+    expect(failureTaskAssertion.state.task_status).toBe("failed");
     await writeFile(
       resolve(directory, "api-db-report.json"),
       `${JSON.stringify({
         api_responses: apiResponses,
+        browser: `Google Chrome ${browser.version()}`,
         broker_status: "BLOCKED_NO_REDIS",
+        build_id: process.env.EVIDENCE_BUILD_ID
+          ?? process.env.APP_COMMIT_SHA
+          ?? "local-evidence",
         captures,
+        console_errors: consoleErrors,
+        failure_task_assertion: failureTaskAssertion,
         owner_scope_hash: ownerHash(user.user_id),
         page_errors: pageErrors,
+        run_nonce_hash: nonceHash,
         server_errors: serverErrors,
-        task_assertions: dbAssertions,
+        task_assertions: primaryAssertions,
         viewport,
       }, null, 2)}\n`,
     );
     expect(captures).toHaveLength(9);
+    expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(serverErrors).toEqual([]);
     await page.close({ runBeforeUnload: false });

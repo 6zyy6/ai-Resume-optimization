@@ -15,6 +15,7 @@ import {
   resumeSnapshotConflicts,
   type SnapshotMergeChoice,
 } from "../../../../features/editor/snapshot-merge";
+import { resumeSectionTypeLabel } from "../../../../features/presentation/business-labels";
 import { useAutoSave } from "../../../../features/editor/use-auto-save";
 
 type Resume = components["schemas"]["ResumeResponse"];
@@ -396,7 +397,7 @@ function LoadedEditor({
           {snapshot.sections.map((section, sectionIndex) => (
             <section className="editor-main" id={section.id} key={section.id}>
               <header>
-                <div><p className="eyebrow">{section.type}</p><h2>{section.title}</h2></div>
+                <div><p className="eyebrow">{resumeSectionTypeLabel(section.type)}</p><h2>{section.title}</h2></div>
                 <div className="button-row">
                   <Button disabled={sectionIndex === 0} onClick={() => moveSection(sectionIndex, -1)} variant="quiet">模块上移</Button>
                   <Button disabled={sectionIndex === snapshot.sections.length - 1} onClick={() => moveSection(sectionIndex, 1)} variant="quiet">模块下移</Button>

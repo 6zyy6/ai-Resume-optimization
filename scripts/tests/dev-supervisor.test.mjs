@@ -22,6 +22,23 @@ test("local development starts only the web and required backend processes", () 
   );
 });
 
+test("AI orchestration acceptance builds workspace dependencies before services", async () => {
+  const source = await readFile(
+    new URL("../acceptance/start-ai-orchestration-v2.mjs", import.meta.url),
+    "utf8",
+  );
+  const buildFilters = [...source.matchAll(
+    /checked\("pnpm", \["--filter", "([^"]+)", "build"\]/g,
+  )].map((match) => match[1]);
+
+  assert.deepEqual(buildFilters.slice(0, 4), [
+    "@resume/design-tokens",
+    "@resume/shared",
+    "@resume/ai",
+    "@resume/web",
+  ]);
+});
+
 test("returns a child failure and terminates its sibling", async () => {
   const directory = await mkdtemp(join(tmpdir(), "dev-supervisor-"));
   const marker = join(directory, "terminated");
@@ -108,6 +125,31 @@ test("reports readiness only after web, API, and Pi are all ready", async () => 
     1,
   );
   assert.deepEqual([...readinessChecks.keys()].sort(), ["ai", "api", "web"]);
+});
+
+test("does not report ready when a service exits during its readiness probe", async () => {
+  const messages = [];
+  const exitCode = await runDevSupervisor([{
+    name: "api",
+    command: process.execPath,
+    args: ["-e", "setTimeout(() => process.exit(9), 20)"],
+    expectedService: "api",
+    readyUrl: "http://api.local/ready",
+  }], {
+    fetch: async () => {
+      await delay(60);
+      return new Response(JSON.stringify({ service: "api", status: "ready" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+    intervalMs: 25,
+    log: (message) => messages.push(message),
+    timeoutMs: 200,
+  });
+
+  await delay(80);
+  assert.equal(exitCode, 9);
+  assert.equal(messages.some((message) => message.includes("status=ready")), false);
 });
 
 test("fails safely when readiness times out", async () => {

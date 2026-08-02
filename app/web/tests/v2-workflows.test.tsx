@@ -63,7 +63,7 @@ describe("V2 real workflow pages", () => {
                 id: "project",
                 items: [{ fact_refs: ["fact_source"], id: "bullet_unique", text: "唯一服务端经历内容" }],
                 title: "项目经历",
-                type: "project",
+                type: "EXPERIENCE",
               }],
               target: null,
               title: "唯一编辑器标题",
@@ -108,6 +108,8 @@ describe("V2 real workflow pages", () => {
 
     expect(await screen.findByDisplayValue("唯一服务端经历内容")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /唯一编辑器标题/ })).toBeInTheDocument();
+    expect(screen.getByText("经历模块")).toBeInTheDocument();
+    expect(screen.queryByText(/experience/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/课程项目的用户调研/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByDisplayValue("唯一服务端经历内容"), {

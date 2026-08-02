@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -41,6 +41,7 @@ const args = [
   "--project=ai-orchestration-real",
   "--reporter=line",
 ];
+const command = `AI_ORCHESTRATION_REAL_SERVICES=1 APP_COMMIT_SHA=${sourceCommit} pnpm ${args.join(" ")}`;
 const startedAt = new Date().toISOString();
 const result = spawnSync("pnpm", args, {
   cwd: root,
@@ -54,15 +55,34 @@ const result = spawnSync("pnpm", args, {
 });
 const endedAt = new Date().toISOString();
 const commandLog = [
-  `$ AI_ORCHESTRATION_REAL_SERVICES=1 APP_COMMIT_SHA=${sourceCommit} pnpm ${args.join(" ")}`,
+  `$ ${command}`,
   result.stdout,
   result.stderr,
 ].filter(Boolean).join("\n");
 await writeFile(resolve(evidenceDir, "command.log"), `${commandLog}\n`);
+let browser = null;
+let buildId = null;
+if (result.status === 0) {
+  const reports = await Promise.all(
+    ["390x844", "1024x768", "1440x900"].map(async (viewport) => JSON.parse(
+      await readFile(resolve(evidenceDir, viewport, "api-db-report.json"), "utf8"),
+    )),
+  );
+  const browsers = new Set(reports.map((report) => report.browser));
+  const buildIds = new Set(reports.map((report) => report.build_id));
+  if (browsers.size !== 1 || buildIds.size !== 1) {
+    throw new Error("All viewport reports must use one browser and build ID");
+  }
+  [browser] = browsers;
+  [buildId] = buildIds;
+}
 await writeFile(
   resolve(evidenceDir, "run-metadata.json"),
   `${JSON.stringify({
-    command: `pnpm ${args.join(" ")}`,
+    browser,
+    build_id: buildId,
+    command,
+    commit_sha: sourceCommit,
     ended_at: endedAt,
     environment: "Next.js production build/start + FastAPI + SQLite + in-process worker operation + TCP Pi deterministic fixture",
     exit_code: result.status ?? 1,

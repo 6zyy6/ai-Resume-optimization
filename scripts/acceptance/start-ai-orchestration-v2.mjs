@@ -37,6 +37,8 @@ function checked(command, args, env = {}) {
   }
 }
 
+checked("pnpm", ["--filter", "@resume/design-tokens", "build"]);
+checked("pnpm", ["--filter", "@resume/shared", "build"]);
 checked("pnpm", ["--filter", "@resume/ai", "build"]);
 checked("pnpm", ["--filter", "@resume/web", "build"], {
   APP_COMMIT_SHA: sourceCommit,

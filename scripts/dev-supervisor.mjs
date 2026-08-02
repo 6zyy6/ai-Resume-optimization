@@ -125,7 +125,16 @@ export function runDevSupervisor(commands, options = {}) {
         const results = await Promise.all(
           readiness.map((spec) => isServiceReady(spec, fetchReady)),
         );
+        if (
+          finished
+          || processes.some(({ child }) => child.exitCode !== null)
+        ) return;
         if (results.every(Boolean)) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, intervalMs));
+          if (
+            finished
+            || processes.some(({ child }) => child.exitCode !== null)
+          ) return;
           log(`[dev] status=ready services=${readiness.map(({ name }) => safeToken(name, "unknown")).join(",")}`);
           return;
         }

@@ -71,13 +71,24 @@ const riskFlags: Record<string, string> = {
   unsupported_tool: "工具能力缺少证据",
 };
 
-export const factKindLabel = (value: string) => factKinds[value] ?? "其他事实";
-export const factStatusLabel = (value: string) => factStatuses[value] ?? "状态待确认";
-export const sourceTypeLabel = (value: string) => sourceTypes[value] ?? "其他来源";
-export const taskTypeLabel = (value: string) => taskTypes[value] ?? "系统任务";
-export const taskStatusLabel = (value: string) => taskStatuses[value] ?? "状态待确认";
-export const taskStageLabel = (value: string) => taskStages[value] ?? "进度更新";
-export const riskFlagLabel = (value: string) => riskFlags[value] ?? "需要人工复核";
+const resumeSectionTypes: Record<string, string> = {
+  education: "教育模块",
+  experience: "经历模块",
+  project: "项目模块",
+  skills: "技能模块",
+  summary: "概览模块",
+};
+
+const normalized = (value: string) => value.trim().toLowerCase();
+
+export const factKindLabel = (value: string) => factKinds[normalized(value)] ?? "其他事实";
+export const factStatusLabel = (value: string) => factStatuses[normalized(value)] ?? "状态待确认";
+export const sourceTypeLabel = (value: string) => sourceTypes[normalized(value)] ?? "其他来源";
+export const taskTypeLabel = (value: string) => taskTypes[normalized(value)] ?? "系统任务";
+export const taskStatusLabel = (value: string) => taskStatuses[normalized(value)] ?? "状态待确认";
+export const taskStageLabel = (value: string) => taskStages[normalized(value)] ?? "进度更新";
+export const riskFlagLabel = (value: string) => riskFlags[normalized(value)] ?? "需要人工复核";
+export const resumeSectionTypeLabel = (value: string) => resumeSectionTypes[normalized(value)] ?? "其他模块";
 export function resumeTargetLabel(value: string) {
   const match = /^\/sections\/(\d+)\/items\/(\d+)\/text$/.exec(value);
   return match
