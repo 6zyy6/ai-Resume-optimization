@@ -156,9 +156,14 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
 CHINESE_ACTION_PREDICATE = (
-    r"实现并发|执行并行计算|负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
+    r"负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|帮助|指导|评审|协助|支持|培训|分析|服务|维护|"
-    r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|牵头|执行|做"
+    r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|牵头|执行|发起|做"
+)
+CHINESE_COMPOUND_ACTION_PREDICATE = r"实现并发(?!起)|执行并行计算"
+CHINESE_RESULT_ACTION_PREDICATE = (
+    r"负责|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
+    r"推动|优化|解决|分析|处理|调研|牵头|执行|做"
 )
 CHINESE_COORDINATION = r"并且|同时|还|且|并|以及|(?<!参)与|、"
 ATOMIC_CLAUSE_BOUNDARY = re.compile(
@@ -224,7 +229,7 @@ ENGLISH_ACTIVE_OWNER = re.compile(
 CHINESE_POSITIVE_ASSERTION = re.compile(
     r"^(?:(?:我|本人|我们|咱们|团队|本团队)\s*)?"
     r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*"
-    rf"(?:{CHINESE_ACTION_PREDICATE})"
+    rf"(?:{CHINESE_COMPOUND_ACTION_PREDICATE}|{CHINESE_ACTION_PREDICATE})"
 )
 CHINESE_TAIL_DENIAL = re.compile(
     r"(?:我|本人).*?(?:没有|没|未|不|缺乏|欠缺).*?"
@@ -253,8 +258,8 @@ ENGLISH_TAIL_DENIAL = re.compile(
     re.IGNORECASE,
 )
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
-    rf"(?:{CHINESE_ACTION_PREDICATE})"
-    r"(?:不了(?!解)|不来|不成|不下|不起|不掉|不到|不动|不完|不好|不住)"
+    rf"(?:{CHINESE_RESULT_ACTION_PREDICATE})"
+    r"(?:不了(?!解)|不(?:来|成|下|起|掉|到|动|完|好|住|牢|稳|准|清|透|够))"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2080,9 +2085,10 @@ def _main_assertion_kind(value: str) -> str:
         positive = re.match(
             r"^(?:i|we)\s+(?:(?:successfully|independently|personally)\s+)*"
             r"(?:lead|led|complete(?:d)?|own(?:ed)?|handle(?:d)?|deliver(?:ed)?|"
-            r"participate(?:d)?\s+in|contribute(?:d)?\s+to|work(?:ed)?\s+on|"
-            r"support(?:ed)?|"
-            r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?)\b",
+            r"help(?:ed)?\s+with|participate(?:d)?\s+in|"
+            r"contribute(?:d)?\s+to|work(?:ed)?\s+on|support(?:ed)?|"
+            r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?|"
+            r"participate(?:d)?|contribute(?:d)?)\b",
             main_scope,
             re.IGNORECASE,
         )
@@ -2167,12 +2173,28 @@ def _strip_chinese_leading_adverbial(value: str) -> str:
     while True:
         stripped, count = re.subn(
             r"^(?:在|于)[^，,。.!！?？；;]{1,24}?"
-            r"(?:中|内|里|期间|阶段|过程中|下)",
+            r"(?:旁边|附近|中|内|里|旁|期间|阶段|过程中|下)",
             "",
             context,
             count=1,
         )
         if count == 0:
+            self_assertions = list(
+                re.finditer(
+                    r"(?:我|本人|我们|咱们)\s*"
+                    r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*"
+                    rf"(?:{CHINESE_COMPOUND_ACTION_PREDICATE}|"
+                    rf"{CHINESE_ACTION_PREDICATE})",
+                    context,
+                )
+            )
+            if re.match(r"^(?:在|于)", context) and self_assertions:
+                final_self = self_assertions[-1]
+                if not re.search(
+                    rf"(?:{CHINESE_ACTION_PREDICATE})",
+                    context[final_self.end() :],
+                ):
+                    return context[final_self.start() :]
             return context
         context = stripped.lstrip()
 
@@ -2193,7 +2215,7 @@ def _is_chinese_adverbial_owner(owner: str) -> bool:
     if re.match(r"^(?:在|于)", owner) and re.search(
         r"导师|老师|同学|同事|队友|供应商|外包(?:团队|项目组)?",
         owner,
-    ):
+    ) and not re.search(r"我|本人|我们|咱们", owner):
         return False
     internal_marker = re.search(r"(?:在|于)", owner)
     if internal_marker is not None and internal_marker.start() > 0:
@@ -2243,7 +2265,7 @@ def _is_english_self_owner(owner: str) -> bool:
 
 
 def _has_other_owner(value: str) -> bool:
-    context = _context_text(value)
+    context = _strip_chinese_leading_adverbial(_context_text(value))
     compact = re.sub(r"\s+", "", context)
     for match in CHINESE_OWNER_ASSIGNMENT.finditer(compact):
         owner = match.group("by_owner") or match.group("copula_owner") or ""
