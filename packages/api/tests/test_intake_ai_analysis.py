@@ -29,6 +29,7 @@ from app.db.models import (
     FactCandidate,
     Fact,
     FactSource,
+    IdempotencyRecord,
     IntakeAnswer,
     IntakeSession,
     Outbox,
@@ -3793,6 +3794,115 @@ def test_executor_reenters_terminal_handler_across_expired_leases_without_rerunn
     assert usage == (expected_usage, None)
 
 
+@pytest.mark.parametrize(
+    ("error_type", "pending_stage", "expected_ai_attempts", "expected_usage"),
+    [
+        (
+            RuntimeError,
+            "terminal_failure_pending_permanent",
+            1,
+            "released",
+        ),
+        (
+            TimeoutError,
+            "terminal_failure_pending_retryable",
+            3,
+            "reserved",
+        ),
+    ],
+)
+def test_public_cancel_rejects_terminal_pending_and_preserves_handler_reentry(
+    intake_analysis_app,
+    monkeypatch,
+    error_type,
+    pending_stage,
+    expected_ai_attempts,
+    expected_usage,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    ai_client = CountingFailingIntakeClient(error_type)
+    service = application.state.task_service
+    clock = MutableTaskClock(datetime.now(timezone.utc))
+    service.clock = clock
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+    original_fail = service.fail_task_in_session
+
+    async def always_fail_after_terminal_writes(*args, **kwargs):
+        await original_fail(*args, **kwargs)
+        raise RuntimeError("terminal write fault")
+
+    monkeypatch.setattr(
+        service,
+        "fail_task_in_session",
+        always_fail_after_terminal_writes,
+    )
+
+    async def exercise_cancel_and_reentry():
+        executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
+        with pytest.raises(RuntimeError, match="terminal failure handler"):
+            await executor.execute("usr_analysis", task_id, resolve_operation)
+        before_cancel = await _terminal_cancel_state(sessions, task_id, answer_id)
+        responses = []
+        for _ in range(2 if error_type is TimeoutError else 1):
+            responses.append(
+                await asyncio.to_thread(
+                    client.post,
+                    f"/v1/tasks/{task_id}/cancel",
+                    headers={"Idempotency-Key": "pending-terminal-cancel"},
+                )
+            )
+        after_cancel = await _terminal_cancel_state(sessions, task_id, answer_id)
+        idempotency_count = await _idempotency_key_count(
+            sessions,
+            "pending-terminal-cancel",
+        )
+
+        monkeypatch.setattr(service, "fail_task_in_session", original_fail)
+        clock.value += timedelta(seconds=301)
+        result = await executor.execute("usr_analysis", task_id, resolve_operation)
+        return (
+            responses,
+            before_cancel,
+            after_cancel,
+            idempotency_count,
+            result,
+            await _terminal_cancel_state(sessions, task_id, answer_id),
+            await _usage_state(sessions, task_id),
+        )
+
+    responses, before, after, idempotency_count, result, final, usage = _run(
+        exercise_cancel_and_reentry()
+    )
+    assert all(response.status_code == 409 for response in responses)
+    assert all(
+        response.json()["error"]["code"] == "TASK_TERMINAL_FAILURE_PENDING"
+        for response in responses
+    )
+    assert before == after
+    assert before[0:3] == (
+        "running",
+        pending_stage,
+        error_type.__name__,
+    )
+    assert idempotency_count == 0
+    assert ai_client.attempts == expected_ai_attempts
+    assert result["status"] == "failed"
+    assert result["error_code"] == error_type.__name__
+    assert final[0:3] == ("failed", "failed", error_type.__name__)
+    assert final[5] is False
+    assert final[-1].count("failed") == 1
+    assert usage == (expected_usage, None)
+
+
 @pytest.mark.parametrize("recovery", ["retry", "continue", "restart"])
 def test_outbox_exhaustion_atomically_unblocks_intake_recovery(
     intake_analysis_app,
@@ -4824,6 +4934,47 @@ async def _terminal_pending_state(sessions, task_id, answer_id):
             task.error_code,
             task.attempts,
             answer.analysis_status,
+        )
+
+
+async def _terminal_cancel_state(sessions, task_id, answer_id):
+    async with sessions() as session:
+        task = await session.scalar(select(Task).where(Task.id == task_id))
+        answer = await session.scalar(
+            select(IntakeAnswer).where(IntakeAnswer.id == answer_id)
+        )
+        events = list(
+            (
+                await session.scalars(
+                    select(TaskEvent.stage)
+                    .where(TaskEvent.task_id == task_id)
+                    .order_by(TaskEvent.seq)
+                )
+            ).all()
+        )
+        assert task is not None and answer is not None
+        return (
+            task.status,
+            task.stage,
+            task.error_code,
+            task.attempts,
+            answer.analysis_status,
+            task.cancellation_requested,
+            task.claim_token,
+            task.claim_lease_expires_at,
+            events,
+        )
+
+
+async def _idempotency_key_count(sessions, key):
+    async with sessions() as session:
+        return int(
+            await session.scalar(
+                select(func.count())
+                .select_from(IdempotencyRecord)
+                .where(IdempotencyRecord.key == key)
+            )
+            or 0
         )
 
 

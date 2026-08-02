@@ -460,6 +460,7 @@ class TaskService:
                 raise TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404)
             if task.status in TERMINAL_STATUSES:
                 return task
+            _reject_terminal_failure_pending_cancel(task)
             task.cancellation_requested = True
             task.ai_cancel_requested_at = (
                 task.ai_cancel_requested_at or self.clock.now()
@@ -516,6 +517,7 @@ class TaskService:
             )
             if task is None:
                 raise TaskServiceError("RESOURCE_NOT_FOUND", "Task not found", 404)
+            _reject_terminal_failure_pending_cancel(task)
             if task.status not in TERMINAL_STATUSES:
                 task.cancellation_requested = True
                 task.ai_cancel_requested_at = (
@@ -1235,6 +1237,15 @@ class TaskService:
 def _cursor(task: Task) -> str:
     value = f"{_as_utc(task.queued_at).isoformat()}|{task.id}"
     return urlsafe_b64encode(value.encode()).decode()
+
+
+def _reject_terminal_failure_pending_cancel(task: Task) -> None:
+    if task.stage in TERMINAL_FAILURE_PENDING_STAGES:
+        raise TaskServiceError(
+            "TASK_TERMINAL_FAILURE_PENDING",
+            "Task terminal failure is pending and cannot be cancelled",
+            409,
+        )
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, str]:

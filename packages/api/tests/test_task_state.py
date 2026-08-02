@@ -133,6 +133,41 @@ async def test_cancelled_task_discards_late_business_result(sql_session_factory)
     ]
 
 
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_direct_cancel_rejects_terminal_failure_pending_without_mutation(
+    sql_session_factory,
+    retryable,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_tasks",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_pending_cancel",
+        idempotency_key=f"pending-cancel-{retryable}",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_tasks", task.id)
+    assert claim is not None
+    await service.mark_terminal_failure_pending(
+        "usr_tasks",
+        task.id,
+        claim.token,
+        "TimeoutError" if retryable else "ValueError",
+        retryable=retryable,
+    )
+    before = await _pending_cancel_state(sql_session_factory, service, task.id)
+
+    with pytest.raises(TaskServiceError) as rejected:
+        await service.request_cancel("usr_tasks", task.id)
+
+    after = await _pending_cancel_state(sql_session_factory, service, task.id)
+    assert rejected.value.code == "TASK_TERMINAL_FAILURE_PENDING"
+    assert rejected.value.status_code == 409
+    assert after == before
+
+
 async def test_ai_run_binding_survives_cancel_and_records_acknowledgement(
     sql_session_factory,
 ):
@@ -225,6 +260,26 @@ async def test_ai_run_created_during_cancel_is_bound_but_cannot_continue(
     assert reservation is not None
     assert reservation.state == "consumed"
     assert reservation.ai_run_id == "run_created_during_cancel"
+
+
+async def _pending_cancel_state(sessions, service, task_id):
+    task = await service.get_task("usr_tasks", task_id)
+    events = await service.list_events("usr_tasks", task_id)
+    async with sessions() as session:
+        reservation = await session.scalar(
+            select(UsageLedger).where(UsageLedger.task_id == task_id)
+        )
+    assert task is not None and reservation is not None
+    return (
+        task.status,
+        task.stage,
+        task.error_code,
+        task.cancellation_requested,
+        task.claim_token,
+        task.claim_lease_expires_at,
+        reservation.state,
+        [(event.seq, event.stage) for event in events],
+    )
 
 
 async def test_same_claim_cannot_replace_an_active_ai_run(sql_session_factory):
