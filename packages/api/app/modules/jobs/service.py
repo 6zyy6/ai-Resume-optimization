@@ -16,6 +16,7 @@ from app.integrations.ai_client import (
     AiCancellation,
     AiClient,
     AiExecutionReceipt,
+    MAX_AI_TEXT_LENGTH,
     ParseJdPayload,
     ParseJdRequest,
     ParseJdResult,
@@ -117,6 +118,12 @@ class JobService:
             current = await self._job(session, owner_id, job_id, lock=True)
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
+            if len(current.raw_encrypted) > MAX_AI_TEXT_LENGTH:
+                raise JobServiceError(
+                    "JD_TEXT_TOO_LONG",
+                    f"Job description must not exceed {MAX_AI_TEXT_LENGTH} characters",
+                    422,
+                )
             existing_task = (
                 await session.scalar(
                     select(Task).where(
@@ -210,6 +217,16 @@ class JobService:
             generation_mode, input_hash, payload = await self._parse_input(
                 session, task, job
             )
+            if payload.jd_text != job.raw_encrypted:
+                await self._fail_parse_in_session(
+                    session,
+                    job,
+                    task,
+                    task_service,
+                    "JD_PARSE_SOURCE_CHANGED",
+                    release_unused_ai_reservation=True,
+                )
+                return job.id
             task.stage = "jd_parse_processing"
             await session.flush()
             request_trace_id = task.trace_id
@@ -259,6 +276,16 @@ class JobService:
                 current_mode, current_hash, current_payload = await self._parse_input(
                     session, claimed_task, current
                 )
+                if current_payload.jd_text != current.raw_encrypted:
+                    await self._fail_parse_in_session(
+                        session,
+                        current,
+                        claimed_task,
+                        task_service,
+                        "JD_PARSE_SOURCE_CHANGED",
+                        release_unused_ai_reservation=True,
+                    )
+                    return current.id
                 if (
                     current_mode != generation_mode
                     or current_hash != input_hash

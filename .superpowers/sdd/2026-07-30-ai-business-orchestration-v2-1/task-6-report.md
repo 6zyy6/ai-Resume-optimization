@@ -159,3 +159,51 @@ PASS
 ```
 
 The full API run emitted eight pre-existing non-fatal aiosqlite event-loop-close warnings in `test_v2_intake.py`. Build retained the existing baseline-browser age and Taro cache-resolution warnings.
+
+## Review fix round 2/5
+
+### RED evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py -q
+4 failed, 19 passed in 2.27s
+```
+
+The four failures precisely reproduced the three remaining Important findings: overlapping distinct legacy values competed for source ranges; direct service parsing of a 20,001-character historical row raised an unhandled Pydantic error; the API exposed the same server exception; and a mutated public Job source still invoked the model and published stale-snapshot provenance.
+
+### Invariant and compatibility decision
+
+- The existing model remains the durable public source: `JobDescription.raw_encrypted` is the only text against which public requirement ranges and hashes are verifiable.
+- The queued hashed snapshot remains authoritative for normal worker execution, but a mismatch between its `jd_text` and the current durable Job source now atomically fails `JD_PARSE_SOURCE_CHANGED`, publishes zero requirements, releases unused admission, and removes the private snapshot. No terminal Outbox input is retained.
+- Historical rows above 20,000 characters remain readable but cannot enter parsing. Service and API return `JD_TEXT_TOO_LONG`/422 before status mutation or Task/Usage/Outbox creation. Since there is no raw-update endpoint, support remediation is to create a new Job within the current 20,000-character contract; no lossy automatic truncation or data migration is performed.
+- Migration occurrence consumption is keyed by owner, Job, and requirement value. Different overlapping values may cite the same exact characters, while repeated identical values require distinct occurrences and excess duplicates fall back to full-source implicit/low provenance.
+
+### GREEN evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py -q
+23 passed in 2.55s
+
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py packages/api/tests/test_matching.py packages/api/tests/test_ai_cancellation.py packages/api/tests/test_suggestions.py packages/api/tests/test_task7_review_fixes.py packages/api/tests/test_outbox.py packages/api/tests/test_task_fix_usage_and_claims.py -q
+82 passed in 6.26s
+
+pnpm test
+API: 1361 passed in 62.86s
+AI: 93 passed, 1 skipped
+Shared: 8 passed
+Design tokens: 2 passed
+Miniprogram: 12 passed
+Web: 53 passed
+Dev supervisor: 2 passed
+
+pnpm generate
+PASS
+
+pnpm lint
+PASS
+
+pnpm build
+PASS
+```
+
+Build retained the existing non-fatal baseline-browser age and Taro cache-resolution warnings.

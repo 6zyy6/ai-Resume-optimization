@@ -51,7 +51,7 @@ def _backfill_legacy_requirements() -> None:
             "ORDER BY r.owner_user_id, r.job_id, r.priority, r.id"
         )
     ).mappings()
-    consumed: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    consumed: dict[tuple[str, str, str], list[tuple[int, int]]] = {}
     for row in rows:
         raw = row["raw_encrypted"]
         value = row["text_encrypted"]
@@ -59,7 +59,7 @@ def _backfill_legacy_requirements() -> None:
             raise RuntimeError(
                 "cannot backfill JD requirement provenance without source text"
             )
-        key = (row["owner_user_id"], row["job_id"])
+        key = (row["owner_user_id"], row["job_id"], value)
         start = -1
         search_from = 0
         while True:

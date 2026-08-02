@@ -25,7 +25,7 @@ from app.integrations.ai_client import (
     ParseJdRequest,
     derive_ai_run_id,
 )
-from app.modules.jobs.service import JobService
+from app.modules.jobs.service import JobService, JobServiceError
 from app.modules.tasks.service import TaskClaimError, TaskService
 from app.integrations.storage import MemoryStorage
 from app.workers.execution import TaskExecutor, resolve_operation
@@ -66,7 +66,7 @@ def test_jd_requirement_model_declares_structured_provenance_and_owner_ai_run_fk
     )
 
 
-def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_trips(
+def test_migration_0015_backfills_overlaps_and_duplicate_occurrences_honestly(
     tmp_path,
     monkeypatch,
 ):
@@ -88,7 +88,7 @@ def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_t
             text(
                 "INSERT INTO job_descriptions "
                 "(id, title, raw_encrypted, status, created_at, owner_user_id) "
-                "VALUES ('job_legacy_jd', '工程师', '- Python\n- Python', "
+                    "VALUES ('job_legacy_jd', '工程师', 'Python SQL\nPython', "
                 "'parsed', :now, 'usr_legacy_jd')"
             ),
             {"now": now},
@@ -97,11 +97,13 @@ def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_t
             text(
                 "INSERT INTO jd_requirements "
                 "(id, job_id, type, priority, text_encrypted, confirmed, owner_user_id) "
-                "VALUES ('req_legacy_1', 'job_legacy_jd', 'preferred', 1, 'Python', 0, "
-                "'usr_legacy_jd'), "
-                "('req_legacy_2', 'job_legacy_jd', 'preferred', 2, 'Python', 0, "
-                "'usr_legacy_jd'), "
-                "('req_legacy_3', 'job_legacy_jd', 'preferred', 3, 'Python', 0, "
+                    "VALUES ('req_legacy_overlap', 'job_legacy_jd', 'preferred', 1, "
+                    "'Python SQL', 0, 'usr_legacy_jd'), "
+                    "('req_legacy_1', 'job_legacy_jd', 'preferred', 2, 'Python', 0, "
+                    "'usr_legacy_jd'), "
+                    "('req_legacy_2', 'job_legacy_jd', 'preferred', 3, 'Python', 0, "
+                    "'usr_legacy_jd'), "
+                    "('req_legacy_3', 'job_legacy_jd', 'preferred', 4, 'Python', 0, "
                 "'usr_legacy_jd')"
             )
         )
@@ -116,21 +118,23 @@ def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_t
             )
         ).all()
     assert [(row.source_start, row.source_end) for row in rows] == [
-        (2, 8),
+        (0, 10),
+        (0, 6),
         (11, 17),
         (0, 17),
     ]
     assert [row.source_hash for row in rows] == [
+        hashlib.sha256(b"Python SQL").hexdigest(),
         hashlib.sha256(b"Python").hexdigest(),
         hashlib.sha256(b"Python").hexdigest(),
-        hashlib.sha256(b"- Python\n- Python").hexdigest(),
+        hashlib.sha256(b"Python SQL\nPython").hexdigest(),
     ]
     assert all(
         (row.explicitness, row.confidence_band, row.generation_mode)
         == ("explicit", "high", "rule_fallback")
-        for row in rows[:2]
+        for row in rows[:3]
     )
-    assert (rows[2].explicitness, rows[2].confidence_band) == ("implicit", "low")
+    assert (rows[3].explicitness, rows[3].confidence_band) == ("implicit", "low")
     assert all(row.workflow_version == "legacy-rule-fallback@1" for row in rows)
     assert all(row.ai_run_id is None and len(row.input_hash) == 64 for row in rows)
 
@@ -387,6 +391,86 @@ async def _outbox_payload(sessions, owner_id: str, task_id: str):
         )
         assert outbox is not None
         return outbox.payload
+
+
+async def _seed_legacy_oversized_job(sessions, owner_id: str, job_id: str) -> None:
+    async with sessions.begin() as session:
+        if await session.get(User, owner_id) is None:
+            session.add(User(id=owner_id))
+            await session.flush()
+        session.add(
+            JobDescription(
+                id=job_id,
+                owner_user_id=owner_id,
+                title="历史岗位",
+                raw_encrypted="x" * 20_001,
+                status="draft",
+            )
+        )
+
+
+async def test_legacy_oversized_job_parse_fails_before_task_admission(
+    sql_session_factory,
+):
+    owner_id = "usr_legacy_oversized"
+    job_id = "job_legacy_oversized"
+    await _seed_legacy_oversized_job(sql_session_factory, owner_id, job_id)
+    tasks = TaskService(sql_session_factory)
+    jobs = JobService(sql_session_factory, None)
+
+    with pytest.raises(JobServiceError) as raised:
+        await jobs.parse(
+            owner_id,
+            job_id,
+            "legacy-oversized-service",
+            trace_id="trace_legacy_oversized",
+            task_service=tasks,
+        )
+
+    assert raised.value.code == "JD_TEXT_TOO_LONG"
+    assert raised.value.status_code == 422
+    async with sql_session_factory() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job_id,
+                JobDescription.owner_user_id == owner_id,
+            )
+        )
+        assert current is not None
+        assert (current.status, current.task_id) == ("draft", None)
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert await session.scalar(select(func.count()).select_from(UsageLedger)) == 0
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
+
+
+async def test_legacy_oversized_job_parse_api_returns_stable_422_without_side_effects(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    job_id = "job_legacy_oversized_api"
+    await _seed_legacy_oversized_job(sessions, "usr_a", job_id)
+
+    response = client.post(
+        f"/v1/jobs/{job_id}/parse",
+        headers={"Idempotency-Key": "legacy-oversized-api"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "JD_TEXT_TOO_LONG"
+    async with sessions() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job_id,
+                JobDescription.owner_user_id == "usr_a",
+            )
+        )
+        assert current is not None
+        assert (current.status, current.task_id) == ("draft", None)
+        assert await session.scalar(
+            select(func.count()).select_from(Task).where(Task.resource_id == job_id)
+        ) == 0
+        assert await session.scalar(select(func.count()).select_from(UsageLedger)) == 0
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
 
 
 async def test_model_receipt_persists_exact_sourced_candidates_and_provenance(
@@ -815,7 +899,7 @@ async def test_parse_processing_rejects_claimless_execution(sql_session_factory)
     assert await _rows(sql_session_factory, owner, job.id) == []
 
 
-async def test_claimed_parse_uses_immutable_snapshot_after_job_text_changes(
+async def test_claimed_parse_fails_closed_when_public_job_source_changes(
     sql_session_factory,
 ):
     requirement = {
@@ -838,7 +922,6 @@ async def test_claimed_parse_uses_immutable_snapshot_after_job_text_changes(
             )
         )
         assert current is not None
-        current.title = "已变更标题"
         current.raw_encrypted = "SQL"
 
     await jobs.process_parse(
@@ -850,11 +933,17 @@ async def test_claimed_parse_uses_immutable_snapshot_after_job_text_changes(
         task_service=tasks,
     )
 
-    assert client.requests[0].payload.job_title == "后端工程师"
-    assert client.requests[0].payload.jd_text == "Python"
-    assert [row.text_encrypted for row in await _rows(sql_session_factory, owner, job.id)] == [
-        "Python"
-    ]
+    assert client.requests == []
+    assert await _rows(sql_session_factory, owner, job.id) == []
+    task = await tasks.get_task(owner, job.task_id)
+    assert task is not None and task.status == "failed"
+    assert task.error_code == "JD_PARSE_SOURCE_CHANGED"
+    current = await jobs.get(owner, job.id)
+    assert current is not None
+    assert (current.status, current.raw_encrypted) == ("failed", "SQL")
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
 
 
 async def test_preclaim_parse_cancellation_restores_job_and_scrubs_snapshot(
