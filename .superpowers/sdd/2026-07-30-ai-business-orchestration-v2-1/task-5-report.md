@@ -114,3 +114,64 @@ Output: clean (no output).
 - Responsibility fragments are deterministically split on common Chinese and English coordination punctuation/conjunctions. This is intentionally conservative and does not attempt general-purpose linguistic parsing.
 - A registered run with a lost cancellation receipt remains charged as consumed in UsageLedger, while the Task's active coordination pointer is cleared so business recovery is not blocked.
 - This is focused local evidence. It does not claim real provider, cloud queue, or production PostgreSQL acceptance.
+
+## Round 3: conservative responsibility delimiters
+
+Base commit: `5f3ef73 fix(intake): close draft quality recovery gaps`
+
+### Finding
+
+The fragment regex treated the Chinese characters `和`, `及`, and `与` as delimiters anywhere inside a word. It also skipped an empty marker-only fragment before updating inherited responsibility strength, and did not recognize the explicit list separators `&` and `/`. These paths let stronger responsibility be borrowed across topics or erase the claim's responsibility level.
+
+### RED
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+..FFF.....FFF                                                            [100%]
+6 failed, 7 passed in 1.06s
+```
+
+The failures reproduced all three bypasses through both `fact_policy_check` and a persisted version processed by the real `ExportService`:
+
+- `负责和平项目` backed by `参与和平项目`;
+- `managed customer research & market analysis` backed by weak research plus strong market evidence;
+- `负责用户调研/市场分析` backed by weak research plus strong market evidence.
+
+### GREEN
+
+The splitter now recognizes only explicit punctuation/list delimiters (`、，,;；。`, `&/＆`, and `/／`), whitespace-delimited English `and`, and the complete Chinese conjunction `以及`. It no longer splits arbitrary Chinese words on a single character. Responsibility strength is updated before a marker-only empty subject is skipped, so a following listed topic inherits the declared level.
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+.............                                                            [100%]
+13 passed in 0.97s
+```
+
+Focused regression command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py packages/api/tests/test_exports.py packages/api/tests/test_task4_sql_integration.py::test_quality_rejects_responsibility_strength_inflation -q
+```
+
+Output:
+
+```text
+.............................................                            [100%]
+45 passed in 1.58s
+```
+
+Risk: ambiguous unspaced single-character Chinese conjunctions are intentionally not split. This avoids corrupting ordinary words such as `和平`; explicit punctuation, `以及`, `&`, or `/` remains supported for deterministic multi-topic validation.

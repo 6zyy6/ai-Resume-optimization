@@ -208,34 +208,39 @@ def test_fact_policy_allows_responsibility_strength_downgrade():
             "managed customer research and market analysis",
             ("supported customer research", "managed market analysis"),
         ),
+        ("负责和平项目", ("参与和平项目",)),
+        (
+            "managed customer research & market analysis",
+            ("supported customer research", "managed market analysis"),
+        ),
+        (
+            "负责用户调研/市场分析",
+            ("参与用户调研", "负责市场分析"),
+        ),
     ],
 )
 def test_fact_policy_does_not_borrow_strong_responsibility_across_topics(
     claim,
     facts,
 ):
+    fact_ids = tuple(f"fact_{index}" for index in range(len(facts)))
     result = fact_policy_check(
         claim,
         [
             DraftClaim(
                 text=claim,
-                fact_refs=("fact_research", "fact_market"),
+                fact_refs=fact_ids,
                 claim_order=0,
             )
         ],
         [
             ConfirmedFactProjection(
-                id="fact_research",
-                value=facts[0],
+                id=fact_id,
+                value=fact,
                 status="confirmed",
-                source_hashes=("research_hash",),
-            ),
-            ConfirmedFactProjection(
-                id="fact_market",
-                value=facts[1],
-                status="confirmed",
-                source_hashes=("market_hash",),
-            ),
+                source_hashes=(f"source_hash_{index}",),
+            )
+            for index, (fact_id, fact) in enumerate(zip(fact_ids, facts))
         ],
     )
 

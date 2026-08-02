@@ -194,6 +194,17 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
             ("supported customer research", "managed market analysis"),
             "en-multi-topic",
         ),
+        ("负责和平项目", ("参与和平项目",), "zh-word-internal"),
+        (
+            "managed customer research & market analysis",
+            ("supported customer research", "managed market analysis"),
+            "en-ampersand",
+        ),
+        (
+            "负责用户调研/市场分析",
+            ("参与用户调研", "负责市场分析"),
+            "zh-slash",
+        ),
     ],
 )
 def test_export_service_blocks_written_responsibility_inflation(

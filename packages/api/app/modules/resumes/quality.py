@@ -230,15 +230,15 @@ def _responsibility_fragments(text: str) -> list[tuple[str, int]]:
     fragments: list[tuple[str, int]] = []
     inherited_strength = 0
     for raw in re.split(
-        r"[、，,;；。]|\s+and\s+|以及|与|和|及",
+        r"[、，,;；。/&＆／]|\s+and\s+|以及",
         text.casefold(),
     ):
-        subject = _without_responsibility_markers(raw).strip()
-        if not subject:
-            continue
         local_strength = responsibility_strength(raw)
         if local_strength:
             inherited_strength = local_strength
+        subject = _without_responsibility_markers(raw).strip()
+        if not subject:
+            continue
         fragments.append((subject, local_strength or inherited_strength))
     return fragments
 
