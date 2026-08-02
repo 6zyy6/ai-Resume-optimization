@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import sqlalchemy as sa
 from alembic import op
@@ -74,6 +75,59 @@ def _backfill() -> None:
         )
 
 
+def _backfill_suggestion_fact_ranges() -> None:
+    bind = op.get_bind()
+    links = bind.execute(
+        sa.text(
+            "SELECT suggestion_id, fact_id, owner_user_id, claim_range "
+            "FROM suggestion_fact_links"
+        )
+    ).mappings()
+    for row in links:
+        claim_range = row["claim_range"]
+        if isinstance(claim_range, str):
+            claim_range = json.loads(claim_range)
+        start = claim_range.get("start") if isinstance(claim_range, dict) else None
+        end = claim_range.get("end") if isinstance(claim_range, dict) else None
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end <= start
+        ):
+            raise RuntimeError("cannot migrate invalid suggestion fact claim range")
+        bind.execute(
+            sa.text(
+                "UPDATE suggestion_fact_links SET claim_start = :start, claim_end = :end "
+                "WHERE suggestion_id = :suggestion_id AND fact_id = :fact_id "
+                "AND owner_user_id = :owner"
+            ),
+            {
+                "start": start,
+                "end": end,
+                "suggestion_id": row["suggestion_id"],
+                "fact_id": row["fact_id"],
+                "owner": row["owner_user_id"],
+            },
+        )
+
+
+def _replace_suggestion_fact_primary_key(columns: list[str]) -> None:
+    constraint = sa.inspect(op.get_bind()).get_pk_constraint(
+        "suggestion_fact_links"
+    )
+    name = constraint.get("name")
+    options = {}
+    if name is None:
+        name = "pk_suggestion_fact_links"
+        options["naming_convention"] = {"pk": "pk_%(table_name)s"}
+    with op.batch_alter_table("suggestion_fact_links", **options) as batch:
+        batch.drop_constraint(name, type_="primary")
+        batch.create_primary_key("pk_suggestion_fact_links", columns)
+
+
 def upgrade() -> None:
     with op.batch_alter_table("match_analyses") as batch:
         batch.add_column(sa.Column("generation_mode", sa.String(32), nullable=True))
@@ -93,8 +147,25 @@ def upgrade() -> None:
         batch.add_column(sa.Column("ai_run_id", sa.String(64), nullable=True))
         batch.add_column(sa.Column("input_hash", sa.String(64), nullable=True))
         batch.add_column(sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
+    with op.batch_alter_table("suggestion_fact_links") as batch:
+        batch.add_column(sa.Column("claim_start", sa.Integer(), nullable=True))
+        batch.add_column(sa.Column("claim_end", sa.Integer(), nullable=True))
 
     _backfill()
+    _backfill_suggestion_fact_ranges()
+
+    with op.batch_alter_table("suggestion_fact_links") as batch:
+        batch.alter_column(
+            "claim_start", existing_type=sa.Integer(), nullable=False
+        )
+        batch.alter_column("claim_end", existing_type=sa.Integer(), nullable=False)
+        batch.create_check_constraint(
+            "ck_suggestion_fact_claim_range",
+            "claim_start >= 0 AND claim_end > claim_start",
+        )
+    _replace_suggestion_fact_primary_key(
+        ["suggestion_id", "fact_id", "claim_start", "claim_end"]
+    )
 
     with op.batch_alter_table("match_analyses") as batch:
         for name, column_type in (
@@ -181,6 +252,23 @@ def downgrade() -> None:
         raise RuntimeError(
             "cannot downgrade match provenance while newly generated analyses exist"
         )
+
+    duplicate_links = op.get_bind().execute(
+        sa.text(
+            "SELECT suggestion_id, fact_id FROM suggestion_fact_links "
+            "GROUP BY suggestion_id, fact_id HAVING COUNT(*) > 1 LIMIT 1"
+        )
+    ).first()
+    if duplicate_links is not None:
+        raise RuntimeError(
+            "cannot downgrade while a suggestion fact has multiple claim ranges"
+        )
+
+    _replace_suggestion_fact_primary_key(["suggestion_id", "fact_id"])
+    with op.batch_alter_table("suggestion_fact_links") as batch:
+        batch.drop_constraint("ck_suggestion_fact_claim_range", type_="check")
+        batch.drop_column("claim_end")
+        batch.drop_column("claim_start")
 
     with op.batch_alter_table("suggestions") as batch:
         batch.drop_index("ix_suggestions_ai_run_id")

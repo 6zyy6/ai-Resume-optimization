@@ -7,8 +7,20 @@ from app.db.models import Fact, ResumeVersion, Suggestion, SuggestionFactLink
 
 from app.modules.suggestions.service import (
     SuggestionConflict,
+    SuggestionService,
+    SuggestionServiceError,
     apply_suggestion_decision,
 )
+
+
+class FactDriftAfterReadSuggestionService(SuggestionService):
+    async def _confirmed_facts(self, session, suggestion):
+        result = await super()._confirmed_facts(session, suggestion)
+        facts = result[0]
+        assert facts
+        facts[0].status = "rejected"
+        await session.flush()
+        return result
 
 
 def _suggestion() -> dict:
@@ -199,6 +211,27 @@ def test_pending_accept_revalidates_original_hash_before_creating_version(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "SUGGESTION_BASE_CONFLICT"
+    assert asyncio.run(_version_count(sessions)) == before
+
+
+def test_decision_rechecks_locked_fact_state_before_version_commit(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    suggestion_id, _ = _setup_suggestion(client)
+    before = asyncio.run(_version_count(sessions))
+
+    with pytest.raises(SuggestionServiceError, match="FACT_NOT_CONFIRMED"):
+        asyncio.run(
+            FactDriftAfterReadSuggestionService(sessions).decide(
+                "usr_a",
+                suggestion_id,
+                "accept",
+                edited_text=None,
+                idempotency_key="fact-drift-after-read",
+            )
+        )
+
     assert asyncio.run(_version_count(sessions)) == before
 
 

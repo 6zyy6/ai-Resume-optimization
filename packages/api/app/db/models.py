@@ -898,6 +898,10 @@ class Suggestion(OwnerMixin, Base):
 class SuggestionFactLink(OwnerMixin, Base):
     __tablename__ = "suggestion_fact_links"
     __table_args__ = (
+        CheckConstraint(
+            "claim_start >= 0 AND claim_end > claim_start",
+            name="ck_suggestion_fact_claim_range",
+        ),
         ForeignKeyConstraint(
             ["suggestion_id", "owner_user_id"],
             ["suggestions.id", "suggestions.owner_user_id"],
@@ -912,6 +916,16 @@ class SuggestionFactLink(OwnerMixin, Base):
 
     suggestion_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     fact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claim_start: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=lambda context: context.get_current_parameters()["claim_range"]["start"],
+    )
+    claim_end: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        default=lambda context: context.get_current_parameters()["claim_range"]["end"],
+    )
     claim_range: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 

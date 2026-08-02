@@ -1827,6 +1827,15 @@ export interface components {
              */
             source_type: "question_answer" | "imported_resume" | "user_edit" | "user_confirmation";
         };
+        /** SuggestionFactLinkResponse */
+        SuggestionFactLinkResponse: {
+            /** Claim Range */
+            claim_range: {
+                [key: string]: number;
+            };
+            /** Fact Id */
+            fact_id: string;
+        };
         /** SuggestionListResponse */
         SuggestionListResponse: {
             /** Items */
@@ -1836,6 +1845,8 @@ export interface components {
         SuggestionResponse: {
             /** Ai Run Id */
             ai_run_id: string | null;
+            /** Fact Links */
+            fact_links: components["schemas"]["SuggestionFactLinkResponse"][];
             /** Fact Refs */
             fact_refs: string[];
             /** Generation Mode */

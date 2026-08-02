@@ -37,6 +37,7 @@ from app.integrations.ai_client import (
 )
 from app.modules.matching.service import MatchingService
 from app.modules.resumes.service import canonical_snapshot
+from app.modules.suggestions.service import SuggestionService
 from app.modules.tasks.service import TaskService
 
 
@@ -165,6 +166,9 @@ def test_migration_0016_backfills_existing_business_rows_as_rule_fallback(
     assert suggestion.workflow_version == "legacy-rule-fallback@1"
     assert suggestion.ai_run_id is None and len(suggestion.input_hash) == 64
     assert analysis.updated_at == suggestion.updated_at == now
+    assert inspect(engine).get_pk_constraint("suggestion_fact_links")[
+        "constrained_columns"
+    ] == ["suggestion_id", "fact_id", "claim_start", "claim_end"]
 
     command.downgrade(config, "0015")
     assert "generation_mode" not in {
@@ -261,6 +265,57 @@ class FailFirstSuggestionTransport(TwoStageReceiptClient):
                 )
                 assert await cancellation.register_run(ai_run_id) is True
                 raise TimeoutError("transport failed after stage registration")
+        return await super().run(request, cancellation)
+
+
+class DriftDuringSuggestionClient(TwoStageReceiptClient):
+    def __init__(self, sessions, suffix: str, drift: str) -> None:
+        super().__init__()
+        self.sessions = sessions
+        self.suffix = suffix
+        self.drift = drift
+        self.mutated = False
+
+    async def run(self, request, cancellation=None):
+        if isinstance(request, GenerateSuggestionsBatchRequest) and not self.mutated:
+            async with self.sessions.begin() as session:
+                if self.drift == "fact_status":
+                    fact = await session.scalar(
+                        select(Fact).where(Fact.id == f"fact_{self.suffix}")
+                    )
+                    assert fact is not None
+                    fact.status = "rejected"
+                elif self.drift == "fact_source":
+                    source = SourceRecord(
+                        id=f"src_{self.suffix}_added",
+                        owner_user_id=f"usr_{self.suffix}",
+                        source_type="user_confirmation",
+                        content_encrypted="Additional evidence",
+                    )
+                    session.add(source)
+                    await session.flush()
+                    session.add(
+                        FactSource(
+                            fact_id=f"fact_{self.suffix}",
+                            source_record_id=source.id,
+                            owner_user_id=f"usr_{self.suffix}",
+                            source_hash=hashlib.sha256(
+                                source.content_encrypted.encode()
+                            ).hexdigest(),
+                        )
+                    )
+                else:
+                    requirement = await session.scalar(
+                        select(JdRequirement).where(
+                            JdRequirement.id == f"req_{self.suffix}"
+                        )
+                    )
+                    assert requirement is not None
+                    if self.drift == "requirement_confirmation":
+                        requirement.confirmed = False
+                    else:
+                        requirement.text_encrypted = "Go"
+            self.mutated = True
         return await super().run(request, cancellation)
 
 
@@ -432,6 +487,44 @@ async def test_success_publishes_exact_requirement_coverage_with_shared_trace_an
     }
 
 
+async def test_unconfirmed_requirements_are_excluded_from_both_model_stages(
+    sql_session_factory,
+):
+    ai = TwoStageReceiptClient()
+    owner, service, tasks, analysis, claim = await _queued_match(
+        sql_session_factory,
+        ai,
+        "mixed_confirmation",
+        add_unconfirmed_requirement=True,
+    )
+
+    await service.process_match(
+        owner,
+        analysis.id,
+        trace_id="ignored",
+        task_id=analysis.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    assert len(ai.requests) == 2
+    assert [
+        item.id for item in ai.requests[0].payload.confirmed_requirements
+    ] == ["req_mixed_confirmation"]
+    assert [
+        item.id for item in ai.requests[1].payload.confirmed_requirements
+    ] == ["req_mixed_confirmation"]
+    async with sql_session_factory() as session:
+        items = list(
+            (
+                await session.scalars(
+                    select(MatchItem).where(MatchItem.analysis_id == analysis.id)
+                )
+            ).all()
+        )
+    assert [item.requirement_id for item in items] == ["req_mixed_confirmation"]
+
+
 async def test_failed_match_receipt_stops_before_suggestions_and_publishes_nothing(
     sql_session_factory,
 ):
@@ -544,6 +637,44 @@ async def test_unsupported_suggestion_claim_fails_task_without_public_rows(
     assert task is not None and task.status == "failed"
 
 
+@pytest.mark.parametrize(
+    "drift",
+    ["fact_status", "fact_source", "requirement_confirmation", "requirement_value"],
+)
+async def test_final_publication_revalidates_current_policy_state(
+    sql_session_factory,
+    drift,
+):
+    suffix = f"final_drift_{drift}"
+    ai = DriftDuringSuggestionClient(sql_session_factory, suffix, drift)
+    owner, service, tasks, analysis, claim = await _queued_match(
+        sql_session_factory, ai, suffix
+    )
+
+    await service.process_match(
+        owner,
+        analysis.id,
+        trace_id="ignored",
+        task_id=analysis.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    async with sql_session_factory() as session:
+        task = await session.scalar(select(Task).where(Task.id == analysis.task_id))
+        current = await session.scalar(
+            select(MatchAnalysis).where(MatchAnalysis.id == analysis.id)
+        )
+    assert await _count(sql_session_factory, AiRun) == 2
+    assert await _count(sql_session_factory, UsageLedger) == 1
+    assert await _count(sql_session_factory, MatchItem) == 0
+    assert await _count(sql_session_factory, Suggestion) == 0
+    assert await _count(sql_session_factory, SuggestionFactLink) == 0
+    assert task is not None and task.status == "failed"
+    assert task.error_code == "MATCH_PUBLICATION_STATE_CHANGED"
+    assert current is not None and current.status == "failed"
+
+
 async def test_match_without_editable_candidates_still_settles_empty_suggestion_stage(
     sql_session_factory,
 ):
@@ -579,6 +710,108 @@ async def test_match_without_editable_candidates_still_settles_empty_suggestion_
     assert await _count(sql_session_factory, AiRun) == 2
     assert await _count(sql_session_factory, MatchItem) == 1
     assert await _count(sql_session_factory, Suggestion) == 0
+
+
+async def test_repeated_fact_claims_keep_exact_ranges_through_acceptance(
+    sql_session_factory,
+):
+    suffix = "repeated_fact_ranges"
+    ai = TwoStageReceiptClient(
+        suggestions=(
+            {
+                "target_path": "/sections/0/items/0/text",
+                "original_hash": hashlib.sha256(b"Python").hexdigest(),
+                "suggested_text": "Python, Python",
+                "atomic_claims": (
+                    {
+                        "text": "Python",
+                        "fact_refs": (f"fact_{suffix}",),
+                        "claim_order": 0,
+                    },
+                    {
+                        "text": "Python",
+                        "fact_refs": (f"fact_{suffix}",),
+                        "claim_order": 1,
+                    },
+                ),
+                "requirement_ref": f"req_{suffix}",
+                "reason": "保留两个独立原子声明",
+                "risk_flags": (),
+                "proposed_status": "pending",
+            },
+        )
+    )
+    owner, service, tasks, analysis, claim = await _queued_match(
+        sql_session_factory, ai, suffix
+    )
+
+    await service.process_match(
+        owner,
+        analysis.id,
+        trace_id="ignored",
+        task_id=analysis.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    async with sql_session_factory() as session:
+        suggestion = await session.scalar(
+            select(Suggestion).where(Suggestion.analysis_id == analysis.id)
+        )
+        assert suggestion is not None
+        links = list(
+            (
+                await session.scalars(
+                    select(SuggestionFactLink)
+                    .where(SuggestionFactLink.suggestion_id == suggestion.id)
+                )
+            ).all()
+        )
+        links.sort(key=lambda link: link.claim_range["start"])
+    assert [link.claim_range for link in links] == [
+        {"start": 0, "end": 6},
+        {"start": 8, "end": 14},
+    ]
+    published = await service.get(owner, analysis.id)
+    assert published is not None
+    assert getattr(published, "suggestion_fact_links", {}) == {
+        suggestion.id: [
+            {
+                "fact_id": f"fact_{suffix}",
+                "claim_range": {"start": 0, "end": 6},
+            },
+            {
+                "fact_id": f"fact_{suffix}",
+                "claim_range": {"start": 8, "end": 14},
+            },
+        ]
+    }
+
+    saved = await SuggestionService(sql_session_factory).decide(
+        owner,
+        suggestion.id,
+        "accept",
+        edited_text=None,
+        idempotency_key="accept_repeated_fact_ranges",
+    )
+    async with sql_session_factory() as session:
+        copied = list(
+            (
+                await session.scalars(
+                    select(BulletFactLink)
+                    .where(
+                        BulletFactLink.resume_version_id == saved.version.id,
+                        BulletFactLink.bullet_id == "bullet_python",
+                        BulletFactLink.fact_id == f"fact_{suffix}",
+                    )
+                    .order_by(BulletFactLink.claim_start)
+                )
+            ).all()
+        )
+    assert [link.claim_range for link in copied] == [
+        {"start": 0, "end": 6},
+        {"start": 8, "end": 14},
+    ]
 
 
 async def test_retry_resumes_the_stable_registered_suggestion_run(
@@ -624,7 +857,13 @@ async def _count(sessions, model) -> int:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
 
 
-async def _queued_match(sessions, ai_client, suffix: str):
+async def _queued_match(
+    sessions,
+    ai_client,
+    suffix: str,
+    *,
+    add_unconfirmed_requirement: bool = False,
+):
     owner = f"usr_{suffix}"
     source_hash = hashlib.sha256(b"Python").hexdigest()
     snapshot, snapshot_hash = canonical_snapshot(
@@ -720,6 +959,27 @@ async def _queued_match(sessions, ai_client, suffix: str):
             input_hash="a" * 64,
         )
         session.add_all([version, requirement])
+        if add_unconfirmed_requirement:
+            session.add(
+                JdRequirement(
+                    id=f"req_{suffix}_unconfirmed",
+                    owner_user_id=owner,
+                    job_id=job.id,
+                    type="preferred",
+                    priority=2,
+                    text_encrypted="Kubernetes",
+                    confirmed=False,
+                    source_start=0,
+                    source_end=6,
+                    source_hash=source_hash,
+                    explicitness="explicit",
+                    confidence_band="high",
+                    generation_mode="rule_fallback",
+                    workflow_version="2",
+                    ai_run_id=None,
+                    input_hash="b" * 64,
+                )
+            )
         await session.flush()
         resume.head_version = 1
         resume.head_version_id = version.id

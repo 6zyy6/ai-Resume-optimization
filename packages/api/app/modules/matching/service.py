@@ -13,6 +13,7 @@ from app.core.ids import new_id
 from app.db.models import (
     BulletFactLink,
     Fact,
+    FactSource,
     JdRequirement,
     JobDescription,
     MatchAnalysis,
@@ -85,6 +86,9 @@ class MatchAnalysisResult:
     suggestions: list[Suggestion]
     suggestion_fact_refs: dict[str, list[str]] = field(default_factory=dict)
     requirement_texts: dict[str, str] = field(default_factory=dict)
+    suggestion_fact_links: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
 
 def classify_requirements(
@@ -190,21 +194,28 @@ class MatchingService:
                         .where(
                             JdRequirement.job_id == job.id,
                             JdRequirement.owner_user_id == job.owner_user_id,
+                            JdRequirement.confirmed.is_(True),
                         )
                         .order_by(JdRequirement.priority, JdRequirement.id)
                     )
                 ).all()
             )
             if not requirements:
+                has_requirements = await session.scalar(
+                    select(JdRequirement.id).where(
+                        JdRequirement.job_id == job.id,
+                        JdRequirement.owner_user_id == job.owner_user_id,
+                    )
+                )
+                if has_requirements is not None:
+                    raise MatchServiceError(
+                        "JOB_REQUIREMENTS_NOT_CONFIRMED",
+                        "Confirm at least one job requirement before matching",
+                        409,
+                    )
                 raise MatchServiceError(
                     "JOB_REQUIREMENTS_REQUIRED",
                     "Parse the job description before matching",
-                    409,
-                )
-            if any(not requirement.confirmed for requirement in requirements):
-                raise MatchServiceError(
-                    "JOB_REQUIREMENTS_NOT_CONFIRMED",
-                    "Confirm every job requirement before matching",
                     409,
                 )
             version = await self._target_version(
@@ -744,6 +755,59 @@ class MatchingService:
             elif suggestion_receipt.run.status != "succeeded" or suggestion_error:
                 current.status = "failed"
                 return current.id
+            current_requirements = list(
+                (
+                    await session.scalars(
+                        select(JdRequirement)
+                        .where(
+                            JdRequirement.job_id == current.job_id,
+                            JdRequirement.owner_user_id
+                            == current.job_owner_user_id,
+                        )
+                        .order_by(JdRequirement.priority, JdRequirement.id)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            current_requirements = [
+                requirement
+                for requirement in current_requirements
+                if requirement.confirmed
+            ]
+            current_evidence = await self._evidence_projection(
+                session, version, lock=True
+            )
+            current_match_payload = self._match_payload(
+                version, current_requirements, current_evidence
+            )
+            current_match_hash = _workflow_input_hash(
+                "match_resume_to_jd", "resume-match@2", current_match_payload
+            )
+            current_suggestion_payload = self._suggestion_payload(
+                match_rows, current_match_payload, version.snapshot_json
+            )
+            current_suggestion_hash = _workflow_input_hash(
+                "generate_suggestions_batch",
+                "suggestions-batch@2",
+                current_suggestion_payload,
+            )
+            if (
+                not current_requirements
+                or current_match_hash != match_input_hash
+                or current_suggestion_hash != suggestion_input_hash
+            ):
+                if claimed_task is not None and task_service is not None:
+                    await self._fail_in_session(
+                        session,
+                        current,
+                        claimed_task,
+                        task_service,
+                        "MATCH_PUBLICATION_STATE_CHANGED",
+                    )
+                else:
+                    await self._delete_public_rows(session, current)
+                    current.status = "failed"
+                return current.id
             await self._publish_in_session(
                 session,
                 current,
@@ -849,10 +913,17 @@ class MatchingService:
             list(
                 (
                     await session.scalars(
-                        select(SuggestionFactLink).where(
+                        select(SuggestionFactLink)
+                        .where(
                             SuggestionFactLink.suggestion_id.in_(suggestion_ids),
                             SuggestionFactLink.owner_user_id
                             == analysis.owner_user_id,
+                        )
+                        .order_by(
+                            SuggestionFactLink.suggestion_id,
+                            SuggestionFactLink.claim_start,
+                            SuggestionFactLink.claim_end,
+                            SuggestionFactLink.fact_id,
                         )
                     )
                 ).all()
@@ -883,14 +954,24 @@ class MatchingService:
         fact_refs: dict[str, list[str]] = {
             suggestion.id: [] for suggestion in suggestions
         }
+        fact_links: dict[str, list[dict[str, Any]]] = {
+            suggestion.id: [] for suggestion in suggestions
+        }
         for link in links:
             fact_refs[link.suggestion_id].append(link.fact_id)
+            fact_links[link.suggestion_id].append(
+                {
+                    "fact_id": link.fact_id,
+                    "claim_range": dict(link.claim_range),
+                }
+            )
         return MatchAnalysisResult(
             analysis,
             items,
             suggestions,
             fact_refs,
             {row.id: row.text_encrypted for row in requirements},
+            fact_links,
         )
 
     async def _processing_context(
@@ -931,12 +1012,13 @@ class MatchingService:
                             JdRequirement.job_id == analysis.job_id,
                             JdRequirement.owner_user_id
                             == analysis.job_owner_user_id,
+                            JdRequirement.confirmed.is_(True),
                         )
                         .order_by(JdRequirement.priority, JdRequirement.id)
                     )
                 ).all()
             )
-            if not requirements or any(not item.confirmed for item in requirements):
+            if not requirements:
                 raise MatchServiceError(
                     "JOB_REQUIREMENTS_NOT_CONFIRMED",
                     "Confirmed job requirements changed after matching was queued",
@@ -949,36 +1031,64 @@ class MatchingService:
     async def _evidence_projection(
         session: AsyncSession,
         version: ResumeVersion,
+        *,
+        lock: bool = False,
     ) -> tuple[EvidenceFact, ...]:
-        links = list(
-            (
-                await session.scalars(
-                    select(BulletFactLink).where(
-                        BulletFactLink.resume_version_id == version.id,
-                        BulletFactLink.owner_user_id == version.owner_user_id,
-                        BulletFactLink.fact_status_at_link == "confirmed",
-                    )
-                )
-            ).all()
+        link_query = (
+            select(BulletFactLink)
+            .where(
+                BulletFactLink.resume_version_id == version.id,
+                BulletFactLink.owner_user_id == version.owner_user_id,
+                BulletFactLink.fact_status_at_link == "confirmed",
+            )
+            .order_by(
+                BulletFactLink.fact_owner_user_id,
+                BulletFactLink.fact_id,
+                BulletFactLink.bullet_id,
+                BulletFactLink.claim_start,
+                BulletFactLink.claim_end,
+            )
         )
+        if lock:
+            link_query = link_query.with_for_update()
+        links = list((await session.scalars(link_query)).all())
         by_id: dict[str, EvidenceFact] = {}
         for link in links:
             if not link.fact_source_hashes_at_link:
                 continue
-            fact = await session.scalar(
-                select(Fact).where(
-                    Fact.id == link.fact_id,
-                    Fact.owner_user_id == link.fact_owner_user_id,
-                    Fact.status == "confirmed",
-                )
+            fact_query = select(Fact).where(
+                Fact.id == link.fact_id,
+                Fact.owner_user_id == link.fact_owner_user_id,
+                Fact.status == "confirmed",
             )
-            if fact is None:
+            if lock:
+                fact_query = fact_query.with_for_update()
+            fact = await session.scalar(fact_query)
+            if fact is None or fact.value_encrypted != link.fact_value_encrypted_at_link:
+                continue
+            source_query = (
+                select(FactSource.source_hash)
+                .where(
+                    FactSource.fact_id == fact.id,
+                    FactSource.owner_user_id == fact.owner_user_id,
+                )
+                .order_by(FactSource.source_hash, FactSource.source_record_id)
+            )
+            if lock:
+                source_query = source_query.with_for_update()
+            current_source_hashes = tuple(
+                (await session.scalars(source_query)).all()
+            )
+            snapshot_source_hashes = tuple(
+                sorted(link.fact_source_hashes_at_link)
+            )
+            if current_source_hashes != snapshot_source_hashes:
                 continue
             projection = EvidenceFact(
                 id=fact.id,
                 kind=fact.kind,
                 value=link.fact_value_encrypted_at_link,
-                source_hashes=tuple(link.fact_source_hashes_at_link),
+                source_hashes=snapshot_source_hashes,
             )
             previous = by_id.get(fact.id)
             if previous is not None and previous != projection:
@@ -1305,26 +1415,32 @@ class MatchingService:
             )
             session.add(suggestion)
             await session.flush()
-            claim_by_fact: dict[str, dict[str, int]] = {}
-            for claim in item["claims"]:
-                for fact_id in claim.fact_refs:
-                    claim_by_fact.setdefault(
-                        fact_id, {"start": claim.start, "end": claim.end}
+            claim_links = [
+                (claim.fact_refs, claim.start, claim.end)
+                for claim in item["claims"]
+            ]
+            if not claim_links and item["fact_refs"]:
+                claim_links = [
+                    (
+                        tuple(item["fact_refs"]),
+                        0,
+                        len(item["suggested_text"]),
                     )
-            for fact_id in item["fact_refs"]:
-                if fact_id not in evidence_by_id:
-                    raise RuntimeError("Validated suggestion fact is missing")
-                session.add(
-                    SuggestionFactLink(
-                        suggestion_id=suggestion.id,
-                        fact_id=fact_id,
-                        owner_user_id=analysis.owner_user_id,
-                        claim_range=claim_by_fact.get(
-                            fact_id,
-                            {"start": 0, "end": len(item["suggested_text"])},
-                        ),
+                ]
+            for fact_refs, claim_start, claim_end in claim_links:
+                for fact_id in fact_refs:
+                    if fact_id not in evidence_by_id:
+                        raise RuntimeError("Validated suggestion fact is missing")
+                    session.add(
+                        SuggestionFactLink(
+                            suggestion_id=suggestion.id,
+                            fact_id=fact_id,
+                            owner_user_id=analysis.owner_user_id,
+                            claim_start=claim_start,
+                            claim_end=claim_end,
+                            claim_range={"start": claim_start, "end": claim_end},
+                        )
                     )
-                )
         await session.flush()
 
     async def _locked_analysis(

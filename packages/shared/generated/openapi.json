@@ -2406,6 +2406,28 @@
         "title": "SourceInput",
         "type": "object"
       },
+      "SuggestionFactLinkResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_range": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Claim Range",
+            "type": "object"
+          },
+          "fact_id": {
+            "title": "Fact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact_id",
+          "claim_range"
+        ],
+        "title": "SuggestionFactLinkResponse",
+        "type": "object"
+      },
       "SuggestionListResponse": {
         "additionalProperties": false,
         "properties": {
@@ -2436,6 +2458,13 @@
               }
             ],
             "title": "Ai Run Id"
+          },
+          "fact_links": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionFactLinkResponse"
+            },
+            "title": "Fact Links",
+            "type": "array"
           },
           "fact_refs": {
             "items": {
@@ -2530,6 +2559,7 @@
           "suggested_text",
           "reason",
           "fact_refs",
+          "fact_links",
           "risk_flags",
           "generation_mode",
           "workflow_version",

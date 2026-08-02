@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -28,6 +29,7 @@ from app.modules.resumes.service import canonical_snapshot
 from app.modules.resumes.fact_policy import (
     ConfirmedFactProjection,
     DraftClaim,
+    SupportedClaim,
     fact_policy_check,
 )
 
@@ -247,11 +249,13 @@ class SuggestionService:
                     "Target text changed after suggestion generation",
                     409,
                 )
-            fact_rows, fact_projection, expected_fact_count = (
+            fact_rows, fact_projection, fact_links = (
                 await self._confirmed_facts(session, suggestion)
             )
             if decision in {"accept", "edit"} and (
-                not fact_rows or len(fact_rows) != expected_fact_count
+                not fact_rows
+                or {fact.id for fact in fact_rows}
+                != {link.fact_id for link in fact_links}
             ):
                 raise SuggestionServiceError(
                     "FACT_NOT_CONFIRMED",
@@ -264,19 +268,25 @@ class SuggestionService:
                 "ignore": current_text,
                 "revert": suggestion.original_text_encrypted,
             }[decision]
+            checked = None
             if decision in {"accept", "edit"}:
+                draft_claims = self._suggestion_claims(suggestion, fact_links)
                 checked = fact_policy_check(
                     new_text or "",
-                    (
-                        DraftClaim(
-                            text=new_text or "",
-                            fact_refs=tuple(fact.id for fact in fact_rows),
-                            claim_order=0,
-                        ),
-                    ),
+                    draft_claims,
                     fact_projection,
                 )
-                if checked.issues or len(checked.supported_claims) != 1:
+                if (
+                    not draft_claims
+                    or checked.issues
+                    or len(checked.supported_claims) != len(draft_claims)
+                    or not _claims_cover_text(
+                        new_text or "", checked.supported_claims
+                    )
+                    or not await self._facts_still_current(
+                        session, fact_rows, fact_projection
+                    )
+                ):
                     raise SuggestionServiceError(
                         "FACT_NOT_CONFIRMED",
                         "Suggested text contains claims not supported by confirmed facts",
@@ -297,8 +307,13 @@ class SuggestionService:
             await session.flush()
             await self._copy_evidence(session, current, version)
             if decision in {"accept", "edit"}:
+                assert checked is not None
                 await self._link_suggestion_evidence(
-                    session, suggestion, version, fact_rows, new_text or ""
+                    session,
+                    suggestion,
+                    version,
+                    fact_rows,
+                    checked.supported_claims,
                 )
             resume.head_version += 1
             resume.head_version_id = version.id
@@ -349,42 +364,71 @@ class SuggestionService:
     async def _confirmed_facts(
         session: AsyncSession,
         suggestion: Suggestion,
-    ) -> tuple[list[Fact], tuple[ConfirmedFactProjection, ...], int]:
+    ) -> tuple[
+        list[Fact],
+        tuple[ConfirmedFactProjection, ...],
+        list[SuggestionFactLink],
+    ]:
         links = list(
             (
                 await session.scalars(
-                    select(SuggestionFactLink).where(
+                    select(SuggestionFactLink)
+                    .where(
                         SuggestionFactLink.suggestion_id == suggestion.id,
                         SuggestionFactLink.owner_user_id == suggestion.owner_user_id,
                     )
+                    .order_by(
+                        SuggestionFactLink.fact_id,
+                        SuggestionFactLink.claim_start,
+                        SuggestionFactLink.claim_end,
+                    )
+                    .with_for_update()
                 )
             ).all()
         )
-        facts: list[Fact] = []
-        projections: list[ConfirmedFactProjection] = []
-        for link in links:
-            fact = await session.scalar(
-                select(Fact).where(
-                    Fact.id == link.fact_id,
-                    Fact.owner_user_id == link.owner_user_id,
-                    Fact.status == "confirmed",
-                )
-            )
-            if fact is None:
-                continue
-            source_hashes = tuple(
+        fact_ids = sorted({link.fact_id for link in links})
+        facts = (
+            list(
                 (
                     await session.scalars(
-                        select(FactSource.source_hash).where(
-                            FactSource.fact_id == fact.id,
-                            FactSource.owner_user_id == fact.owner_user_id,
+                        select(Fact)
+                        .where(
+                            Fact.id.in_(fact_ids),
+                            Fact.owner_user_id == suggestion.owner_user_id,
                         )
+                        .order_by(Fact.id)
+                        .with_for_update()
                     )
                 ).all()
             )
+            if fact_ids
+            else []
+        )
+        projections: list[ConfirmedFactProjection] = []
+        confirmed_facts: list[Fact] = []
+        for fact in facts:
+            if fact.status != "confirmed":
+                continue
+            sources = list(
+                (
+                    await session.scalars(
+                        select(FactSource)
+                        .where(
+                            FactSource.fact_id == fact.id,
+                            FactSource.owner_user_id == fact.owner_user_id,
+                        )
+                        .order_by(
+                            FactSource.source_hash,
+                            FactSource.source_record_id,
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            source_hashes = tuple(source.source_hash for source in sources)
             if not source_hashes:
                 continue
-            facts.append(fact)
+            confirmed_facts.append(fact)
             projections.append(
                 ConfirmedFactProjection(
                     id=fact.id,
@@ -393,7 +437,70 @@ class SuggestionService:
                     source_hashes=source_hashes,
                 )
             )
-        return facts, tuple(projections), len(links)
+        return confirmed_facts, tuple(projections), links
+
+    @staticmethod
+    def _suggestion_claims(
+        suggestion: Suggestion,
+        links: list[SuggestionFactLink],
+    ) -> tuple[DraftClaim, ...]:
+        grouped: dict[tuple[int, int], list[str]] = {}
+        text = suggestion.suggested_encrypted
+        for link in links:
+            if (
+                link.claim_range
+                != {"start": link.claim_start, "end": link.claim_end}
+                or link.claim_start < 0
+                or link.claim_end <= link.claim_start
+                or link.claim_end > len(text)
+            ):
+                return ()
+            grouped.setdefault((link.claim_start, link.claim_end), []).append(
+                link.fact_id
+            )
+        return tuple(
+            DraftClaim(
+                text=text[start:end],
+                fact_refs=tuple(dict.fromkeys(grouped[(start, end)])),
+                claim_order=order,
+            )
+            for order, (start, end) in enumerate(sorted(grouped))
+        )
+
+    @staticmethod
+    async def _facts_still_current(
+        session: AsyncSession,
+        facts: list[Fact],
+        projections: tuple[ConfirmedFactProjection, ...],
+    ) -> bool:
+        expected = {projection.id: projection for projection in projections}
+        for fact in facts:
+            projection = expected.get(fact.id)
+            if (
+                projection is None
+                or fact.status != "confirmed"
+                or fact.value_encrypted != projection.value
+            ):
+                return False
+            source_hashes = tuple(
+                (
+                    await session.scalars(
+                        select(FactSource.source_hash)
+                        .where(
+                            FactSource.fact_id == fact.id,
+                            FactSource.owner_user_id == fact.owner_user_id,
+                        )
+                        .order_by(
+                            FactSource.source_hash,
+                            FactSource.source_record_id,
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            if source_hashes != projection.source_hashes:
+                return False
+        return len(facts) == len(expected)
 
     @staticmethod
     async def _copy_evidence(
@@ -435,7 +542,7 @@ class SuggestionService:
         suggestion: Suggestion,
         version: ResumeVersion,
         facts: list[Fact],
-        text: str,
+        claims: tuple[SupportedClaim, ...],
     ) -> None:
         bullet_id = _pointer_bullet_id(version.snapshot_json, suggestion.target_path)
         if not bullet_id:
@@ -447,32 +554,40 @@ class SuggestionService:
                 BulletFactLink.owner_user_id == version.owner_user_id,
             )
         )
-        for fact in facts:
-            source_hashes = list(
-                (
-                    await session.scalars(
-                        select(FactSource.source_hash).where(
-                            FactSource.fact_id == fact.id,
-                            FactSource.owner_user_id == fact.owner_user_id,
+        facts_by_id = {fact.id: fact for fact in facts}
+        for claim in claims:
+            for fact_id in claim.fact_refs:
+                fact = facts_by_id[fact_id]
+                source_hashes = list(
+                    (
+                        await session.scalars(
+                            select(FactSource.source_hash)
+                            .where(
+                                FactSource.fact_id == fact.id,
+                                FactSource.owner_user_id == fact.owner_user_id,
+                            )
+                            .order_by(
+                                FactSource.source_hash,
+                                FactSource.source_record_id,
+                            )
                         )
-                    )
-                ).all()
-            )
-            session.add(
-                BulletFactLink(
-                    resume_version_id=version.id,
-                    bullet_id=bullet_id,
-                    fact_id=fact.id,
-                    claim_start=0,
-                    claim_end=len(text),
-                    owner_user_id=version.owner_user_id,
-                    fact_owner_user_id=fact.owner_user_id,
-                    claim_range={"start": 0, "end": len(text)},
-                    fact_value_encrypted_at_link=fact.value_encrypted,
-                    fact_status_at_link=fact.status,
-                    fact_source_hashes_at_link=source_hashes,
+                    ).all()
                 )
-            )
+                session.add(
+                    BulletFactLink(
+                        resume_version_id=version.id,
+                        bullet_id=bullet_id,
+                        fact_id=fact.id,
+                        claim_start=claim.start,
+                        claim_end=claim.end,
+                        owner_user_id=version.owner_user_id,
+                        fact_owner_user_id=fact.owner_user_id,
+                        claim_range={"start": claim.start, "end": claim.end},
+                        fact_value_encrypted_at_link=fact.value_encrypted,
+                        fact_status_at_link=fact.status,
+                        fact_source_hashes_at_link=source_hashes,
+                    )
+                )
         await session.flush()
 
 
@@ -485,6 +600,17 @@ def _pointer_parts(pointer: str) -> list[str]:
         part.replace("~1", "/").replace("~0", "~")
         for part in pointer[1:].split("/")
     ]
+
+
+def _claims_cover_text(text: str, claims: tuple[SupportedClaim, ...]) -> bool:
+    covered = [False] * len(text)
+    for claim in claims:
+        for index in range(claim.start, claim.end):
+            covered[index] = True
+    return all(
+        is_covered or re.fullmatch(r"[\s,，。；;:：、.!！?？()（）\-—]", character)
+        for character, is_covered in zip(text, covered, strict=True)
+    )
 
 
 def _pointer_get(document: dict[str, Any], pointer: str) -> str:

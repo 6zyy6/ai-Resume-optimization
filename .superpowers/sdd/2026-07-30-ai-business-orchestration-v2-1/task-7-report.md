@@ -125,3 +125,104 @@ The API run emitted five non-fatal, pre-existing aiosqlite event-loop-close warn
 - No live model-provider, production PostgreSQL, Redis/Celery multi-process, or cloud deployment evidence was produced. Deterministic typed receipts and the real local SQL/Task/AiRun/usage code paths passed, but external-environment acceptance remains `BLOCKED` until those environments are exercised.
 - Existing owner-alias records are authorized for reading by current repository rules, while new evidence link rows remain canonical-owner scoped by schema. Task 7 preserves that boundary rather than broadening the ownership model.
 - User-owned `AGENTS.md` and the two root Chinese documents were preserved and excluded from the commit.
+
+## Review fix round 1/5
+
+Reviewer result: `0 Critical / 4 Important / 2 Minor`. All four Important findings were fixed. The two Minor findings remain explicitly deferred and were not broadened into this round.
+
+### RED evidence
+
+Confirmed/unconfirmed requirement isolation:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_unconfirmed_requirements_are_excluded_from_both_model_stages -q
+1 failed in 1.34s
+```
+
+The create path rejected a job containing any unconfirmed requirement instead of selecting only confirmed rows.
+
+Final publication drift, using a stage-2 client that changed Fact status, the FactSource set, requirement confirmation, or requirement value before returning a valid receipt:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_final_publication_revalidates_current_policy_state -q
+4 failed in 0.45s
+```
+
+All four cases incorrectly published one MatchItem and succeeded.
+
+Decision-time read/commit drift:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_suggestions.py::test_decision_rechecks_locked_fact_state_before_version_commit -q
+1 failed in 0.20s
+```
+
+A Fact changed after evidence loading, but the stale projection still created a ResumeVersion.
+
+Repeated atomic claims and migration key shape:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_repeated_fact_claims_keep_exact_ranges_through_acceptance -q
+1 failed in 0.17s
+
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_migration_0016_backfills_existing_business_rows_as_rule_fallback -q
+1 failed in 0.43s
+```
+
+Only the first range survived for a repeated Fact, and migration `0016` still exposed the old `(suggestion_id, fact_id)` primary key.
+
+### Fix rationale
+
+- Both create and processing queries now filter `confirmed = true` in SQL. Mixed jobs proceed with only confirmed requirements; zero confirmed requirements still fail closed.
+- The final stage-2 transaction locks and reloads every job requirement in stable order, filters the current confirmed set, locks/reloads immutable evidence links, Facts, and FactSource rows, then recomputes both workflow inputs and hashes. Any drift fails as `MATCH_PUBLICATION_STATE_CHANGED` after both receipts and the single usage settlement are persisted, with zero public rows.
+- Suggestion decisions lock evidence links, linked Facts, and source rows in stable order. Fact policy evaluation, a same-transaction current-state recheck, and immutable ResumeVersion creation all occur while those locks are held.
+- `SuggestionFactLink` now has exact `claim_start`/`claim_end` columns and a composite primary key `(suggestion_id, fact_id, claim_start, claim_end)` with a valid-range constraint. Migration `0016` backfills the existing JSON range exactly, rebuilds the key, and refuses lossy downgrade when duplicate fact ranges exist.
+- Publication persists one link for every atomic claim/fact pair. Decision validation rebuilds atomic claims from those saved ranges, requires complete text coverage, and copies the revalidated exact ranges into the new `BulletFactLink` rows rather than expanding them to the full bullet.
+- Suggestion responses now expose every audited `{fact_id, claim_range}` link; OpenAPI and shared TypeScript artifacts were regenerated through `pnpm generate`.
+
+### GREEN evidence
+
+Individual fixes:
+
+```text
+I1 confirmed-only stage inputs: 1 passed in 0.87s
+I2 final state drift variants: 4 passed in 0.38s
+I3 + I4 + migration round trip: 3 passed in 0.81s
+```
+
+One focused compatibility run found that edited text could append an uncovered tool after all stored atomic claims. The existing regression correctly failed (`1 failed, 106 passed`); complete claim coverage was restored, after which the focused suite passed:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py packages/api/tests/test_matching.py packages/api/tests/test_suggestions.py packages/api/tests/test_ai_cancellation.py packages/api/tests/test_task7_review_fixes.py packages/api/tests/test_schema_constraints.py -q
+107 passed in 11.58s
+```
+
+Final verification on 2026-08-02 16:19 CST:
+
+```text
+pnpm generate
+PASS
+
+pnpm lint
+PASS
+
+pnpm build
+PASS
+
+pnpm test
+API: 1384 passed in 68.41s
+AI: 94 passed, 1 skipped
+Shared: 8 passed
+Design tokens: 2 passed
+Miniprogram: 12 passed
+Web: 53 passed
+Dev supervisor: 2 passed
+```
+
+Build retained the existing non-fatal `baseline-browser-mapping` age and Taro cache-resolution warnings.
+
+### Remaining limits
+
+- Real provider, PostgreSQL row-lock behavior, Redis/Celery multi-process behavior, and cloud deployment evidence remain `BLOCKED`; local SQLite and typed deterministic receipt tests do not replace those external checks.
+- The two reviewer Minor findings (broad-string policy matching and the large matching service) remain deferred as requested.
+- User-owned `AGENTS.md` and both root Chinese documents remain untouched and excluded from this round.

@@ -64,6 +64,13 @@ class MatchResponse(BaseModel):
     items: list[MatchItemResponse]
 
 
+class SuggestionFactLinkResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    fact_id: str
+    claim_range: dict[str, int]
+
+
 class SuggestionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -77,6 +84,7 @@ class SuggestionResponse(BaseModel):
     suggested_text: str
     reason: str
     fact_refs: list[str]
+    fact_links: list[SuggestionFactLinkResponse]
     risk_flags: list[str]
     generation_mode: str
     workflow_version: str
@@ -152,6 +160,7 @@ def _analysis(result: MatchAnalysisResult) -> MatchResponse:
 def _suggestion(
     row,
     fact_refs: list[str],
+    fact_links: list[dict],
     requirement_text: str | None,
 ) -> SuggestionResponse:
     return SuggestionResponse(
@@ -165,6 +174,7 @@ def _suggestion(
         suggested_text=row.suggested_encrypted,
         reason=row.reason,
         fact_refs=fact_refs,
+        fact_links=[SuggestionFactLinkResponse(**link) for link in fact_links],
         risk_flags=list(row.risk_flags),
         generation_mode=row.generation_mode,
         workflow_version=row.workflow_version,
@@ -241,6 +251,7 @@ async def get_match_suggestions(
             _suggestion(
                 row,
                 result.suggestion_fact_refs.get(row.id, []),
+                result.suggestion_fact_links.get(row.id, []),
                 result.requirement_texts.get(row.requirement_id or ""),
             )
             for row in result.suggestions
