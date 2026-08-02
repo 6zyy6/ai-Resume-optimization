@@ -2075,12 +2075,16 @@ def _has_positive_assertion(value: str) -> bool:
 
 
 def _has_english_direct_object_negative(value: str) -> bool:
+    object_head = value.strip()
+    if re.match(r"^(?:no\s+code|zero\s+trust)\b", object_head, re.IGNORECASE):
+        return False
     return bool(
         re.match(
             r"^(?:(?:(?:absolutely|virtually|almost)\s+)?"
             r"(?:nothing|nobody|no\s+one|none|neither|no(?!-)\b|zero(?!-)\b)|"
-            r"not\s+a\s+single\b|hardly\s+any\b|barely\s+any\b)",
-            value.strip(),
+            r"not\s+(?:a\s+single|one|any)\b|hardly\s+any\b|"
+            r"barely\s+any\b|scarcely\s+any\b)",
+            object_head,
             re.IGNORECASE,
         )
     )
@@ -2095,7 +2099,7 @@ def _has_chinese_support_bad_result(value: str) -> bool:
         attributive_end = tail.find("的")
         if attributive_end < 0:
             return True
-        if re.match(
+        if len(tail[:attributive_end]) <= 6 and re.search(
             r"客户|用户|同事|学生|员工|项目|任务|需求|老师|导师|队友|"
             r"供应商|团队|部门|产品|系统|业务|工作|活动",
             tail[:attributive_end],
@@ -2104,8 +2108,19 @@ def _has_chinese_support_bad_result(value: str) -> bool:
     return False
 
 
+def _leading_adverbial_is_ambiguous(value: str) -> bool:
+    return bool(
+        re.match(
+            r"^(?:在|于)(?:园区|办公室|场地|区域|环境|地点)"
+            r"[^，,。.!！?？；;]{1,12}?(?:阶段|期间)",
+            re.sub(r"\s+", "", value),
+        )
+    )
+
+
 def _main_assertion_kind(value: str) -> str:
     context = _context_text(value)
+    ambiguous_leading_adverbial = _leading_adverbial_is_ambiguous(context)
     context = _strip_chinese_leading_adverbial(context)
     compact = re.sub(r"[\s、]+", "", context)
     if CHINESE_POSTPOSITIVE_INABILITY.search(
@@ -2147,7 +2162,7 @@ def _main_assertion_kind(value: str) -> str:
         return "unknown"
 
     if _has_positive_assertion(context):
-        return "positive"
+        return "unknown" if ambiguous_leading_adverbial else "positive"
 
     if CHINESE_EXPLICIT_NEGATIVE.search(compact) or RESPONSIBILITY_DENIAL.search(
         compact

@@ -2587,6 +2587,86 @@ def test_english_hyphenated_or_nested_negative_is_not_direct_object_denial(answe
 
 
 @pytest.mark.parametrize(
+    "answer",
+    ["在园区高峰阶段完成任务", "在园区夏令营期间完成任务"],
+)
+def test_complex_leading_location_time_prefix_requires_review(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_simple_leading_project_adverbial_remains_accepted():
+    answer = "在项目中完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "服务不好大客户的需求",
+        "帮助不好新同事的项目",
+        "服务不好这些客户的需求",
+    ],
+)
+def test_support_action_buhao_modified_direct_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "服务不好沟通且容易误解需求的客户",
+        "帮助不好刚加入团队且仍在熟悉流程的同事",
+    ],
+)
+def test_support_action_buhao_long_modifier_is_not_a_result_complement(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I completed not one project",
+        "I completed not any project",
+        "I completed scarcely any project",
+        "I completed zero projects",
+    ],
+)
+def test_english_extended_direct_object_quantifier_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["I implemented no code platform", "I implemented Zero Trust security"],
+)
+def test_english_unhyphenated_negative_prefix_term_is_not_a_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),
