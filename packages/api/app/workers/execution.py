@@ -211,7 +211,12 @@ class TaskExecutor:
                     "cancelled",
                 }:
                     if retryable:
-                        return _task_result(current)
+                        reconciled = await self.service.reconcile_cancelled_operation_error(
+                            owner_user_id,
+                            task_id,
+                            claim.token,
+                        )
+                        return _task_result(reconciled or current)
                     return await self._terminal_result(
                         owner_user_id,
                         task_id,

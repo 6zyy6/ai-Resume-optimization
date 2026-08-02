@@ -191,12 +191,10 @@ def responsibility_strength(text: str) -> int:
 
 
 def responsibility_equivalent(left: str, right: str) -> bool:
-    left_terms = _high_risk_terms(_without_responsibility_markers(left))
-    right_terms = _high_risk_terms(_without_responsibility_markers(right))
-    return bool(
-        left_terms
-        and right_terms
-        and (left_terms <= right_terms or right_terms <= left_terms)
+    return any(
+        _responsibility_subject_equivalent(left_subject, right_subject)
+        for left_subject, _ in _responsibility_fragments(left)
+        for right_subject, _ in _responsibility_fragments(right)
     )
 
 
@@ -204,17 +202,54 @@ def responsibility_claim_supported(
     claim: str,
     evidence_values: Iterable[str],
 ) -> bool:
-    claim_strength = responsibility_strength(claim)
-    if claim_strength == 0:
-        return True
-    equivalent = [
-        evidence
-        for evidence in evidence_values
-        if responsibility_equivalent(claim, evidence)
+    claim_fragments = _responsibility_fragments(claim)
+    responsibility_fragments = [
+        (subject, strength)
+        for subject, strength in claim_fragments
+        if strength > 0
     ]
-    return not equivalent or any(
-        responsibility_strength(evidence) >= claim_strength
-        for evidence in equivalent
+    if not responsibility_fragments:
+        return True
+    evidence_fragments = [
+        fragment
+        for evidence in evidence_values
+        for fragment in _responsibility_fragments(evidence)
+    ]
+    for subject, strength in responsibility_fragments:
+        equivalent_strengths = [
+            evidence_strength
+            for evidence_subject, evidence_strength in evidence_fragments
+            if _responsibility_subject_equivalent(subject, evidence_subject)
+        ]
+        if equivalent_strengths and max(equivalent_strengths) < strength:
+            return False
+    return True
+
+
+def _responsibility_fragments(text: str) -> list[tuple[str, int]]:
+    fragments: list[tuple[str, int]] = []
+    inherited_strength = 0
+    for raw in re.split(
+        r"[、，,;；。]|\s+and\s+|以及|与|和|及",
+        text.casefold(),
+    ):
+        subject = _without_responsibility_markers(raw).strip()
+        if not subject:
+            continue
+        local_strength = responsibility_strength(raw)
+        if local_strength:
+            inherited_strength = local_strength
+        fragments.append((subject, local_strength or inherited_strength))
+    return fragments
+
+
+def _responsibility_subject_equivalent(left: str, right: str) -> bool:
+    left_terms = _high_risk_terms(left)
+    right_terms = _high_risk_terms(right)
+    return bool(
+        left_terms
+        and right_terms
+        and (left_terms <= right_terms or right_terms <= left_terms)
     )
 
 

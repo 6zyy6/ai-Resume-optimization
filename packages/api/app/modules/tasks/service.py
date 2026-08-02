@@ -1011,6 +1011,35 @@ class TaskService:
             await session.flush()
             return task
 
+    async def reconcile_cancelled_operation_error(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+    ) -> Task | None:
+        async with self.sessions.begin() as session:
+            task = await session.scalar(
+                select(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.owner_user_id == owner_user_id,
+                    Task.claim_token == claim_token,
+                    Task.status == "cancelled",
+                    Task.type == "generate_intake_draft",
+                )
+                .with_for_update()
+            )
+            if task is None:
+                return None
+            await self._release_unused_ai_reservation_in_session(session, task)
+            await self._restore_cancelled_intake_draft(session, task)
+            await self.clear_terminal_payload_in_session(session, task)
+            task.active_ai_run_id = None
+            task.claim_token = None
+            task.claim_lease_expires_at = None
+            await session.flush()
+            return task
+
     async def list_events(
         self,
         owner_user_id: str,

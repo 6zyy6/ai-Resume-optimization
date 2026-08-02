@@ -14,7 +14,14 @@ from sqlalchemy.ext.asyncio import (
 
 from app.core.config import get_settings
 from app.core.ids import new_id
-from app.db.models import IntakeAnswer, Outbox, Task, TaskEvent, UsageLedger
+from app.db.models import (
+    IntakeAnswer,
+    IntakeSession,
+    Outbox,
+    Task,
+    TaskEvent,
+    UsageLedger,
+)
 from app.modules.tasks.state import TERMINAL_STATUSES
 from app.workers.celery_app import celery_app
 
@@ -192,6 +199,30 @@ class OutboxDispatcher:
             )
             if answer is not None:
                 answer.analysis_status = "failed"
+        if (
+            task.type == "generate_intake_draft"
+            and task.resource_type == "intake_session"
+            and task.resource_id is not None
+        ):
+            intake = await session.scalar(
+                select(IntakeSession)
+                .where(
+                    IntakeSession.id == task.resource_id,
+                    IntakeSession.owner_user_id == task.owner_user_id,
+                    IntakeSession.task_id == task.id,
+                    IntakeSession.status == "drafting",
+                    IntakeSession.resume_id.is_(None),
+                )
+                .with_for_update()
+            )
+            if intake is not None:
+                intake.status = "active"
+                intake.version += 1
+                intake.updated_at = now
+            if "draft_snapshot" in outbox.payload:
+                payload = dict(outbox.payload)
+                payload.pop("draft_snapshot", None)
+                outbox.payload = payload
         sequence = (
             await session.scalar(
                 select(func.coalesce(func.max(TaskEvent.seq), 0)).where(

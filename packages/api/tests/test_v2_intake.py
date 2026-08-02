@@ -42,6 +42,7 @@ from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.service import IntakeService
 from app.integrations.storage import MemoryStorage
 from app.workers.execution import TaskExecutor, resolve_operation
+from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
 from app.workers.pipeline import configure_pipeline_operations
 
 
@@ -148,6 +149,25 @@ class RaisingDraftClient:
     async def run(self, input, cancellation=None):
         self.calls += 1
         raise ValueError("invalid draft response")
+
+
+class CancelThenTimeoutDraftClient:
+    def __init__(self, task_service):
+        self.task_service = task_service
+        self.calls = 0
+
+    async def run(self, input, cancellation=None):
+        self.calls += 1
+        ai_run_id = derive_ai_run_id(input.task_id, "draft", input.input_hash)
+        assert cancellation is not None
+        assert await cancellation.register_run(ai_run_id) is True
+        await self.task_service.request_cancel("usr_a", input.task_id)
+        raise TimeoutError("cancel receipt was lost")
+
+
+class FailingDraftPublisher:
+    def publish(self, task_id, owner_user_id, queue):
+        raise ConnectionError("queue unavailable")
 
 
 def _run(awaitable):
@@ -1256,6 +1276,116 @@ def test_draft_terminal_failure_handler_clears_private_snapshot(intake_client):
     assert len(payload["draft_input_hash"]) == 64
 
 
+def test_cancelled_draft_timeout_reconciles_intake_without_receipt(intake_client):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "lost-cancel-receipt-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "丢失取消回执草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("lost-cancel-receipt-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    ai_client = CancelThenTimeoutDraftClient(application.state.task_service)
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+
+    result = _run(
+        TaskExecutor(application.state.task_service).execute(
+            "usr_a",
+            task_id,
+            resolve_operation,
+        )
+    )
+
+    assert result["status"] == "cancelled"
+    assert ai_client.calls == 1
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_draft_task_cleanup_state(sessions, task_id)) == (None, None)
+    assert _run(_usage_for_task(sessions, task_id)).state == "consumed"
+    assert "draft_snapshot" not in _run(_outbox_payload(sessions, task_id))
+    fallback = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 2,
+            "title": "超时后的事实草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("fallback-after-lost-cancel-receipt"),
+    )
+    assert fallback.status_code == 202
+
+
+def test_draft_outbox_exhaustion_recovers_intake_and_scrubs_snapshot(
+    intake_client,
+):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "draft-outbox-exhaustion-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "无法投递草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("draft-outbox-exhaustion"),
+    )
+    task_id = queued.json()["task_id"]
+    dispatcher = OutboxDispatcher(
+        sessions,
+        FailingDraftPublisher(),
+        retry_base_seconds=0,
+        jitter=lambda: 0,
+    )
+
+    for _ in range(3):
+        with pytest.raises(TaskQueueBusy):
+            _run(dispatcher.dispatch_task(task_id))
+
+    task = client.get(f"/v1/tasks/{task_id}").json()
+    assert (task["status"], task["error_code"]) == (
+        "failed",
+        "TASK_QUEUE_UNAVAILABLE",
+    )
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "released"
+    assert "draft_snapshot" not in _run(_outbox_payload(sessions, task_id))
+    fallback = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 2,
+            "title": "投递失败后的事实草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("fallback-after-draft-outbox-exhaustion"),
+    )
+    assert fallback.status_code == 202
+
+
 def test_model_draft_persists_supported_non_literal_rewrite_with_exact_link(
     intake_client,
 ):
@@ -1576,6 +1706,12 @@ async def _intake_draft_state(sessions, session_id):
             select(IntakeSession).where(IntakeSession.id == session_id)
         )
         return row.status, row.version
+
+
+async def _draft_task_cleanup_state(sessions, task_id):
+    async with sessions() as session:
+        row = await session.scalar(select(Task).where(Task.id == task_id))
+        return row.claim_token, row.active_ai_run_id
 
 
 async def _only_bullet_link(sessions):

@@ -175,32 +175,50 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
 
 
 @pytest.mark.parametrize(
-    ("claim", "evidence", "suffix"),
+    ("claim", "evidences", "suffix"),
     [
-        ("负责用户调研", "参与用户调研", "zh-owner"),
-        ("推动用户调研", "参与用户调研", "zh-drive"),
-        ("managed customer research", "supported customer research", "en-manage"),
+        ("负责用户调研", ("参与用户调研",), "zh-owner"),
+        ("推动用户调研", ("参与用户调研",), "zh-drive"),
+        (
+            "managed customer research",
+            ("supported customer research",),
+            "en-manage",
+        ),
+        (
+            "负责用户调研、市场分析",
+            ("参与用户调研", "负责市场分析"),
+            "zh-multi-topic",
+        ),
+        (
+            "managed customer research and market analysis",
+            ("supported customer research", "managed market analysis"),
+            "en-multi-topic",
+        ),
     ],
 )
 def test_export_service_blocks_written_responsibility_inflation(
     pipeline_client,
     claim,
-    evidence,
+    evidences,
     suffix,
 ):
     client, _, _ = pipeline_client
-    fact = client.post(
-        "/v1/facts",
-        json={
-            "kind": "responsibility",
-            "value": evidence,
-            "status": "confirmed",
-            "sources": [
-                {"source_type": "user_confirmation", "content": evidence}
-            ],
-        },
-        headers={"Idempotency-Key": f"responsibility-fact-{suffix}"},
-    )
+    facts = [
+        client.post(
+            "/v1/facts",
+            json={
+                "kind": "responsibility",
+                "value": evidence,
+                "status": "confirmed",
+                "sources": [
+                    {"source_type": "user_confirmation", "content": evidence}
+                ],
+            },
+            headers={"Idempotency-Key": f"responsibility-fact-{suffix}-{index}"},
+        )
+        for index, evidence in enumerate(evidences)
+    ]
+    fact_ids = [fact.json()["id"] for fact in facts]
     resume = client.post(
         "/v1/resumes",
         json={"kind": "base", "title": "职责强度简历"},
@@ -223,7 +241,7 @@ def test_export_service_blocks_written_responsibility_inflation(
                             {
                                 "id": "bullet_research",
                                 "text": claim,
-                                "fact_refs": [fact.json()["id"]],
+                                "fact_refs": fact_ids,
                             }
                         ],
                     }
@@ -234,7 +252,7 @@ def test_export_service_blocks_written_responsibility_inflation(
                     "bullet_id": "bullet_research",
                     "start": 0,
                     "end": len(claim),
-                    "fact_refs": [fact.json()["id"]],
+                    "fact_refs": fact_ids,
                 }
             ],
         },

@@ -198,6 +198,54 @@ def test_fact_policy_allows_responsibility_strength_downgrade():
 
 
 @pytest.mark.parametrize(
+    ("claim", "facts"),
+    [
+        (
+            "负责用户调研、市场分析",
+            ("参与用户调研", "负责市场分析"),
+        ),
+        (
+            "managed customer research and market analysis",
+            ("supported customer research", "managed market analysis"),
+        ),
+    ],
+)
+def test_fact_policy_does_not_borrow_strong_responsibility_across_topics(
+    claim,
+    facts,
+):
+    result = fact_policy_check(
+        claim,
+        [
+            DraftClaim(
+                text=claim,
+                fact_refs=("fact_research", "fact_market"),
+                claim_order=0,
+            )
+        ],
+        [
+            ConfirmedFactProjection(
+                id="fact_research",
+                value=facts[0],
+                status="confirmed",
+                source_hashes=("research_hash",),
+            ),
+            ConfirmedFactProjection(
+                id="fact_market",
+                value=facts[1],
+                status="confirmed",
+                source_hashes=("market_hash",),
+            ),
+        ],
+    )
+
+    assert result.supported_claims == ()
+    assert [issue.code for issue in result.issues] == [
+        "CLAIM_RESPONSIBILITY_STRENGTH_UNSUPPORTED"
+    ]
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
         ("参与用户调研", 1),
