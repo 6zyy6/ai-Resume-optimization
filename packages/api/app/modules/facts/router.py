@@ -5,7 +5,7 @@ from app.core.errors import createApiError
 from app.core.middleware import get_request_context
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
-from app.modules.facts.schemas import FactCreate, FactListResponse, FactResponse, FactSourcesResponse, FactUpdate, SourceInput
+from app.modules.facts.schemas import FactCreate, FactListResponse, FactResponse, FactSourcesResponse, FactUpdate, SourceResponse
 from app.contracts import FactStatus
 from app.modules.facts.service import FactError, FactService, FactWriteResult
 
@@ -83,4 +83,4 @@ async def get_sources(fact_id: str, request: Request, authenticated: Authenticat
     sources = await service.sources(authenticated.user_id, fact_id)
     if sources is None:
         _raise(request, FactError("RESOURCE_NOT_FOUND", "Fact not found", 404))
-    return FactSourcesResponse(items=[SourceInput(source_type=item.source_type, source_ref=item.source_ref, content=item.content_encrypted) for item in sources])
+    return FactSourcesResponse(items=[SourceResponse(source_type=item.source_type, source_ref=item.source_ref, content=item.content_encrypted) for item in sources])

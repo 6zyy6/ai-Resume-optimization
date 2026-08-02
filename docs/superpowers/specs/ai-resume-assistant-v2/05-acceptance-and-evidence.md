@@ -69,7 +69,7 @@ artifacts/acceptance/<release-id>/web-v2/
   "status": "PASS",
   "commit_sha": "40-char sha",
   "build_id": "immutable id",
-  "environment": "local-real-services | staging | production",
+  "environment": "local-http-partial | local-real-services | staging | production",
   "started_at": "UTC ISO 8601",
   "finished_at": "UTC ISO 8601",
   "command": "exact command",
@@ -257,6 +257,21 @@ artifacts/acceptance/<release-id>/web-v2/
 - 跳过任务等待。
 
 允许通过公开测试工具创建隔离用户、清理数据和设置固定 AI 输出，但请求仍必须经过真实服务链。
+
+### 11.2.1 Local HTTP partial 项目
+
+当本机没有 Redis/Dispatcher/Celery 时，可以运行隔离的增量链路：Next production
+build/start → FastAPI → 实际 Worker operation → TCP Pi deterministic fixture。该项目必须：
+
+- 不拦截 `/api/v1/**`，不由浏览器直接写数据库；
+- 使用迁移后的隔离 SQLite，并检查 owner、Task、AiRun、Trace 和业务结果；
+- 在报告和 manifest 中把 broker 明确写为 `BLOCKED_NO_REDIS`；
+- 对 Web、API、Pi `/version` 校验同一 source commit；
+- 不把结果用于宣称真实 Redis/Celery、真实模型准确率、云、外部浏览器或用户研究 `PASS`。
+
+此层可以作为 V2.1 编排接线和本地 UI 状态的增量证据，但不能替代 11.2 的完整
+local real-services，也不能单独把 V2-CREATE-09、V2-OPT-01、V2-UI-01 或
+V2-UI-02 改为 `PASS`。
 
 ### 11.3 Staging 项目
 

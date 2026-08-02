@@ -119,7 +119,7 @@ describe("V2 pages render only API-owned business data", () => {
         return jsonResponse({ items: [{ id: "fact_only", kind: "project", value: "唯一事实丙", status: "confirmed", source_ids: ["src_1"], confirmed_at: "2026-07-30T00:00:00Z" }] });
       }
       if (path.endsWith("/v1/tasks?limit=50")) {
-        return jsonResponse({ items: [{ id: "task_only", type: "file_parse", status: "failed", stage: "parse", progress: 18, trace_id: "tr_2", error_code: "PARSE_FAILED", result_ref: null, cancellation_requested: false }], next_cursor: null });
+        return jsonResponse({ items: [{ id: "task_only", type: "parse_resume_import", status: "failed", stage: "parse", progress: 18, trace_id: "tr_2", error_code: "PARSE_FAILED", result_ref: null, cancellation_requested: false }], next_cursor: null });
       }
       return jsonResponse({}, 404);
     }));
@@ -135,8 +135,9 @@ describe("V2 pages render only API-owned business data", () => {
     factView.unmount();
 
     render(<TasksPage />);
-    expect(await screen.findByText("file_parse")).toBeInTheDocument();
-    expect(screen.getByText(/PARSE_FAILED/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "解析简历文件" })).toBeInTheDocument();
+    expect(screen.getByText("任务失败 · 解析文件")).toBeInTheDocument();
+    expect(screen.queryByText(/parse_resume_import|PARSE_FAILED/)).not.toBeInTheDocument();
     expect(screen.queryByText("内容运营岗位匹配")).not.toBeInTheDocument();
   });
 

@@ -9,12 +9,13 @@ import { Field } from "../../components/ui/Field";
 import { StatusTag } from "../../components/ui/StatusTag";
 import { createWebApiClient } from "../../features/api/client";
 import { useApiResource } from "../../features/api/useApiResource";
+import { factKindLabel, factStatusLabel, sourceTypeLabel } from "../../features/presentation/business-labels";
 
 export default function FactsPage() {
   const facts = useApiResource<components["schemas"]["FactListResponse"]>("/v1/facts?limit=50");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [sources, setSources] = useState<Record<string, components["schemas"]["SourceInput"][]>>({});
+  const [sources, setSources] = useState<Record<string, components["schemas"]["SourceResponse"][]>>({});
   const [busy, setBusy] = useState("");
   const operationKeys = useRef<Record<string, string>>({});
 
@@ -80,13 +81,13 @@ export default function FactsPage() {
         <article className="resume-row" key={fact.id}>
           <div>
             <StatusTag tone={fact.status === "confirmed" ? "success" : fact.status === "rejected" ? "error" : "pending"}>
-              {fact.status} · {fact.source_ids.length > 0 ? `${fact.source_ids.length} 个来源` : "无来源"}
+              {factStatusLabel(fact.status)} · {fact.source_ids.length > 0 ? `${fact.source_ids.length} 个来源` : "无来源"}
             </StatusTag>
-            <h2>{fact.kind}</h2>
+            <h2>{factKindLabel(fact.kind)}</h2>
             <p>{fact.value}</p>
             {sources[fact.id]?.map((source, index) => (
               <blockquote className="audit-card" key={`${source.source_type}:${index}`}>
-                <strong>{source.source_type}</strong>
+                <strong>{sourceTypeLabel(source.source_type)}</strong>
                 <p>{source.content}</p>
               </blockquote>
             ))}

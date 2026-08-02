@@ -161,6 +161,8 @@ describe("V2 persisted intake", () => {
       type: "analyze_intake_answer",
     }));
     expect(await screen.findByText("我组织了校园招聘活动")).toBeInTheDocument();
+    expect(screen.getByText("项目事实")).toBeInTheDocument();
+    expect(screen.queryByText("project")).not.toBeInTheDocument();
     expect(sessionReads).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "接受候选 1" }));
 

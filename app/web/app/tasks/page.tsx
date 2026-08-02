@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { StatusTag } from "../../components/ui/StatusTag";
 import { apiBrowserUrl, createWebApiClient } from "../../features/api/client";
 import { useApiResource } from "../../features/api/useApiResource";
+import { taskStageLabel, taskStatusLabel, taskTypeLabel } from "../../features/presentation/business-labels";
 
 export default function TasksPage() {
   const tasks = useApiResource<components["schemas"]["TaskListResponse"]>("/v1/tasks?limit=50");
@@ -66,9 +67,9 @@ export default function TasksPage() {
           {tasks.data.items.map((task) => (
             <article className="resume-row" key={task.id}>
               <div>
-                <StatusTag tone={task.status === "failed" ? "error" : task.status === "succeeded" ? "success" : task.status === "cancelled" ? "info" : "pending"}>{task.status} · {task.stage}</StatusTag>
-                <h2>{task.type}</h2>
-                <p>{task.progress}%{task.error_code ? ` · ${task.error_code}` : ""}</p>
+                <StatusTag tone={task.status === "failed" ? "error" : task.status === "succeeded" ? "success" : task.status === "cancelled" ? "info" : "pending"}>{taskStatusLabel(task.status)} · {taskStageLabel(task.stage)}</StatusTag>
+                <h2>{taskTypeLabel(task.type)}</h2>
+                <p>{task.progress}%{task.error_code ? " · 查看失败原因" : ""}</p>
               </div>
               {["queued", "running", "waiting_for_user"].includes(task.status) ? (
                 <Button disabled={cancelling === task.id} onClick={() => void cancel(task.id)} state={cancelling === task.id ? "loading" : "default"} variant="quiet">取消任务</Button>

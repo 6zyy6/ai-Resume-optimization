@@ -4,10 +4,11 @@ import type { components } from "@resume/shared/schema";
 import { useEffect, useState } from "react";
 
 import { createWebApiClient } from "../api/client";
+import { sourceTypeLabel } from "../presentation/business-labels";
 
 type Evidence = {
   fact: components["schemas"]["FactResponse"];
-  sources: components["schemas"]["SourceInput"][];
+  sources: components["schemas"]["SourceResponse"][];
 };
 
 export function EvidenceList({ factIds }: { factIds: string[] }) {
@@ -58,7 +59,7 @@ export function EvidenceList({ factIds }: { factIds: string[] }) {
           <div>
             <strong>{fact.value}</strong>
             {sources.map((source, index) => (
-              <p key={`${source.source_type}:${index}`}>{source.source_type}：{source.content}</p>
+              <p key={`${source.source_type}:${index}`}>{sourceTypeLabel(source.source_type)}：{source.content}</p>
             ))}
           </div>
         </li>

@@ -12,6 +12,7 @@ import { StatusTag } from "../../../components/ui/StatusTag";
 import { createWebApiClient } from "../../../features/api/client";
 import { useApiResource } from "../../../features/api/useApiResource";
 import { EvidenceList } from "../../../features/facts/EvidenceList";
+import { resumeTargetLabel, riskFlagLabel } from "../../../features/presentation/business-labels";
 
 type Suggestion = components["schemas"]["SuggestionResponse"];
 type SuggestionStatus = Suggestion["status"];
@@ -212,7 +213,7 @@ export default function SuggestionsPage() {
             </dl>
             <p><strong>修改理由：</strong>{selected.reason}</p>
             <StatusTag tone={selected.risk_flags.length > 0 ? "pending" : "success"}>
-              {selected.risk_flags.length > 0 ? `风险：${selected.risk_flags.join("、")}` : "没有额外风险标记"}
+              {selected.risk_flags.length > 0 ? `风险：${selected.risk_flags.map(riskFlagLabel).join("、")}` : "没有额外风险标记"}
             </StatusTag>
             <div className="button-row">
               {selectedStatus === "pending" ? (
@@ -237,7 +238,7 @@ export default function SuggestionsPage() {
             </section>
             <aside className="panel"><h2>事实引用</h2>
               <EvidenceList factIds={selected.fact_refs} />
-              <p className="resource-id">目标路径：{selected.target_path}</p>
+              <p className="resource-id">修改位置：{resumeTargetLabel(selected.target_path)}</p>
             </aside>
           </div>
         </>

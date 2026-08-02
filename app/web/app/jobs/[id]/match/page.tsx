@@ -114,7 +114,7 @@ export default function MatchPage() {
               const items = analysis.items.filter((item) => item.category === key);
               return (
                 <article className="match-card" key={key}>
-                  <span>{key}</span>
+                  <span>匹配分类</span>
                   <strong>{items.length}</strong>
                   <h2>{label}</h2>
                   {items.length === 0 ? <p>没有此类要求。</p> : items.map((item) => (

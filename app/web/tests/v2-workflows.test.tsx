@@ -445,7 +445,10 @@ describe("V2 real workflow pages", () => {
     expect(screen.getByText("补充事实后才可采用的建议")).toBeInTheDocument();
     expect(screen.getByText(/还缺少结果来源/)).toBeInTheDocument();
     expect(await screen.findByText("第二条事实证据")).toBeInTheDocument();
-    expect(screen.getByText(/missing_result_source/)).toBeInTheDocument();
+    expect(screen.getByText("风险：缺少结果来源")).toBeInTheDocument();
+    expect(screen.queryByText(/missing_result_source/)).not.toBeInTheDocument();
+    expect(screen.getByText("修改位置：简历第 1 个模块 · 第 2 条内容")).toBeInTheDocument();
+    expect(screen.queryByText(/\/sections\//)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑后接受" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "补充事实" })).toBeEnabled();
@@ -731,7 +734,7 @@ describe("V2 real workflow pages", () => {
         return jsonResponse({ company: null, id: "job_unique", requirements: [{ confirmed: true, id: "req_nonce", priority: 1, text: "唯一匹配要求丑", type: "must_have" }], status: "parsed", task_id: null, title: "目标岗位" });
       }
       if (path.endsWith("/v1/facts/fact_nonce/sources")) {
-        return jsonResponse({ items: [{ content: "唯一匹配来源", source_ref: "intake:2", source_type: "question_answer" }] });
+        return jsonResponse({ items: [{ content: "唯一匹配来源", source_ref: "fact-candidate:2", source_type: "fact_candidate_edit" }] });
       }
       if (path.endsWith("/v1/facts/fact_nonce")) {
         return jsonResponse({ confirmed_at: "2026-07-30T00:00:00Z", id: "fact_nonce", kind: "project", source_ids: ["source_nonce"], status: "confirmed", value: "唯一匹配事实" });
@@ -745,7 +748,8 @@ describe("V2 real workflow pages", () => {
     expect(screen.getByText("模型匹配")).toBeInTheDocument();
     expect(screen.getByText(/2026.*07.*30/)).toBeInTheDocument();
     expect(await screen.findByText("唯一匹配事实")).toBeInTheDocument();
-    expect(screen.getByText(/唯一匹配来源/)).toBeInTheDocument();
+    expect(screen.getByText("候选编辑：唯一匹配来源")).toBeInTheDocument();
+    expect(screen.queryByText(/fact_candidate_edit|proved/)).not.toBeInTheDocument();
   });
 
   it("renders immutable versions from the API and restores through a real write", async () => {

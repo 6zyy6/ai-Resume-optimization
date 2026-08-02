@@ -22,7 +22,7 @@
 | FastAPI 核心资源路由 | `PARTIAL` | Facts、Resumes、Imports、Jobs、Matching、Suggestions、Tasks、Exports、Usage、Privacy | 保留；补 intake 和 `/v1/me` |
 | 不可变简历版本与事实检查 | `PARTIAL` | 数据模型、迁移、服务和后端测试 | 保留；修正 Web 使用方式 |
 | Task/Outbox/Worker | `PARTIAL` | 队列、claim/lease、events、取消实现 | 保留；补真实 Web 状态和外部证据 |
-| Pi 工作流 | `PARTIAL` | analyze_intake_answer、compose_resume_draft、parse_jd、match_resume_to_jd 已进入业务调用链；generate_suggestions_batch 尚未接入 | 继续完成建议工作流，并补真实模型与跨服务证据 |
+| Pi 工作流 | `DONE-LOCAL` | analyze_intake_answer、compose_resume_draft、parse_jd、match_resume_to_jd、generate_suggestions_batch 五条严格工作流均已进入 Task→AiRun→Trace 业务调用链 | 补真实模型、真实 Redis/Celery 与云环境证据 |
 | 本地五服务启动 | `DONE-LOCAL` | Web、API、Pi、Dispatcher、Celery | 作为 real-service E2E 基线 |
 | 编辑器本地操作 | `PARTIAL` | 20 步撤销、拆分/合并/增删/排序 reducer | 与服务端 snapshot 初始化和保存合并 |
 | 自动保存 hook | `PARTIAL` | 800 ms、15 s、offline/error/conflict 状态 | 补真实恢复、冲突决策和离线草稿 |
@@ -44,14 +44,15 @@
 | 编辑器完整保存 | `DONE-LOCAL` | 全字段 snapshot、base version、可见冲突合并和离线恢复 |
 | 版本历史 | `DONE-LOCAL` | 真实列表、查看和恢复 |
 | JD 确认 | `DONE-LOCAL` | 真实 requirements 读取、编辑、确认 |
-| 匹配明细 | `PARTIAL` | 真实 requirement/fact 资源和可选 AI match 已接入；规则降级与模型 provenance 尚未区分 |
-| 建议页 | `PARTIAL` | 真实 suggestion 资源、来源、编辑和版本结果已接入；建议内容仍由匹配服务拼接，未调用 suggestion workflow |
+| 匹配明细 | `DONE-LOCAL` | requirement/fact、四类明细、model/rule_fallback provenance 和更新时间均读取真实 API；内部枚举只在展示层映射为中文 |
+| 建议页 | `DONE-LOCAL` | generate_suggestions_batch 已接入；建议来源、风险、阻断状态、编辑和不可变版本决策均由真实业务资源驱动 |
 | 事实库 | `DONE-LOCAL` | 真实列表、筛选、来源和状态操作 |
 | 任务中心 | `DONE-LOCAL` | 真实列表、events、取消和资源恢复 |
 | 预览导出 | `DONE-LOCAL` | 导出任务恢复、签名下载、失败重试和幂等键处理 |
 | 设置与隐私 | `DONE-LOCAL` | `/v1/me`、usage、data export、re-auth deletion、logout |
 | 协议和隐私正文 | `DONE-LOCAL` | 独立用户协议和隐私政策页面 |
 | 真实服务 Web E2E | `PARTIAL` | 已完成本地真实 FastAPI + Next 浏览器冒烟；仍缺规格要求的两流程各 10/10 正式 Playwright 证据 |
+| AI 编排 V2.1 本地 HTTP E2E | `DONE-LOCAL` | Next production build/start→FastAPI→实际 Worker operation→TCP Pi deterministic fixture 已覆盖 5 工作流、9 状态×3 视口；无 Redis/Dispatcher/Celery，因此不等同完整 real-services |
 | 响应式截图证据 | `DONE-LOCAL` | 同 build 的 7 视口 × 8 页面共 56 张截图，另有 7 张核心流程截图和 SHA-256 manifest |
 | 完整多状态证据矩阵 | `PARTIAL` | 仍缺 42 个主矩阵状态、16 个异常矩阵状态的逐项 API/DB/trace 证据 |
 | Safari/Edge/staging | `BLOCKED` | 真实浏览器与 staging 环境 |
@@ -228,6 +229,7 @@ flowchart LR
 - [x] 岗位优化真实闭环；
 - [x] 导出和隐私真实闭环；
 - [ ] real-service E2E；
+- [x] AI 编排 V2.1 本地 HTTP partial E2E（27 状态截图候选待不可变 commit 复采）；
 - [x] 7 视口 × 8 页面响应式截图；
 - [x] manifest、哈希、最终报告；
 - [x] Hallmark 58 项审查；
@@ -235,6 +237,7 @@ flowchart LR
 - [ ] V2-P0 全部 PASS。
 
 本轮证据见
-[验证报告](./evidence/v2-implementation/2026-07-30/verification.md)。
+[V2.1 AI 编排验证报告](./evidence/ai-orchestration-v2/verification.md)和
+[V2 实现验证报告](./evidence/v2-implementation/2026-07-30/verification.md)。
 `real-service E2E` 和 `V2-P0 全部 PASS` 保持未勾选，是因为规格要求的完整状态矩阵、
 axe、API/数据库/trace 以及外部环境证据尚未全部形成；这不会被响应式截图或本地单元测试替代。

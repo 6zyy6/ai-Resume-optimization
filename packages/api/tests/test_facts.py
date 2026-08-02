@@ -138,6 +138,37 @@ def test_invalid_source_type_is_a_validation_envelope(fact_client):
     assert response.json()["error"]["code"] == "VALIDATION_FAILED"
 
 
+def test_candidate_edit_source_can_be_read_through_the_public_api(fact_client):
+    """Candidate review persists an internal provenance type that the response must expose."""
+    client, sessions = fact_client
+    fact = _run(
+        FactService(sessions).create_fact(
+            "usr_a",
+            kind="experience",
+            value="编辑后的事实",
+            sources=[
+                {
+                    "source_type": "fact_candidate_edit",
+                    "source_ref": "fact-candidate:fc_1",
+                    "content": "编辑后的事实",
+                }
+            ],
+        )
+    )
+
+    response = client.get(f"/v1/facts/{fact.id}/sources")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {
+            "source_type": "fact_candidate_edit",
+            "source_ref": "fact-candidate:fc_1",
+            "source_range": None,
+            "content": "编辑后的事实",
+        }
+    ]
+
+
 async def _fact_count(sessions) -> int:
     async with sessions() as session:
         return len((await session.scalars(select(Fact))).all())

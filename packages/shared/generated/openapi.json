@@ -624,7 +624,7 @@
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/SourceInput"
+              "$ref": "#/components/schemas/SourceResponse"
             },
             "title": "Items",
             "type": "array"
@@ -2442,6 +2442,55 @@
           "content"
         ],
         "title": "SourceInput",
+        "type": "object"
+      },
+      "SourceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "source_range": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Range"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "source_type": {
+            "enum": [
+              "question_answer",
+              "imported_resume",
+              "user_edit",
+              "user_confirmation",
+              "fact_candidate_edit"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type",
+          "content"
+        ],
+        "title": "SourceResponse",
         "type": "object"
       },
       "SuggestionClaimRangeResponse": {

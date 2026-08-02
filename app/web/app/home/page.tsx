@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Page } from "../../components/Page";
 import { Button } from "../../components/ui/Button";
 import { StatusTag } from "../../components/ui/StatusTag";
+import { taskStatusLabel, taskTypeLabel } from "../../features/presentation/business-labels";
 import { useApiResource } from "../../features/api/useApiResource";
 
 export default function HomePage() {
@@ -43,7 +44,7 @@ export default function HomePage() {
           {tasks.status === "error" ? <div role="alert"><p>{tasks.error}</p><Button onClick={tasks.reload} variant="secondary">重试任务</Button></div> : null}
           {tasks.status === "ready" && tasks.data.items.length === 0 ? <p>当前没有进行中或失败任务。</p> : null}
           {tasks.status === "ready" ? tasks.data.items.map((task) => (
-            <p key={task.id}><StatusTag tone={task.status === "failed" ? "error" : task.status === "succeeded" ? "success" : "pending"}>{task.type} · {task.status}</StatusTag> {task.progress}%</p>
+            <p key={task.id}><StatusTag tone={task.status === "failed" ? "error" : task.status === "succeeded" ? "success" : "pending"}>{taskTypeLabel(task.type)} · {taskStatusLabel(task.status)}</StatusTag> {task.progress}%</p>
           )) : null}
           <Link href="/tasks">查看任务</Link>
         </div>

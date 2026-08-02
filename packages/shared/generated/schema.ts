@@ -1240,7 +1240,7 @@ export interface components {
         /** FactSourcesResponse */
         FactSourcesResponse: {
             /** Items */
-            items: components["schemas"]["SourceInput"][];
+            items: components["schemas"]["SourceResponse"][];
         };
         /**
          * FactStatus
@@ -1844,6 +1844,22 @@ export interface components {
              * @enum {string}
              */
             source_type: "question_answer" | "imported_resume" | "user_edit" | "user_confirmation";
+        };
+        /** SourceResponse */
+        SourceResponse: {
+            /** Content */
+            content: string;
+            /** Source Range */
+            source_range?: {
+                [key: string]: unknown;
+            } | null;
+            /** Source Ref */
+            source_ref?: string | null;
+            /**
+             * Source Type
+             * @enum {string}
+             */
+            source_type: "question_answer" | "imported_resume" | "user_edit" | "user_confirmation" | "fact_candidate_edit";
         };
         /** SuggestionClaimRangeResponse */
         SuggestionClaimRangeResponse: {

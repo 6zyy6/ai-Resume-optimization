@@ -11,6 +11,7 @@ import { Button } from "../../components/ui/Button";
 import { Field } from "../../components/ui/Field";
 import { StatusTag } from "../../components/ui/StatusTag";
 import { createWebApiClient } from "../../features/api/client";
+import { factKindLabel } from "../../features/presentation/business-labels";
 
 type IntakeSession = components["schemas"]["IntakeSessionResponse"];
 type IntakeFact = components["schemas"]["IntakeFactSummary"];
@@ -559,7 +560,7 @@ export default function CreatePage() {
               <ol className="intake-facts">
                 {session.fact_candidates.filter((candidate) => candidate.status === "pending").map((candidate, index) => (
                   <li className="intake-fact" key={candidate.id}>
-                    <span>{candidate.kind}</span>
+                    <span>{factKindLabel(candidate.kind)}</span>
                     <p>{candidate.value}</p>
                     <p><strong>原回答出处：</strong>{candidate.source_excerpt}</p>
                     <p className="resource-id">字符范围 {candidate.source_start}–{candidate.source_end}</p>
@@ -568,10 +569,13 @@ export default function CreatePage() {
                         label={`编辑候选 ${index + 1}`}
                         multiline
                         name={`candidate-${candidate.id}`}
-                        onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setCandidateEdits((current) => ({
-                          ...current,
-                          [candidate.id]: event.currentTarget.value,
-                        }))}
+                        onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
+                          const value = event.currentTarget.value;
+                          setCandidateEdits((current) => ({
+                            ...current,
+                            [candidate.id]: value,
+                          }));
+                        }}
                         value={candidateEdits[candidate.id] ?? candidate.value}
                       />
                     ) : null}
@@ -658,7 +662,7 @@ export default function CreatePage() {
           <ol className="intake-facts">
             {session.fact_summaries.map((fact, index) => (
               <li className="intake-fact" key={fact.id}>
-                <span>{fact.kind}</span>
+                <span>{factKindLabel(fact.kind)}</span>
                 <p>{fact.value}</p>
                 <StatusTag tone={fact.status === "confirmed" ? "success" : fact.status === "rejected" ? "error" : "pending"}>
                   {fact.status === "confirmed" ? "已确认" : fact.status === "rejected" ? "不采用" : "需要你确认"}

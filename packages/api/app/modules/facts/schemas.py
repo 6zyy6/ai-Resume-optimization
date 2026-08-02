@@ -15,6 +15,15 @@ class SourceInput(BaseModel):
     source_range: dict | None = None
 
 
+class SourceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source_type: Literal["question_answer", "imported_resume", "user_edit", "user_confirmation", "fact_candidate_edit"]
+    content: str
+    source_ref: str | None = None
+    source_range: dict | None = None
+
+
 class FactCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -52,4 +61,4 @@ class FactListResponse(BaseModel):
 class FactSourcesResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    items: list[SourceInput]
+    items: list[SourceResponse]
