@@ -2009,6 +2009,144 @@ def test_english_nested_object_negation_does_not_poison_main_predicate(
 
 
 @pytest.mark.parametrize(
+    "answer",
+    [
+        "在项目内同学完成任务",
+        "于项目里导师完成任务",
+        "在导师旁同学完成任务",
+    ],
+)
+def test_location_adverbial_or_unstripped_third_party_owner_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize("answer", ["在项目内我完成任务", "于项目里我完成任务"])
+def test_location_adverbial_preserves_self_owner_acceptance(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_postpositive_inability_state_complement_is_trace_only():
+    answer = "承担不住压力"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_weak_connector_before_a_new_action_requires_edit():
+    answer = "完成任务并发起活动"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize("noun", ["project", "task", "job", "work"])
+@pytest.mark.parametrize("label_first", [False, True])
+@pytest.mark.parametrize("same_label", [True, False])
+def test_english_project_labels_support_both_orders_and_complete_identifiers(
+    noun,
+    label_first,
+    same_label,
+):
+    candidate_label = "A1"
+    tail_label = "A1" if same_label else "A2"
+    if label_first:
+        evidence = f"I completed {candidate_label} {noun}"
+        tail_subject = f"{tail_label} {noun}"
+    else:
+        evidence = f"I completed {noun} {candidate_label}"
+        tail_subject = f"{noun.title()} {tail_label}"
+    answer = f"{evidence}. {tail_subject} was completed by a teammate"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    if same_label:
+        assert valid == []
+        assert invalid == [(0, "negative_source")]
+    else:
+        assert invalid == []
+        assert len(valid) == 1
+        assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize("tail_label", ["A1", "A2"])
+def test_english_bare_project_label_controls_tail_identity(tail_label):
+    answer = f"I completed A1. Task {tail_label} was completed by a teammate"
+    evidence = "I completed A1"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    if tail_label == "A1":
+        assert valid == []
+        assert invalid == [(0, "negative_source")]
+    else:
+        assert invalid == []
+        assert len(valid) == 1
+        assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_english_common_word_after_completed_is_not_a_project_label():
+    answer = "I completed routine chores. Task routine was completed by a teammate"
+    evidence = "I completed routine chores"
+
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["I participated in no projects", "I contributed to no project"],
+)
+def test_english_particle_predicate_with_negative_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I participated in project A1",
+        "I contributed to project A1",
+        "I worked on project A1",
+    ],
+)
+def test_english_particle_predicate_with_positive_object_is_accepted(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
         ("我完成课程项目", "完成课程项目", "edit_only"),

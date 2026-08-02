@@ -156,7 +156,7 @@ NEGATIVE_CLAIM = re.compile(
     r"(?:项目|任务|工作|实习|活动|课程)?"
 )
 CHINESE_ACTION_PREDICATE = (
-    r"负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
+    r"实现并发|执行并行计算|负责|使用|完成|参与|实现|获得|掌握|开发|组织|主导|承担|达成|"
     r"推动|优化|解决|帮助|指导|评审|协助|支持|培训|分析|服务|维护|"
     r"审核|撰写|制定|提交|合并|并行计算|还原|处理|调研|牵头|执行|做"
 )
@@ -254,7 +254,7 @@ ENGLISH_TAIL_DENIAL = re.compile(
 )
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
     rf"(?:{CHINESE_ACTION_PREDICATE})"
-    r"(?:不了(?!解)|不来|不成|不下|不起|不掉|不到|不动|不完|不好)"
+    r"(?:不了(?!解)|不来|不成|不下|不起|不掉|不到|不动|不完|不好|不住)"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2080,7 +2080,8 @@ def _main_assertion_kind(value: str) -> str:
         positive = re.match(
             r"^(?:i|we)\s+(?:(?:successfully|independently|personally)\s+)*"
             r"(?:lead|led|complete(?:d)?|own(?:ed)?|handle(?:d)?|deliver(?:ed)?|"
-            r"participate(?:d)?|contribute(?:d)?|work(?:ed)?\s+on|support(?:ed)?|"
+            r"participate(?:d)?\s+in|contribute(?:d)?\s+to|work(?:ed)?\s+on|"
+            r"support(?:ed)?|"
             r"analy[sz](?:e|ed)|implement(?:ed)?|help(?:ed)?)\b",
             main_scope,
             re.IGNORECASE,
@@ -2155,7 +2156,7 @@ def _has_unresolved_coordination(value: str) -> bool:
     assertion = CHINESE_POSITIVE_ASSERTION.match(context)
     if assertion is None:
         return False
-    for match in re.finditer(r"同时|还(?!原)|且(?!末)|并(?!发|行)", context):
+    for match in re.finditer(r"同时|还|且|并", context):
         if match.start() >= assertion.end() and context[match.end() :].strip():
             return True
     return False
@@ -2166,7 +2167,7 @@ def _strip_chinese_leading_adverbial(value: str) -> str:
     while True:
         stripped, count = re.subn(
             r"^(?:在|于)[^，,。.!！?？；;]{1,24}?"
-            r"(?:中|期间|阶段|过程中|下)",
+            r"(?:中|内|里|期间|阶段|过程中|下)",
             "",
             context,
             count=1,
@@ -2189,6 +2190,11 @@ def _is_chinese_self_owner(owner: str) -> bool:
 
 
 def _is_chinese_adverbial_owner(owner: str) -> bool:
+    if re.match(r"^(?:在|于)", owner) and re.search(
+        r"导师|老师|同学|同事|队友|供应商|外包(?:团队|项目组)?",
+        owner,
+    ):
+        return False
     internal_marker = re.search(r"(?:在|于)", owner)
     if internal_marker is not None and internal_marker.start() > 0:
         subject = owner[: internal_marker.start()]
@@ -2406,8 +2412,11 @@ def _claim_entities(value: str) -> tuple[set[str], set[str]]:
             r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*)\s*"
             r"(?:项目|工作|任务)",
             r"(?:项目|工作|任务)\s*([A-Za-z][A-Za-z0-9_-]*)",
-            r"\bproject\s+([A-Za-z][A-Za-z0-9_-]*)\b",
-            r"\bcompleted\s+([A-Za-z][A-Za-z0-9_-]*)\b",
+            r"\b(?:project|task|job|work)\s+"
+            r"([A-Za-z][A-Za-z0-9_-]*)\b",
+            r"\b([A-Za-z][A-Za-z0-9_-]*)\s+"
+            r"(?:project|task|job|work)\b",
+            r"\bcompleted\s+([A-Za-z][A-Za-z0-9_-]*)\s*$",
         )
         for label in re.findall(pattern, context, re.IGNORECASE)
     }
