@@ -19,7 +19,7 @@ from app.modules.jobs.service import JobService
 from app.modules.matching.service import MatchingService
 from app.modules.privacy.worker import PrivacyWorker
 from app.modules.tasks.service import TaskClaim, TaskService
-from app.workers.execution import register_operation
+from app.workers.execution import register_operation, should_retry
 
 
 @dataclass(frozen=True)
@@ -131,12 +131,18 @@ def configure_pipeline_operations(
                 task_service=task_service,
                 cancellation=TaskAiCancellation(task_service, claim),
             )
-        except Exception:
-            await intake.mark_answer_analysis_failed(
-                claim.owner_user_id,
-                answer_id,
-                task.id,
-            )
+        except Exception as error:
+            retryable = should_retry(error)
+            if not retryable or claim.attempts >= claim.max_attempts:
+                await intake.fail_answer_analysis(
+                    claim.owner_user_id,
+                    answer_id,
+                    task.id,
+                    claim.token,
+                    type(error).__name__,
+                    permanent=not retryable,
+                    task_service=task_service,
+                )
             raise
 
     async def export_private_data(claim: TaskClaim) -> str:

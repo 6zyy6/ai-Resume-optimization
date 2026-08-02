@@ -56,7 +56,7 @@ from app.modules.intake.service import (
 )
 from app.modules.tasks.service import TaskAdmission
 from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
-from app.workers.execution import TaskExecutor, resolve_operation
+from app.workers.execution import HttpServiceError, TaskExecutor, resolve_operation
 from app.workers.pipeline import configure_pipeline_operations
 
 
@@ -383,6 +383,19 @@ class IntakeReceiptClient:
 class FailingIntakeClient:
     async def run(self, input, cancellation=None):
         raise RuntimeError("malformed provider response")
+
+
+class SequencedIntakeClient:
+    def __init__(self, failures, candidates):
+        self.failures = list(failures)
+        self.candidates = candidates
+        self.attempts = 0
+
+    async def run(self, input, cancellation=None):
+        self.attempts += 1
+        if self.failures:
+            raise self.failures.pop(0)()
+        return await IntakeReceiptClient(self.candidates).run(input, cancellation)
 
 
 class FailingPublisher:
@@ -3409,6 +3422,207 @@ def test_pipeline_failure_marks_answer_failed_and_releases_unused_usage(
     assert _run(_usage_state(sessions, task_id))[0] == "released"
 
 
+@pytest.mark.parametrize(
+    ("failure_factory", "expected_error"),
+    [
+        (lambda: TimeoutError("provider timeout"), "TimeoutError"),
+        (lambda: HttpServiceError(429), "HttpServiceError"),
+        (lambda: HttpServiceError(503), "HttpServiceError"),
+    ],
+    ids=("timeout", "http-429", "http-503"),
+)
+def test_executor_keeps_analysis_running_until_transient_retries_are_exhausted(
+    intake_analysis_app,
+    failure_factory,
+    expected_error,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    ai_client = SequencedIntakeClient(
+        [failure_factory, failure_factory, failure_factory],
+        lambda _: [],
+    )
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+    retry_states = []
+
+    async def inspect_retry_state(_delay):
+        retry_states.append(
+            await _task_answer_statuses(sessions, task_id, answer_id)
+        )
+
+    result = _run(
+        TaskExecutor(
+            application.state.task_service,
+            sleep=inspect_retry_state,
+            jitter=lambda: 0,
+        ).execute("usr_analysis", task_id, resolve_operation)
+    )
+
+    assert ai_client.attempts == 3
+    assert retry_states == [("running", "running"), ("running", "running")]
+    assert result["status"] == "failed"
+    assert result["error_code"] == expected_error
+    assert _run(_task_answer_statuses(sessions, task_id, answer_id)) == (
+        "failed",
+        "failed",
+    )
+    stages = _run(_task_event_stages(sessions, task_id))
+    assert stages[-1] == "failed"
+    assert stages.count("failed") == 1
+    assert _run(_usage_state(sessions, task_id)) == ("reserved", None)
+
+
+def test_executor_transient_retry_can_succeed_without_failed_state_pollution(
+    intake_analysis_app,
+):
+    client, sessions, application = intake_analysis_app
+    answer_text = "我完成了课程项目"
+    queued = _queue_answer(client, answer_text)
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+
+    def candidates(input):
+        return [{
+            "kind": "experience",
+            "value": answer_text,
+            "source_answer_id": input.payload.answer_id,
+            "source_range": {"start": 0, "end": len(answer_text)},
+            "risk_flags": [],
+        }]
+
+    ai_client = SequencedIntakeClient(
+        [lambda: HttpServiceError(503)],
+        candidates,
+    )
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+    retry_states = []
+
+    async def inspect_retry_state(_delay):
+        retry_states.append(
+            await _task_answer_statuses(sessions, task_id, answer_id)
+        )
+
+    result = _run(
+        TaskExecutor(
+            application.state.task_service,
+            sleep=inspect_retry_state,
+            jitter=lambda: 0,
+        ).execute("usr_analysis", task_id, resolve_operation)
+    )
+
+    assert ai_client.attempts == 2
+    assert retry_states == [("running", "running")]
+    assert result["status"] == "succeeded"
+    assert _run(_task_answer_statuses(sessions, task_id, answer_id)) == (
+        "succeeded",
+        "waiting_for_confirmation",
+    )
+    stages = _run(_task_event_stages(sessions, task_id))
+    assert stages[-1] == "succeeded"
+    assert "failed" not in stages
+
+
+def test_executor_permanent_analysis_failure_is_atomic_and_releases_reservation(
+    intake_analysis_app,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=FailingIntakeClient(),
+    )
+    sleeps = []
+
+    result = _run(
+        TaskExecutor(
+            application.state.task_service,
+            sleep=lambda delay: sleeps.append(delay),
+            jitter=lambda: 0,
+        ).execute("usr_analysis", task_id, resolve_operation)
+    )
+
+    assert sleeps == []
+    assert result["status"] == "failed"
+    assert result["error_code"] == "RuntimeError"
+    assert _run(_task_answer_statuses(sessions, task_id, answer_id)) == (
+        "failed",
+        "failed",
+    )
+    stages = _run(_task_event_stages(sessions, task_id))
+    assert stages[-1] == "failed"
+    assert stages.count("failed") == 1
+    assert _run(_usage_state(sessions, task_id)) == ("released", None)
+
+
+def test_permanent_analysis_terminal_write_rolls_back_as_one_transaction(
+    intake_analysis_app,
+    monkeypatch,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=FailingIntakeClient(),
+    )
+    original_fail = application.state.task_service.fail_task_in_session
+
+    async def fail_after_terminal_writes(*args, **kwargs):
+        await original_fail(*args, **kwargs)
+        raise RuntimeError("terminal write fault")
+
+    monkeypatch.setattr(
+        application.state.task_service,
+        "fail_task_in_session",
+        fail_after_terminal_writes,
+    )
+
+    async def exercise_fault():
+        claim = await application.state.task_service.claim_task(
+            "usr_analysis",
+            task_id,
+        )
+        assert claim is not None
+        with pytest.raises(RuntimeError, match="terminal write fault"):
+            await resolve_operation("analyze_intake_answer")(claim)
+        return (
+            await _task_answer_statuses(sessions, task_id, answer_id),
+            await _task_event_stages(sessions, task_id),
+            await _usage_state(sessions, task_id),
+        )
+
+    statuses, stages, usage = _run(exercise_fault())
+    assert statuses == (
+        "running",
+        "running",
+    )
+    assert "failed" not in stages
+    assert usage == ("reserved", None)
+
+
 @pytest.mark.parametrize("recovery", ["retry", "continue", "restart"])
 def test_outbox_exhaustion_atomically_unblocks_intake_recovery(
     intake_analysis_app,
@@ -4415,6 +4629,16 @@ async def _task_error(sessions, task_id):
     async with sessions() as session:
         task = await session.scalar(select(Task).where(Task.id == task_id))
         return task.status, task.error_code
+
+
+async def _task_answer_statuses(sessions, task_id, answer_id):
+    async with sessions() as session:
+        task = await session.scalar(select(Task).where(Task.id == task_id))
+        answer = await session.scalar(
+            select(IntakeAnswer).where(IntakeAnswer.id == answer_id)
+        )
+        assert task is not None and answer is not None
+        return task.status, answer.analysis_status
 
 
 async def _cancelled_task_state(sessions, task_id):

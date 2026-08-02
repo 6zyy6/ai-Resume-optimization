@@ -602,19 +602,7 @@ class IntakeService:
             answer_row.analysis_status = "running"
             request = await self._analysis_request(session, task, answer_row, intake)
 
-        try:
-            receipt = await self.ai_client.run(request, cancellation)
-        except Exception:
-            async with self.sessions.begin() as session:
-                answer_row, _ = await self._analysis_resource(
-                    session,
-                    owner_id,
-                    answer_id,
-                    task_id,
-                    lock=True,
-                )
-                answer_row.analysis_status = "failed"
-            raise
+        receipt = await self.ai_client.run(request, cancellation)
 
         async with self.sessions.begin() as session:
             task = await task_service.ai_receipt_task_in_session(
@@ -762,22 +750,38 @@ class IntakeService:
             await session.flush()
             return answer_row.id
 
-    async def mark_answer_analysis_failed(
+    async def fail_answer_analysis(
         self,
         owner_id: str,
         answer_id: str,
         task_id: str,
+        claim_token: str,
+        error_code: str,
+        *,
+        permanent: bool,
+        task_service: TaskService,
     ) -> None:
         async with self.sessions.begin() as session:
-            await session.execute(
-                update(IntakeAnswer)
-                .where(
-                    IntakeAnswer.id == answer_id,
-                    IntakeAnswer.owner_user_id == owner_id,
-                    IntakeAnswer.analysis_task_id == task_id,
-                    IntakeAnswer.analysis_status.in_(("queued", "running")),
-                )
-                .values(analysis_status="failed")
+            task = await task_service.claimed_task_in_session(
+                session,
+                owner_id,
+                task_id,
+                claim_token,
+            )
+            answer_row, intake = await self._analysis_resource(
+                session,
+                owner_id,
+                answer_id,
+                task_id,
+                lock=True,
+            )
+            _require_analysis_graph(task, answer_row, intake)
+            answer_row.analysis_status = "failed"
+            await task_service.fail_task_in_session(
+                session,
+                task,
+                error_code,
+                release_unused_ai_reservation=permanent,
             )
 
     async def retry_analysis(
@@ -2058,16 +2062,6 @@ def _trimmed_range(value: str, start: int, end: int) -> tuple[int, int]:
     ):
         end -= 1
     return start, end
-
-
-def _has_explicit_negative(value: str) -> bool:
-    context = _context_text(value)
-    compact = re.sub(r"[\s、]+", "", context)
-    return bool(
-        CHINESE_EXPLICIT_NEGATIVE.search(compact)
-        or _has_other_owner(context)
-        or ENGLISH_EXPLICIT_NEGATIVE.search(context)
-    )
 
 
 def _has_positive_assertion(value: str) -> bool:
