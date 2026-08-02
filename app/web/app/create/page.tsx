@@ -60,18 +60,35 @@ export default function CreatePage() {
     if (!current.task_id) return;
     const api = createWebApiClient();
     setState("drafting");
+    setDraftFallbackAvailable(false);
     try {
       await waitForTask(
         () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${current.task_id}`),
         current.task_id,
       );
+    } catch (requestError) {
+      if (requestError instanceof TaskTerminalError) {
+        try {
+          const latest = await api.get<IntakeSession>(`/v1/intake-sessions/${current.id}`);
+          setSession(latest);
+          setDraftFallbackAvailable(allowFallback && requestError.status === "failed");
+        } catch (reloadError) {
+          setError(messageFor(reloadError));
+          setState("error");
+          return;
+        }
+      }
+      setError(messageFor(requestError));
+      setState("error");
+      return;
+    }
+    try {
       const completed = await api.get<IntakeSession>(`/v1/intake-sessions/${current.id}`);
       setSession(completed);
       if (!completed.resume_id) throw new Error("Draft task completed without a resume");
       router.push(`/resumes/${completed.resume_id}/edit`);
     } catch (requestError) {
       setError(messageFor(requestError));
-      setDraftFallbackAvailable(allowFallback);
       setState("error");
     }
   };
@@ -101,9 +118,13 @@ export default function CreatePage() {
       const latest = await createWebApiClient().get<IntakeSession>(
         `/v1/intake-sessions/${current.id}`,
       ).catch(() => null);
+      if (latest && !["queued", "running"].includes(latest.analysis_status)) {
+        applySession(latest);
+        return;
+      }
       if (latest) setSession(latest);
       setError(messageFor(requestError));
-      setState(latest?.analysis_status === "failed" ? "ready" : "error");
+      setState("error");
     }
   };
 
@@ -138,7 +159,8 @@ export default function CreatePage() {
 
   useEffect(() => {
     if (
-      session?.status === "drafting"
+      session
+      && ["active", "drafting"].includes(session.status)
       && session.task_id
       && resumedTask.current !== session.task_id
     ) {
@@ -362,7 +384,7 @@ export default function CreatePage() {
     if (!session || state === "drafting") return;
     setState("drafting");
     setError("");
-    if (generationMode === "model") setDraftFallbackAvailable(false);
+    setDraftFallbackAvailable(false);
     try {
       const body: components["schemas"]["IntakeDraftRequest"] = {
         base_version: session.version,
@@ -412,7 +434,9 @@ export default function CreatePage() {
   const analyzing = ["queued", "running"].includes(session.analysis_status);
   const reviewingCandidates = session.analysis_status === "waiting_for_confirmation";
   const analysisFailed = session.analysis_status === "failed";
-  const draftFailed = session.status === "drafting" && state === "error";
+  const analysisPollingFailed = analyzing && state === "error";
+  const draftFailed = draftFallbackAvailable;
+  const draftStatusUncertain = session.status === "drafting" && state === "error" && !draftFallbackAvailable;
   const busy = ["saving", "analyzing", "confirming", "drafting", "loading"].includes(state);
   const question = session.current_question;
   const reason = question?.reason ? reasonLabels[question.reason] : null;
@@ -424,8 +448,12 @@ export default function CreatePage() {
       status={{
         label: draftFailed
           ? "草稿生成失败"
+          : draftStatusUncertain
+            ? "草稿状态暂时无法确认"
           : session.status === "drafting"
           ? "正在生成草稿"
+          : analysisPollingFailed
+            ? "整理状态暂时无法确认"
           : analyzing
             ? "正在整理这段经历"
             : reviewingCandidates
@@ -433,7 +461,7 @@ export default function CreatePage() {
               : analysisFailed
                 ? "经历整理失败"
                 : "回答已保存",
-        tone: draftFailed
+        tone: draftFailed || draftStatusUncertain || analysisPollingFailed
           ? "error"
           : session.status === "drafting" || analyzing || reviewingCandidates
           ? "pending"
@@ -452,7 +480,18 @@ export default function CreatePage() {
         </aside>
 
         <section className="editor-main">
-          {analyzing ? (
+          {analysisPollingFailed ? (
+            <div role="alert">
+              <h2>整理状态暂时无法确认</h2>
+              <p>{error}</p>
+              <Button
+                onClick={() => void pollAnswerAnalysis(session)}
+                variant="secondary"
+              >
+                重新检查整理进度
+              </Button>
+            </div>
+          ) : analyzing ? (
             <div aria-live="polite" role="status">
               <h2>正在整理这段经历</h2>
               <p>回答已经保存。整理完成后会显示候选事实和原回答出处。</p>

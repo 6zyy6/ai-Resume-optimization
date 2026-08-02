@@ -497,7 +497,7 @@ describe("V2 real workflow pages", () => {
     ))).toBe(true));
   });
 
-  it("restores and polls an existing queued job without creating another parse task", async () => {
+  it.each(["queued", "processing"] as const)("restores and polls an existing %s job without creating another parse task", async (status) => {
     window.history.replaceState({}, "", "/jobs/new?version=rver_restore&job=job_restore");
     let jobReads = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -508,7 +508,7 @@ describe("V2 real workflow pages", () => {
       if (path.endsWith("/v1/jobs/job_restore") && init?.method === "GET") {
         jobReads += 1;
         return jsonResponse(jobReads === 1
-          ? { company: null, id: "job_restore", requirements: [], status: "queued", task_id: "task_restore", title: "恢复岗位" }
+          ? { company: null, id: "job_restore", requirements: [], status, task_id: "task_restore", title: "恢复岗位" }
           : { company: null, id: "job_restore", requirements: [{ confirmed: false, id: "req_restore", priority: 1, text: "恢复后的真实要求", type: "must_have" }], status: "parsed", task_id: "task_restore", title: "恢复岗位" });
       }
       if (path.endsWith("/v1/tasks/task_restore")) {
@@ -558,6 +558,162 @@ describe("V2 real workflow pages", () => {
     expect(await screen.findByDisplayValue("成功要求")).toBeInTheDocument();
     expect(keys).toHaveLength(2);
     expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it("rotates the match key only after a confirmed terminal failure", async () => {
+    window.history.replaceState({}, "", "/jobs/new?version=rver_match_retry&job=job_match_retry");
+    let matchCalls = 0;
+    const keys: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse({ consent_versions: {}, identity_type: "email", masked_email: "3***@qq.com", user_id: "usr_match_retry" });
+      if (path.endsWith("/v1/jobs/job_match_retry") && init?.method === "GET") {
+        return jsonResponse({ company: null, id: "job_match_retry", raw: "岗位正文", requirements: [{ confirmed: true, id: "req_match_retry", priority: 1, text: "已确认岗位要求", type: "must_have" }], status: "parsed", task_id: null, title: "匹配重试岗位" });
+      }
+      if (path.endsWith("/v1/match-analyses") && init?.method === "POST") {
+        matchCalls += 1;
+        keys.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+        return jsonResponse({ id: `analysis_match_${matchCalls}`, status: "queued", task_id: `task_match_${matchCalls}` }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_match_1")) return jsonResponse({ error_code: "MODEL_FAILED", id: "task_match_1", status: "failed" });
+      if (path.endsWith("/v1/tasks/task_match_2")) return jsonResponse({ error_code: null, id: "task_match_2", status: "succeeded" });
+      return jsonResponse({}, 404);
+    }));
+
+    render(<NewJobPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "开始匹配" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "开始匹配" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith(
+      "/jobs/job_match_retry/match?analysis=analysis_match_2&version=rver_match_retry",
+    ));
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it("replays the same match key after an uncertain network failure", async () => {
+    window.history.replaceState({}, "", "/jobs/new?version=rver_match_replay&job=job_match_replay");
+    let taskReads = 0;
+    const keys: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse({ consent_versions: {}, identity_type: "email", masked_email: "3***@qq.com", user_id: "usr_match_replay" });
+      if (path.endsWith("/v1/jobs/job_match_replay") && init?.method === "GET") {
+        return jsonResponse({ company: null, id: "job_match_replay", raw: "岗位正文", requirements: [{ confirmed: true, id: "req_match_replay", priority: 1, text: "已确认岗位要求", type: "must_have" }], status: "parsed", task_id: null, title: "匹配重放岗位" });
+      }
+      if (path.endsWith("/v1/match-analyses") && init?.method === "POST") {
+        keys.push(new Headers(init.headers).get("Idempotency-Key") ?? "");
+        return jsonResponse({ id: "analysis_match_replay", status: "queued", task_id: "task_match_replay" }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_match_replay")) {
+        taskReads += 1;
+        if (taskReads <= 2) throw new TypeError("temporary network failure");
+        return jsonResponse({ error_code: null, id: "task_match_replay", status: "succeeded" });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<NewJobPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "开始匹配" }));
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "开始匹配" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith(
+      "/jobs/job_match_replay/match?analysis=analysis_match_replay&version=rver_match_replay",
+    ));
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("keeps each suggestion's returned decision status while navigating", async () => {
+    params = { analysisId: "analysis_decisions" };
+    window.history.replaceState({}, "", "/suggestions/analysis_decisions");
+    let accepts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/match-analyses/analysis_decisions/suggestions")) {
+        return jsonResponse({ items: [
+          { fact_refs: [], generation_mode: "model", id: "suggestion_decide_first", original_text: "第一条待决定原文", reason: "第一条理由", requirement_id: "req_first", requirement_text: "第一条要求", risk_flags: [], status: "pending", suggested_text: "第一条建议", target_path: "/sections/0/items/0/text" },
+          { fact_refs: [], generation_mode: "rule_fallback", id: "suggestion_decide_second", original_text: "第二条待决定原文", reason: "第二条理由", requirement_id: "req_second", requirement_text: "第二条要求", risk_flags: [], status: "pending", suggested_text: "第二条建议", target_path: "/sections/0/items/1/text" },
+        ] });
+      }
+      if (path.endsWith("/v1/suggestions/suggestion_decide_first/accept") && init?.method === "POST") {
+        accepts += 1;
+        return jsonResponse({ decision_id: "decision_first", status: "accepted", suggestion_id: "suggestion_decide_first", version_id: "rver_first" }, 201);
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<SuggestionsPage />);
+
+    expect(await screen.findByText("模型建议")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "接受建议" }));
+    expect(await screen.findByRole("button", { name: "撤销" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "a" });
+    fireEvent.click(screen.getByRole("button", { name: "下一条建议" }));
+    expect(await screen.findByText("基础解析")).toBeInTheDocument();
+    expect(screen.queryByText("AI 已完成")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "上一条建议" }));
+    expect(await screen.findByText("第一条待决定原文")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
+    expect(accepts).toBe(1);
+  });
+
+  it("exposes decision actions only for the current server suggestion status", async () => {
+    params = { analysisId: "analysis_status_actions" };
+    window.history.replaceState({}, "", "/suggestions/analysis_status_actions");
+    const statuses = ["pending", "blocked", "accepted", "edited", "ignored", "reverted"] as const;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/v1/match-analyses/analysis_status_actions/suggestions")) {
+        return jsonResponse({ items: statuses.map((status, index) => ({
+          fact_refs: [],
+          generation_mode: "model",
+          id: `suggestion_status_${status}`,
+          original_text: `状态原文 ${status}`,
+          reason: `状态理由 ${status}`,
+          requirement_id: `req_${index}`,
+          requirement_text: `状态要求 ${status}`,
+          risk_flags: status === "blocked" ? ["missing_source"] : [],
+          status,
+          suggested_text: `状态建议 ${status}`,
+          target_path: `/sections/0/items/${index}/text`,
+        })) });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<SuggestionsPage />);
+
+    expect(await screen.findByText("状态原文 pending")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "接受建议" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "编辑后接受" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "忽略建议" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一条建议" }));
+    expect(await screen.findByText("状态原文 blocked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "补充事实" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "忽略建议" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+
+    for (const status of ["accepted", "edited", "ignored"] as const) {
+      fireEvent.click(screen.getByRole("button", { name: "下一条建议" }));
+      expect(await screen.findByText(`状态原文 ${status}`)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "忽略建议" })).not.toBeInTheDocument();
+    }
+
+    fireEvent.click(screen.getByRole("button", { name: "下一条建议" }));
+    expect(await screen.findByText("状态原文 reverted")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑后接受" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "忽略建议" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
   });
 
   it("shows match details by joining analysis items with the real job requirements", async () => {

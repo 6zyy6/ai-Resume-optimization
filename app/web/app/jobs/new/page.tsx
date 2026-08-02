@@ -64,7 +64,7 @@ export default function NewJobPage() {
           setCompany(job.company ?? "");
           setJd(job.raw ?? "");
           setRequirements(job.requirements ?? []);
-          if (job.status === "queued" && job.task_id) {
+          if (["queued", "processing"].includes(job.status) && job.task_id) {
             setState("parsing");
             setMessage("已恢复岗位解析任务，正在继续等待…");
             const api = createWebApiClient();
@@ -234,6 +234,7 @@ export default function NewJobPage() {
     if (!versionId || !jobId || requirements.some((item) => !item.confirmed)) return;
     setState("matching");
     setMessage("正在创建匹配分析…");
+    let matchingTaskId = "";
     try {
       const body: components["schemas"]["MatchCreate"] = {
         job_id: jobId,
@@ -247,6 +248,7 @@ export default function NewJobPage() {
         matchKey.current,
       );
       if (!analysis.task_id) throw new Error("匹配任务未创建");
+      matchingTaskId = analysis.task_id;
       await waitForTask(
         () => api.get<components["schemas"]["TaskResponse"]>(`/v1/tasks/${analysis.task_id}`),
         analysis.task_id,
@@ -254,6 +256,12 @@ export default function NewJobPage() {
       if (typeof localStorage !== "undefined" && draftKey) localStorage.removeItem(draftKey);
       router.push(`/jobs/${jobId}/match?analysis=${analysis.id}&version=${versionId}`);
     } catch {
+      const terminal = matchingTaskId
+        ? await createWebApiClient().get<components["schemas"]["TaskResponse"]>(
+            `/v1/tasks/${matchingTaskId}`,
+          ).catch(() => null)
+        : null;
+      if (terminal && ["failed", "cancelled"].includes(terminal.status)) matchKey.current = "";
       setState("error");
       setMessage("匹配失败。岗位要求和简历版本均已保留。");
     }

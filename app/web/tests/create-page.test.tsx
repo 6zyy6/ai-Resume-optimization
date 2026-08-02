@@ -210,7 +210,8 @@ describe("V2 persisted intake", () => {
       ],
       version: 2,
     };
-    const draftBodies: unknown[] = [];
+    const draftBodies: Array<{ base_version: number; generation_mode: string }> = [];
+    let sessionReads = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/v1/me")) return jsonResponse(me);
@@ -255,13 +256,21 @@ describe("V2 persisted intake", () => {
         });
       }
       if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
-        return jsonResponse({
-          ...readySession,
-          resume_id: "resume_fallback",
-          status: "completed",
-          task_id: "task_draft_fallback",
-          version: 4,
-        });
+        sessionReads += 1;
+        return jsonResponse(sessionReads === 1
+          ? {
+              ...readySession,
+              status: "active",
+              task_id: "task_draft_model",
+              version: 4,
+            }
+          : {
+              ...readySession,
+              resume_id: "resume_fallback",
+              status: "completed",
+              task_id: "task_draft_fallback",
+              version: 5,
+            });
       }
       return jsonResponse({}, 404);
     });
@@ -274,8 +283,151 @@ describe("V2 persisted intake", () => {
     }));
 
     await waitFor(() => expect(draftBodies).toHaveLength(2));
-    expect(draftBodies[1]).toMatchObject({ generation_mode: "rule_fallback" });
+    expect(draftBodies[1]).toMatchObject({
+      base_version: 4,
+      generation_mode: "rule_fallback",
+    });
     await waitFor(() => expect(push).toHaveBeenCalledWith("/resumes/resume_fallback/edit"));
+  });
+
+  it("does not offer a draft fallback for an uncertain task network error", async () => {
+    const readySession = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      version: 2,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(readySession, 201);
+      if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        return jsonResponse({ session_id: "intake_unique", status: "queued", task_id: "task_draft_uncertain", version: 3 }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_draft_uncertain")) throw new TypeError("temporary network failure");
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成基础简历" }));
+
+    expect(await screen.findByText(/网络请求没有完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+  });
+
+  it("does not offer a fallback when the draft task succeeded but session reload failed", async () => {
+    const readySession = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      version: 2,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(readySession, 201);
+      if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        return jsonResponse({ session_id: "intake_unique", status: "queued", task_id: "task_draft_success", version: 3 }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_draft_success")) {
+        return jsonResponse({ error_code: null, id: "task_draft_success", status: "succeeded" });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        throw new TypeError("session reload failed");
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成基础简历" }));
+
+    expect(await screen.findByText(/网络请求没有完成/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "使用事实原文创建基础草稿" })).not.toBeInTheDocument();
+  });
+
+  it("recovers fallback availability from an active session with a persisted failed draft task", async () => {
+    window.history.replaceState({}, "", "/create?session=intake_unique");
+    const restored = {
+      ...firstSession,
+      analysis_status: "completed",
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      status: "active",
+      task_id: "task_draft_failed_refresh",
+      version: 4,
+    };
+    let sessionReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions/intake_unique")) {
+        sessionReads += 1;
+        return jsonResponse(restored);
+      }
+      if (path.endsWith("/v1/tasks/task_draft_failed_refresh")) {
+        return jsonResponse({ error_code: "MODEL_FAILED", id: "task_draft_failed_refresh", status: "failed" });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+
+    expect(await screen.findByRole("button", { name: "使用事实原文创建基础草稿" })).toBeEnabled();
+    expect(sessionReads).toBe(2);
+  });
+
+  it("shows a same-page recovery action after an uncertain answer-analysis poll", async () => {
+    const queued = {
+      ...firstSession,
+      analysis_status: "queued",
+      analysis_task_id: "task_analysis_network",
+      current_question: null,
+      version: 1,
+    };
+    const recovered = {
+      ...queued,
+      analysis_status: "completed",
+      current_question: {
+        id: "project_role",
+        prompt: "恢复后的服务端问题",
+        reason: null,
+        type: "short_answer",
+      },
+    };
+    let taskReads = 0;
+    let sessionReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") return jsonResponse(queued, 201);
+      if (path.endsWith("/v1/tasks/task_analysis_network")) {
+        taskReads += 1;
+        if (taskReads === 1) throw new TypeError("temporary task network failure");
+        return jsonResponse({ error_code: null, id: "task_analysis_network", status: "succeeded" });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        sessionReads += 1;
+        return jsonResponse(sessionReads === 1 ? queued : recovered);
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "重新检查整理进度" }));
+    expect(await screen.findByRole("heading", { name: "恢复后的服务端问题" })).toBeInTheDocument();
+    expect(taskReads).toBe(2);
   });
 
   it("starts a server session and renders the server-owned question", async () => {

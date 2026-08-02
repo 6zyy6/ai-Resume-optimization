@@ -13,6 +13,27 @@ import { createWebApiClient } from "../../../features/api/client";
 import { useApiResource } from "../../../features/api/useApiResource";
 import { EvidenceList } from "../../../features/facts/EvidenceList";
 
+type Suggestion = components["schemas"]["SuggestionResponse"];
+type SuggestionStatus = Suggestion["status"];
+
+const suggestionStatuses = new Set<SuggestionStatus>([
+  "pending",
+  "accepted",
+  "edited",
+  "ignored",
+  "reverted",
+  "blocked",
+]);
+
+function statusLabel(status: SuggestionStatus | null) {
+  if (status === "accepted") return "已接受";
+  if (status === "edited") return "已编辑";
+  if (status === "ignored") return "已忽略";
+  if (status === "reverted") return "已撤销";
+  if (status === "blocked") return "等待补充事实";
+  return "待处理";
+}
+
 export default function SuggestionsPage() {
   const { analysisId } = useParams<{ analysisId: string }>();
   const router = useRouter();
@@ -20,7 +41,7 @@ export default function SuggestionsPage() {
     `/v1/match-analyses/${analysisId}/suggestions`,
   );
   const [selectedId, setSelectedId] = useState("");
-  const [decision, setDecision] = useState("待处理");
+  const [decisionStatuses, setDecisionStatuses] = useState<Record<string, SuggestionStatus>>({});
   const [versionId, setVersionId] = useState("");
   const [editedText, setEditedText] = useState("");
   const [editing, setEditing] = useState(false);
@@ -32,6 +53,9 @@ export default function SuggestionsPage() {
   const selected = suggestions.status === "ready" && !requestedMissing
     ? suggestions.data.items.find((item) => item.id === selectedId) ?? suggestions.data.items[0]
     : null;
+  const selectedStatus = selected
+    ? decisionStatuses[selected.id] ?? selected.status
+    : null;
   const selectedIndex = suggestions.status === "ready" && selected
     ? suggestions.data.items.findIndex((item) => item.id === selected.id)
     : -1;
@@ -42,7 +66,6 @@ export default function SuggestionsPage() {
     if (!item) return;
     setSelectedId(item.id);
     setEditedText(item.suggested_text);
-    setDecision(item.status === "pending" ? "待处理" : item.status);
     setEditing(false);
     setError("");
     setRequestedMissing(false);
@@ -66,11 +89,18 @@ export default function SuggestionsPage() {
     const next = requestedItem ?? suggestions.data.items[0];
     setSelectedId(next.id);
     setEditedText(next.suggested_text);
-    setDecision(next.status === "pending" ? "待处理" : next.status);
   }, [suggestions.data, suggestions.status]);
 
-  async function decide(action: "accept" | "edit" | "ignore" | "revert", label: string) {
-    if (!selected || running) return;
+  async function decide(action: "accept" | "edit" | "ignore" | "revert") {
+    if (!selected || !selectedStatus || running) return;
+    const allowed = selectedStatus === "pending"
+      ? ["accept", "edit", "ignore"]
+      : selectedStatus === "blocked"
+        ? ["ignore"]
+        : ["accepted", "edited", "ignored"].includes(selectedStatus)
+          ? ["revert"]
+          : [];
+    if (!allowed.includes(action)) return;
     if (action === "edit" && !editing) {
       setEditing(true);
       return;
@@ -88,8 +118,17 @@ export default function SuggestionsPage() {
         body,
         decisionOperation.current.key,
       );
+      if (
+        result.suggestion_id !== selected.id
+        || !suggestionStatuses.has(result.status as SuggestionStatus)
+      ) {
+        throw new Error("Suggestion decision returned an invalid state");
+      }
       decisionOperation.current = { fingerprint: "", key: "" };
-      setDecision(label);
+      setDecisionStatuses((current) => ({
+        ...current,
+        [selected.id]: result.status as SuggestionStatus,
+      }));
       setVersionId(result.version_id);
       setEditing(false);
     } catch {
@@ -103,16 +142,11 @@ export default function SuggestionsPage() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
-      const action = {
-        a: ["accept", "已接受"],
-        e: ["edit", "已编辑"],
-        i: ["ignore", "已忽略"],
-        z: ["revert", "已撤销"],
-      } as const;
-      const choice = action[event.key.toLowerCase() as keyof typeof action];
-      if (!choice) return;
-      if (selected?.status === "blocked" && ["accept", "edit", "revert"].includes(choice[0])) return;
-      void decide(choice[0], choice[1]);
+      const key = event.key.toLowerCase();
+      if (selectedStatus === "pending" && key === "a") void decide("accept");
+      else if (selectedStatus === "pending" && key === "e") void decide("edit");
+      else if (["pending", "blocked"].includes(selectedStatus ?? "") && key === "i") void decide("ignore");
+      else if (["accepted", "edited", "ignored"].includes(selectedStatus ?? "") && key === "z") void decide("revert");
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -121,7 +155,10 @@ export default function SuggestionsPage() {
   return (
     <Page
       eyebrow="逐条建议 · A 接受 · E 编辑 · I 忽略 · Z 撤销"
-      status={{ label: running ? "正在保存" : decision, tone: error ? "error" : decision === "待处理" ? "pending" : "success" }}
+      status={{
+        label: running ? "正在保存" : statusLabel(selectedStatus),
+        tone: error ? "error" : ["pending", "blocked"].includes(selectedStatus ?? "") ? "pending" : "success",
+      }}
       title="确认每一处修改"
     >
       {suggestions.status === "loading" ? <section className="panel" role="status">正在读取建议…</section> : null}
@@ -151,6 +188,11 @@ export default function SuggestionsPage() {
             <section className="panel panel--wide">
             <p className="eyebrow">JD 原要求</p>
             <h2>{selected.requirement_text ?? "未关联具体岗位要求"}</h2>
+            {selected.generation_mode ? (
+              <StatusTag tone="info">
+                {selected.generation_mode === "rule_fallback" ? "基础解析" : "模型建议"}
+              </StatusTag>
+            ) : null}
             <dl className="comparison">
               <div><dt>当前原文</dt><dd>{selected.original_text}</dd></div>
               <div>
@@ -173,18 +215,22 @@ export default function SuggestionsPage() {
               {selected.risk_flags.length > 0 ? `风险：${selected.risk_flags.join("、")}` : "没有额外风险标记"}
             </StatusTag>
             <div className="button-row">
-              {selected.status !== "blocked" ? (
+              {selectedStatus === "pending" ? (
                 <>
-                  <Button disabled={running} onClick={() => void decide("accept", "已接受")} state={running ? "loading" : "default"}>接受建议</Button>
-                  <Button disabled={running} onClick={() => void decide("edit", "已编辑")} variant="secondary">{editing ? "保存编辑" : "编辑后接受"}</Button>
+                  <Button disabled={running} onClick={() => void decide("accept")} state={running ? "loading" : "default"}>接受建议</Button>
+                  <Button disabled={running} onClick={() => void decide("edit")} variant="secondary">{editing ? "保存编辑" : "编辑后接受"}</Button>
+                  <Button disabled={running} onClick={() => void decide("ignore")} variant="quiet">忽略建议</Button>
                 </>
-              ) : (
+              ) : selectedStatus === "blocked" ? (
+                <>
                 <Button disabled={running} onClick={() => router.push("/create")} variant="secondary">补充事实</Button>
+                  <Button disabled={running} onClick={() => void decide("ignore")} variant="quiet">忽略建议</Button>
+                </>
+              ) : ["accepted", "edited", "ignored"].includes(selectedStatus ?? "") ? (
+                <Button disabled={running} onClick={() => void decide("revert")} variant="quiet">撤销</Button>
+              ) : (
+                <span className="resource-id">此建议没有可执行操作</span>
               )}
-              <Button disabled={running} onClick={() => void decide("ignore", "已忽略")} variant="quiet">忽略建议</Button>
-              {selected.status !== "blocked" ? (
-                <Button disabled={running} onClick={() => void decide("revert", "已撤销")} variant="quiet">撤销</Button>
-              ) : null}
             </div>
             {error ? <p className="auth-error" role="alert">{error}</p> : null}
             {versionId ? <Link className="button button--primary" href={`/exports/new?version=${versionId}`}>进入导出</Link> : null}

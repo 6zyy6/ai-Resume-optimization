@@ -115,3 +115,61 @@ The existing modern-minimal `Cobalt · Guided Ledger` visual system was preserve
 - Chrome CDP was not started because the required setup would terminate the user's running Chrome process. The isolated project Playwright browser was used instead, so no user browser state was modified.
 - Model-provider failure is represented through deterministic Task fixtures; no live DeepSeek request was made in this task.
 - User-owned `AGENTS.md` and the two root Chinese documents were preserved and excluded from the commit.
+
+## Review fix round 1/5
+
+Reviewer result: `0 Critical / 5 Important / 1 Minor`. All findings were reproduced with failing tests and fixed within the existing Task 8 Web files.
+
+### RED evidence
+
+Draft and answer-analysis recovery:
+
+```text
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx
+12 tests: 7 passed, 5 failed
+```
+
+The failures proved that fallback used the queued response version instead of the server's post-failure version, appeared after uncertain network failures, could not be recovered after refresh, and that answer-analysis polling had no same-page network recovery action.
+
+Job and suggestion state machines:
+
+```text
+pnpm --filter @resume/web exec vitest run tests/v2-workflows.test.tsx
+22 tests: 17 passed, 5 failed
+```
+
+The failures reproduced unhandled `processing` Jobs, non-rotating terminal match keys, uncertain match replay loss, missing suggestion generation provenance, and action/state resurrection after navigation.
+
+### Fix rationale
+
+- Draft Task failure is now handled separately from transport/session-read failure. A terminal failed Task must be followed by a successful IntakeSession re-read before fallback is offered; the refreshed server version is then used in the fallback request.
+- Task transport uncertainty and successful-Task/session-read failure never expose fallback. Refreshing an active session with a persisted failed draft Task rechecks that Task and restores the explicit fallback option.
+- Answer-analysis polling uncertainty renders `重新检查整理进度`; re-polling stays on the current page. A re-read terminal `failed` session still exposes the original retry/continue actions.
+- Restored `queued` and `processing` Jobs resume their existing parse Task and never enqueue another parse request.
+- Match creation retains its idempotency key across uncertain failures. It clears the key only after a follow-up Task read confirms `failed` or `cancelled`.
+- Suggestion decision status is stored per item from the generated `DecisionResponse`. Navigation cannot restore a stale pending state. Pending allows A/E/I, blocked allows I plus add-evidence, accepted/edited/ignored allow Z, and reverted exposes no decision action.
+- Suggestion provenance is visible as neutral `模型建议` or explicit `基础解析`; no fallback path is labeled `AI 已完成`.
+
+### GREEN evidence
+
+Focused review regressions:
+
+```text
+pnpm --filter @resume/web exec vitest run tests/create-page.test.tsx tests/v2-workflows.test.tsx tests/v2-real-pages.test.tsx
+42 passed
+```
+
+Full Web verification:
+
+```text
+pnpm --filter @resume/web test
+67 passed
+
+pnpm --filter @resume/web lint
+PASS
+
+pnpm --filter @resume/web build
+PASS
+```
+
+The build retained only the existing non-fatal `baseline-browser-mapping` age warning. User-owned `AGENTS.md` and both root Chinese documents remain excluded.
