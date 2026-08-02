@@ -51,7 +51,7 @@ def _backfill_legacy_requirements() -> None:
             "ORDER BY r.owner_user_id, r.job_id, r.priority, r.id"
         )
     ).mappings()
-    cursors: dict[tuple[str, str], int] = {}
+    consumed: dict[tuple[str, str], list[tuple[int, int]]] = {}
     for row in rows:
         raw = row["raw_encrypted"]
         value = row["text_encrypted"]
@@ -60,9 +60,20 @@ def _backfill_legacy_requirements() -> None:
                 "cannot backfill JD requirement provenance without source text"
             )
         key = (row["owner_user_id"], row["job_id"])
-        start = raw.find(value, cursors.get(key, 0))
-        if start < 0:
-            start = raw.find(value)
+        start = -1
+        search_from = 0
+        while True:
+            candidate = raw.find(value, search_from)
+            if candidate < 0:
+                break
+            candidate_end = candidate + len(value)
+            if all(
+                candidate_end <= used_start or candidate >= used_end
+                for used_start, used_end in consumed.get(key, ())
+            ):
+                start = candidate
+                break
+            search_from = candidate + 1
         if start < 0:
             start = 0
             end = len(raw)
@@ -70,7 +81,7 @@ def _backfill_legacy_requirements() -> None:
             confidence_band = "low"
         else:
             end = start + len(value)
-            cursors[key] = end
+            consumed.setdefault(key, []).append((start, end))
             explicitness = "explicit"
             confidence_band = "high"
         source = raw[start:end]

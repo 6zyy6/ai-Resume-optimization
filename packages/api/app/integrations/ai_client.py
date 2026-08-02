@@ -40,7 +40,10 @@ HashString: TypeAlias = Annotated[
     str,
     Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$"),
 ]
-TextString: TypeAlias = Annotated[str, Field(min_length=1, max_length=20_000)]
+MAX_AI_TEXT_LENGTH = 20_000
+TextString: TypeAlias = Annotated[
+    str, Field(min_length=1, max_length=MAX_AI_TEXT_LENGTH)
+]
 ShortString: TypeAlias = Annotated[str, Field(min_length=1, max_length=64)]
 TitleString: TypeAlias = Annotated[str, Field(min_length=1, max_length=512)]
 ReasonString: TypeAlias = Annotated[str, Field(min_length=1, max_length=4_000)]

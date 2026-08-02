@@ -946,12 +946,18 @@ def _create_parsed_job(
         headers={"Idempotency-Key": f"{key}-parse"},
     )
     assert parsed.status_code == 202, parsed.text
+    claim = asyncio.run(
+        client.app.state.task_service.claim_task("usr_a", parsed.json()["task_id"])
+    )
+    assert claim is not None
     asyncio.run(
         client.app.state.job_service.process_parse(
             "usr_a",
             job.json()["id"],
             trace_id=f"trace-{key}",
             task_id=parsed.json()["task_id"],
+            claim_token=claim.token,
+            task_service=client.app.state.task_service,
         )
     )
     requirement_id = asyncio.run(

@@ -8,7 +8,14 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
-from app.db.models import IntakeSession, Outbox, Task, TaskEvent, UsageLedger
+from app.db.models import (
+    IntakeSession,
+    JobDescription,
+    Outbox,
+    Task,
+    TaskEvent,
+    UsageLedger,
+)
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.db.ports import is_valid_cost_cny
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
@@ -165,12 +172,25 @@ class TaskService:
             and isinstance(payload.get("draft_input_hash"), str)
             and isinstance(payload.get("draft_snapshot"), dict)
         )
+        deterministic_job_fallback = (
+            task_type == "parse_job"
+            and queue == "ai.interactive"
+            and resource_type == "job_description"
+            and resource_id is not None
+            and isinstance(payload, dict)
+            and payload.get("job_id") == resource_id
+            and payload.get("generation_mode") == "rule_fallback"
+            and isinstance(payload.get("parse_input_hash"), str)
+            and len(payload["parse_input_hash"]) == 64
+            and isinstance(payload.get("parse_snapshot"), dict)
+        )
         if (
             admission.usage_type not in SUPPORTED_ADMISSION_USAGE_TYPES
             or (
                 queue in AI_QUEUE_NAMES
                 and admission.usage_type != "ai_task"
                 and not deterministic_intake_fallback
+                and not deterministic_job_fallback
             )
         ):
             raise TaskServiceError(
@@ -484,6 +504,7 @@ class TaskService:
                     task,
                 )
                 await self._restore_cancelled_intake_draft(session, task)
+            await self._restore_cancelled_job_parse(session, task)
             await self._finish(session, task, "cancelled")
             if unstarted_draft:
                 task.claim_token = None
@@ -548,6 +569,7 @@ class TaskService:
                         task,
                     )
                     await self._restore_cancelled_intake_draft(session, task)
+                await self._restore_cancelled_job_parse(session, task)
                 await self._finish(session, task, "cancelled")
                 if unstarted_draft:
                     task.claim_token = None
@@ -586,6 +608,32 @@ class TaskService:
         intake.updated_at = self.clock.now()
         await session.flush()
 
+    async def _restore_cancelled_job_parse(
+        self,
+        session: AsyncSession,
+        task: Task,
+    ) -> None:
+        if (
+            task.type != "parse_job"
+            or task.resource_type != "job_description"
+            or task.resource_id is None
+        ):
+            return
+        job = await session.scalar(
+            select(JobDescription)
+            .where(
+                JobDescription.id == task.resource_id,
+                JobDescription.owner_user_id == task.owner_user_id,
+                JobDescription.task_id == task.id,
+                JobDescription.status.in_(("queued", "processing", "failed")),
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return
+        job.status = "draft"
+        await session.flush()
+
     @staticmethod
     def _is_unstarted_intake_draft(task: Task) -> bool:
         if task.type != "generate_intake_draft" or task.active_ai_run_id is not None:
@@ -599,7 +647,11 @@ class TaskService:
         session: AsyncSession,
         task: Task,
     ) -> None:
-        if task.type != "generate_intake_draft":
+        snapshot_key = {
+            "generate_intake_draft": "draft_snapshot",
+            "parse_job": "parse_snapshot",
+        }.get(task.type)
+        if snapshot_key is None:
             return
         outbox = await session.scalar(
             select(Outbox)
@@ -609,10 +661,10 @@ class TaskService:
             )
             .with_for_update()
         )
-        if outbox is None or "draft_snapshot" not in outbox.payload:
+        if outbox is None or snapshot_key not in outbox.payload:
             return
         payload = dict(outbox.payload)
-        payload.pop("draft_snapshot", None)
+        payload.pop(snapshot_key, None)
         outbox.payload = payload
         await session.flush()
 
@@ -1025,7 +1077,7 @@ class TaskService:
                     Task.owner_user_id == owner_user_id,
                     Task.claim_token == claim_token,
                     Task.status == "cancelled",
-                    Task.type == "generate_intake_draft",
+                    Task.type.in_(("generate_intake_draft", "parse_job")),
                 )
                 .with_for_update()
             )
@@ -1033,6 +1085,7 @@ class TaskService:
                 return None
             await self._release_unused_ai_reservation_in_session(session, task)
             await self._restore_cancelled_intake_draft(session, task)
+            await self._restore_cancelled_job_parse(session, task)
             await self.clear_terminal_payload_in_session(session, task)
             task.active_ai_run_id = None
             task.claim_token = None

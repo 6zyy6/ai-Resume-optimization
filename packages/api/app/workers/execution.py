@@ -210,7 +210,7 @@ class TaskExecutor:
                     "failed",
                     "cancelled",
                 }:
-                    if retryable:
+                    if current.status == "cancelled":
                         reconciled = await self.service.reconcile_cancelled_operation_error(
                             owner_user_id,
                             task_id,

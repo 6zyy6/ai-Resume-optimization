@@ -17,6 +17,7 @@ from app.core.ids import new_id
 from app.db.models import (
     IntakeAnswer,
     IntakeSession,
+    JobDescription,
     Outbox,
     Task,
     TaskEvent,
@@ -222,6 +223,27 @@ class OutboxDispatcher:
             if "draft_snapshot" in outbox.payload:
                 payload = dict(outbox.payload)
                 payload.pop("draft_snapshot", None)
+                outbox.payload = payload
+        if (
+            task.type == "parse_job"
+            and task.resource_type == "job_description"
+            and task.resource_id is not None
+        ):
+            job = await session.scalar(
+                select(JobDescription)
+                .where(
+                    JobDescription.id == task.resource_id,
+                    JobDescription.owner_user_id == task.owner_user_id,
+                    JobDescription.task_id == task.id,
+                    JobDescription.status.in_(("queued", "processing", "failed")),
+                )
+                .with_for_update()
+            )
+            if job is not None:
+                job.status = "draft"
+            if "parse_snapshot" in outbox.payload:
+                payload = dict(outbox.payload)
+                payload.pop("parse_snapshot", None)
                 outbox.payload = payload
         sequence = (
             await session.scalar(

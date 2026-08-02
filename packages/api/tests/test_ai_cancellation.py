@@ -315,11 +315,17 @@ async def test_cancelled_match_cannot_publish_ai_business_rows(
         f"/v1/jobs/{job.json()['id']}/parse",
         headers={"Idempotency-Key": "cancel-job-parse"},
     )
+    claim = await client.app.state.task_service.claim_task(
+        "usr_a", parse.json()["task_id"]
+    )
+    assert claim is not None
     await client.app.state.job_service.process_parse(
         "usr_a",
         job.json()["id"],
         trace_id="trace_parse",
         task_id=parse.json()["task_id"],
+        claim_token=claim.token,
+        task_service=client.app.state.task_service,
     )
     parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()
     for index, requirement in enumerate(parsed_job["requirements"]):

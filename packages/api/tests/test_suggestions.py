@@ -181,12 +181,18 @@ def _setup_suggestion(client):
         f"/v1/jobs/{job.json()['id']}/parse",
         headers={"Idempotency-Key": "pipeline-parse"},
     )
+    claim = asyncio.run(
+        client.app.state.task_service.claim_task("usr_a", parsed.json()["task_id"])
+    )
+    assert claim is not None
     asyncio.run(
         client.app.state.job_service.process_parse(
             "usr_a",
             job.json()["id"],
             trace_id="trace_pipeline_parse",
             task_id=parsed.json()["task_id"],
+            claim_token=claim.token,
+            task_service=client.app.state.task_service,
         )
     )
     parsed_job = client.get(f"/v1/jobs/{job.json()['id']}").json()

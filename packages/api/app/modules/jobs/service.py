@@ -148,6 +148,9 @@ class JobService:
             current.status = "queued"
             parse_snapshot = self._build_parse_snapshot(current)
             parse_input_hash = _semantic_hash(parse_snapshot)
+            generation_mode = (
+                "model" if self.ai_client is not None else "rule_fallback"
+            )
             task = await task_service.create_task_in_session(
                 session,
                 owner,
@@ -155,14 +158,16 @@ class JobService:
                 queue="ai.interactive",
                 trace_id=trace_id,
                 idempotency_key=f"job-parse:{idempotency_key}",
-                admission=TaskAdmission.ai(),
+                admission=(
+                    TaskAdmission.ai()
+                    if generation_mode == "model"
+                    else TaskAdmission.unmetered()
+                ),
                 resource_type="job_description",
                 resource_id=current.id,
                 payload={
                     "job_id": current.id,
-                    "generation_mode": (
-                        "model" if self.ai_client is not None else "rule_fallback"
-                    ),
+                    "generation_mode": generation_mode,
                     "parse_input_hash": parse_input_hash,
                     "parse_snapshot": parse_snapshot,
                 },
@@ -188,39 +193,26 @@ class JobService:
         *,
         trace_id: str,
         task_id: str,
-        claim_token: str | None = None,
-        task_service: TaskService | None = None,
+        claim_token: str,
+        task_service: TaskService,
         cancellation: AiCancellation | None = None,
     ) -> str:
-        if (claim_token is None) != (task_service is None):
-            raise TypeError("claim_token and task_service must be provided together")
-        if task_service is not None and claim_token is not None:
-            async with self.sessions.begin() as session:
-                task = await task_service.claimed_task_in_session(
-                    session, owner_id, task_id, claim_token
-                )
-                job = await self._job(session, owner_id, job_id, lock=True)
-                self._require_parse_graph(job, task)
-                if job.status == "parsed":
-                    await task_service.complete_task_in_session(session, task, job.id)
-                    return job.id
-                generation_mode, input_hash, payload = await self._parse_input(
-                    session, task, job
-                )
-                task.stage = "jd_parse_processing"
-                await session.flush()
-                request_trace_id = task.trace_id
-        else:
-            job = await self.get(owner_id, job_id)
-            if job is None:
-                raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
+        del trace_id
+        async with self.sessions.begin() as session:
+            task = await task_service.claimed_task_in_session(
+                session, owner_id, task_id, claim_token
+            )
+            job = await self._job(session, owner_id, job_id, lock=True)
+            self._require_parse_graph(job, task)
             if job.status == "parsed":
+                await task_service.complete_task_in_session(session, task, job.id)
                 return job.id
-            generation_mode = "model" if self.ai_client is not None else "rule_fallback"
-            snapshot = self._build_parse_snapshot(job)
-            input_hash = _semantic_hash(snapshot)
-            payload = ParseJdPayload.model_validate(snapshot["payload"], strict=False)
-            request_trace_id = trace_id
+            generation_mode, input_hash, payload = await self._parse_input(
+                session, task, job
+            )
+            task.stage = "jd_parse_processing"
+            await session.flush()
+            request_trace_id = task.trace_id
 
         receipt: AiExecutionReceipt | None = None
         if generation_mode == "model":
@@ -245,27 +237,25 @@ class JobService:
             requirements = self._parse_lines(payload.jd_text)
 
         async with self.sessions.begin() as session:
-            claimed_task = None
-            if task_service is not None and claim_token is not None:
-                claimed_task = (
-                    await task_service.ai_receipt_task_in_session(
-                        session,
-                        owner_id,
-                        task_id,
-                        claim_token,
-                        receipt.run.ai_run_id,
-                        receipt.run.status,
-                    )
-                    if receipt is not None
-                    else await task_service.claimed_task_in_session(
-                        session, owner_id, task_id, claim_token
-                    )
+            claimed_task = (
+                await task_service.ai_receipt_task_in_session(
+                    session,
+                    owner_id,
+                    task_id,
+                    claim_token,
+                    receipt.run.ai_run_id,
+                    receipt.run.status,
                 )
+                if receipt is not None
+                else await task_service.claimed_task_in_session(
+                    session, owner_id, task_id, claim_token
+                )
+            )
             current = await self._job(session, owner_id, job_id, lock=True)
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
-            if claimed_task is not None:
-                self._require_parse_graph(current, claimed_task)
+            self._require_parse_graph(current, claimed_task)
+            if claimed_task.status != "cancelled":
                 current_mode, current_hash, current_payload = await self._parse_input(
                     session, claimed_task, current
                 )
@@ -280,12 +270,11 @@ class JobService:
                         409,
                     )
             if current.status == "parsed":
-                if claimed_task is not None:
-                    await task_service.complete_task_in_session(
-                        session,
-                        claimed_task,
-                        current.id,
-                    )
+                await task_service.complete_task_in_session(
+                    session,
+                    claimed_task,
+                    current.id,
+                )
                 return current.id
             ai_run_id = None
             if receipt is not None:
@@ -320,14 +309,13 @@ class JobService:
                     result_ref=current.id,
                 )
                 ai_run_id = ai_run.id
-                if claimed_task is not None and task_service is not None:
-                    await task_service.consume_ai_reservation_in_session(
+                await task_service.consume_ai_reservation_in_session(
+                    session, current.owner_user_id, claimed_task.id, ai_run.id
+                )
+                if claimed_task.active_ai_run_id == ai_run.id:
+                    await task_service.settle_ai_run_in_session(
                         session, current.owner_user_id, claimed_task.id, ai_run.id
                     )
-                    if claimed_task.active_ai_run_id == ai_run.id:
-                        await task_service.settle_ai_run_in_session(
-                            session, current.owner_user_id, claimed_task.id, ai_run.id
-                        )
                 if receipt.run.status != "succeeded" or invalid or not requirements:
                     if receipt.run.status != "succeeded":
                         failure_code = (
@@ -345,6 +333,15 @@ class JobService:
                         failure_code,
                     )
                     return current.id
+            elif not requirements:
+                await self._fail_parse_in_session(
+                    session,
+                    current,
+                    claimed_task,
+                    task_service,
+                    "JD_REQUIREMENTS_EMPTY",
+                )
+                return current.id
             await session.execute(
                 delete(JdRequirement).where(
                     JdRequirement.job_id == current.id,
@@ -374,12 +371,11 @@ class JobService:
             ]
             session.add_all(rows)
             current.status = "parsed"
-            if claimed_task is not None:
-                await task_service.complete_task_in_session(
-                    session,
-                    claimed_task,
-                    current.id,
-                )
+            await task_service.complete_task_in_session(
+                session,
+                claimed_task,
+                current.id,
+            )
             await session.flush()
             return current.id
 
@@ -640,8 +636,6 @@ class JobService:
             and snapshot.get("prompt_template_version") == "jd-parse@2"
             and snapshot.get("locale") == "zh-CN"
             and snapshot.get("input_version") == 1
-            and payload.jd_text == job.raw_encrypted
-            and payload.job_title == job.title
             and _semantic_hash(snapshot) == input_hash
         )
         if not valid:

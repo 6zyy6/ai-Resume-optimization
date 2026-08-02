@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
 from app.core.middleware import get_request_context
+from app.integrations.ai_client import MAX_AI_TEXT_LENGTH
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.jobs.service import JobService, JobServiceError
@@ -27,7 +28,7 @@ class JobCreate(BaseModel):
 
     title: str = Field(min_length=1, max_length=255)
     company: str | None = Field(default=None, max_length=255)
-    raw: str = Field(min_length=2, max_length=100000)
+    raw: str = Field(min_length=2, max_length=MAX_AI_TEXT_LENGTH)
 
 
 class RequirementUpdate(BaseModel):

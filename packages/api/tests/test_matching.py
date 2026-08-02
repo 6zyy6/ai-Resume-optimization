@@ -132,12 +132,18 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
         f"/v1/jobs/{job.json()['id']}/parse",
         headers={"Idempotency-Key": "job-parse"},
     )
+    claim = asyncio.run(
+        client.app.state.task_service.claim_task("usr_a", parsed.json()["task_id"])
+    )
+    assert claim is not None
     asyncio.run(
         client.app.state.job_service.process_parse(
             "usr_a",
             job.json()["id"],
             trace_id="trace_job_parse",
             task_id=parsed.json()["task_id"],
+            claim_token=claim.token,
+            task_service=client.app.state.task_service,
         )
     )
     blocked_match = client.post(
@@ -239,12 +245,18 @@ def test_job_parse_reuses_active_task_across_new_idempotency_keys(
     assert second.json()["task_id"] == first.json()["task_id"]
     assert asyncio.run(_job_parse_task_count(sessions, job.json()["id"])) == 1
 
+    claim = asyncio.run(
+        client.app.state.task_service.claim_task("usr_a", first.json()["task_id"])
+    )
+    assert claim is not None
     asyncio.run(
         client.app.state.job_service.process_parse(
             "usr_a",
             job.json()["id"],
             trace_id="guard-parse",
             task_id=first.json()["task_id"],
+            claim_token=claim.token,
+            task_service=client.app.state.task_service,
         )
     )
     parsed = client.post(

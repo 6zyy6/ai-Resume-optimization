@@ -1283,7 +1283,7 @@
             "title": "Company"
           },
           "raw": {
-            "maxLength": 100000,
+            "maxLength": 20000,
             "minLength": 2,
             "title": "Raw",
             "type": "string"

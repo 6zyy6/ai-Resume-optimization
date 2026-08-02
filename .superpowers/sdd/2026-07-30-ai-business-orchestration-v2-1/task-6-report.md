@@ -4,7 +4,7 @@
 
 Implemented on `main` from task base `68ca8b7`.
 
-JD parsing now uses an immutable, hashed `parse_jd@2` input snapshot. Model parsing accepts only a typed terminal `AiExecutionReceipt`, validates every value against its exact source range, persists the receipt/AiRun/trace/usage and public candidates in one terminal transaction, and fails closed without rule fallback. When AI is genuinely unconfigured, deterministic line parsing records occurrence-aware offsets and releases the unused AI reservation.
+JD parsing now uses an immutable, hashed `parse_jd@2` input snapshot. Model parsing accepts only a typed terminal `AiExecutionReceipt`, validates every value against its exact source range, persists the receipt/AiRun/trace/usage and public candidates in one terminal transaction, and fails closed without rule fallback. When AI is genuinely unconfigured, deterministic line parsing records occurrence-aware offsets and is admitted without AI metering.
 
 ## RED evidence
 
@@ -96,7 +96,7 @@ The Task 7 test-file edits are contract compatibility only: one legacy fixture n
 - Happy model receipt and public provenance
 - Repeated identical fallback lines and exact occurrence offsets/hashes
 - Out-of-bounds and value-mismatched model source ranges
-- AI-unconfigured rule fallback and released reservation
+- AI-unconfigured rule fallback and unmetered admission
 - Failed provider receipt with persisted audit and no fallback rows
 - Provider transient retry success and retry exhaustion
 - Owner mismatch isolation
@@ -109,3 +109,53 @@ The Task 7 test-file edits are contract compatibility only: one legacy fixture n
 - Legacy rows whose text is no longer a literal substring of the retained raw JD are backfilled against the full raw source with `explicitness=implicit` and `confidence_band=low`; they remain unconfirmed and are not falsely represented as exact matches.
 - No real model or cloud-provider call was made; typed deterministic receipts exercise the real service/Task/AiRun/usage transaction boundaries.
 - User-owned `AGENTS.md` and root Chinese documents were preserved and excluded from the commit.
+
+## Review fix round 1/5
+
+### RED evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py -q
+12 failed, 9 passed in 2.10s
+```
+
+All seven Important findings reproduced: claimless execution and mutable-current-row authority; retained terminal private snapshots; pre-claim and cancel/error recovery gaps; metered fallback admission; empty fallback success; the 20,001-character contract mismatch; and duplicate migration range reuse. The fallback-limit fixture initially needed a User flush to satisfy SQLite FK insertion order; after that fixture-only correction, it failed at the intended `TaskServiceError` 429 boundary.
+
+### Fix rationale
+
+- Parsing now requires a valid claim and `TaskService`; the validated immutable snapshot/hash is authoritative even if the current Job row changes.
+- Every terminal path removes only `parse_snapshot`, retaining non-private generation mode and input hash provenance. Cancellation and dispatcher exhaustion also owner-lock and restore the Job to `draft`.
+- Executor cancellation reconciliation handles parse tasks after any operation exception, clears run/claim state idempotently, and preserves consumed registered-run usage.
+- Validated deterministic JD fallback is admitted unmetered, including when AI daily/concurrency limits are exhausted.
+- Empty fallback fails as `JD_REQUIREMENTS_EMPTY`; public create and typed AI payload share the 20,000-character constant.
+- Migration backfill tracks consumed source ranges, so excess duplicates use honest full-source implicit/low provenance.
+
+### GREEN evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py -q
+21 passed in 1.84s
+
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py packages/api/tests/test_matching.py packages/api/tests/test_ai_cancellation.py packages/api/tests/test_suggestions.py packages/api/tests/test_task7_review_fixes.py packages/api/tests/test_outbox.py packages/api/tests/test_task_fix_usage_and_claims.py -q
+80 passed in 5.86s
+
+pnpm generate
+PASS
+
+pnpm test
+API: 1359 passed in 62.20s
+AI: 93 passed, 1 skipped
+Shared: 8 passed
+Design tokens: 2 passed
+Miniprogram: 12 passed
+Web: 53 passed
+Dev supervisor: 2 passed
+
+pnpm lint
+PASS
+
+pnpm build
+PASS
+```
+
+The full API run emitted eight pre-existing non-fatal aiosqlite event-loop-close warnings in `test_v2_intake.py`. Build retained the existing baseline-browser age and Taro cache-resolution warnings.

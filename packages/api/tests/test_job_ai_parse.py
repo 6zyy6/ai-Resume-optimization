@@ -11,7 +11,15 @@ import pytest
 from sqlalchemy import create_engine, func, inspect, select, text
 
 from app.core.config import Settings
-from app.db.models import AiRun, JdRequirement, JobDescription, Task, UsageLedger, User
+from app.db.models import (
+    AiRun,
+    JdRequirement,
+    JobDescription,
+    Outbox,
+    Task,
+    UsageLedger,
+    User,
+)
 from app.integrations.ai_client import (
     AiExecutionReceipt,
     ParseJdRequest,
@@ -21,6 +29,7 @@ from app.modules.jobs.service import JobService
 from app.modules.tasks.service import TaskClaimError, TaskService
 from app.integrations.storage import MemoryStorage
 from app.workers.execution import TaskExecutor, resolve_operation
+from app.workers.dispatcher import OutboxDispatcher, TaskQueueBusy
 from app.workers.pipeline import configure_pipeline_operations
 
 
@@ -91,6 +100,8 @@ def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_t
                 "VALUES ('req_legacy_1', 'job_legacy_jd', 'preferred', 1, 'Python', 0, "
                 "'usr_legacy_jd'), "
                 "('req_legacy_2', 'job_legacy_jd', 'preferred', 2, 'Python', 0, "
+                "'usr_legacy_jd'), "
+                "('req_legacy_3', 'job_legacy_jd', 'preferred', 3, 'Python', 0, "
                 "'usr_legacy_jd')"
             )
         )
@@ -104,13 +115,22 @@ def test_migration_0015_backfills_repeated_legacy_rows_by_occurrence_and_round_t
                 "input_hash FROM jd_requirements ORDER BY priority"
             )
         ).all()
-    assert [(row.source_start, row.source_end) for row in rows] == [(2, 8), (11, 17)]
-    assert all(row.source_hash == hashlib.sha256(b"Python").hexdigest() for row in rows)
+    assert [(row.source_start, row.source_end) for row in rows] == [
+        (2, 8),
+        (11, 17),
+        (0, 17),
+    ]
+    assert [row.source_hash for row in rows] == [
+        hashlib.sha256(b"Python").hexdigest(),
+        hashlib.sha256(b"Python").hexdigest(),
+        hashlib.sha256(b"- Python\n- Python").hexdigest(),
+    ]
     assert all(
         (row.explicitness, row.confidence_band, row.generation_mode)
         == ("explicit", "high", "rule_fallback")
-        for row in rows
+        for row in rows[:2]
     )
+    assert (rows[2].explicitness, rows[2].confidence_band) == ("implicit", "low")
     assert all(row.workflow_version == "legacy-rule-fallback@1" for row in rows)
     assert all(row.ai_run_id is None and len(row.input_hash) == 64 for row in rows)
 
@@ -218,6 +238,24 @@ class FlakyReceiptClient(ReceiptClient):
         return await super().run(request, cancellation)
 
 
+class CancelThenErrorClient(ReceiptClient):
+    owner_id: str
+    tasks: TaskService
+
+    async def run(self, request, cancellation=None):
+        assert cancellation is not None
+        ai_run_id = derive_ai_run_id(request.task_id, "parse", request.input_hash)
+        assert await cancellation.register_run(ai_run_id) is True
+        await self.tasks.request_cancel(self.owner_id, request.task_id)
+        raise TimeoutError("transport failed after cancellation")
+
+
+class FailingPublisher:
+    def publish(self, task_id: str, owner_user_id: str, queue: str) -> None:
+        del task_id, owner_user_id, queue
+        raise RuntimeError("broker unavailable")
+
+
 def _receipt(
     request: ParseJdRequest,
     *,
@@ -302,6 +340,27 @@ async def _queued_parse(sessions, ai_client, *, raw: str, suffix: str):
     return owner_id, jobs, tasks, queued, claim
 
 
+async def _queued_unclaimed_parse(sessions, ai_client, *, raw: str, suffix: str):
+    owner_id = f"usr_{suffix}"
+    async with sessions.begin() as session:
+        session.add(User(id=owner_id))
+    tasks = TaskService(sessions)
+    jobs = JobService(sessions, ai_client)
+    job = await jobs.create(
+        owner_id,
+        {"title": "后端工程师", "company": None, "raw": raw},
+        f"create-{suffix}",
+    )
+    queued, _ = await jobs.parse(
+        owner_id,
+        job.id,
+        f"parse-{suffix}",
+        trace_id=f"trace_{suffix}",
+        task_service=tasks,
+    )
+    return owner_id, jobs, tasks, queued
+
+
 async def _rows(sessions, owner_id: str, job_id: str):
     async with sessions() as session:
         return list(
@@ -316,6 +375,18 @@ async def _rows(sessions, owner_id: str, job_id: str):
                 )
             ).all()
         )
+
+
+async def _outbox_payload(sessions, owner_id: str, task_id: str):
+    async with sessions() as session:
+        outbox = await session.scalar(
+            select(Outbox).where(
+                Outbox.owner_user_id == owner_id,
+                Outbox.task_id == task_id,
+            )
+        )
+        assert outbox is not None
+        return outbox.payload
 
 
 async def test_model_receipt_persists_exact_sourced_candidates_and_provenance(
@@ -413,9 +484,11 @@ async def test_rule_fallback_maps_repeated_lines_to_distinct_occurrences_and_rel
                 UsageLedger.task_id == job.task_id,
             )
         )
-    assert usage is not None
-    assert usage.state == "released"
-    assert usage.ai_run_id is None
+    assert usage is None
+    payload = await _outbox_payload(sql_session_factory, owner, job.task_id)
+    assert "parse_snapshot" not in payload
+    assert payload["generation_mode"] == "rule_fallback"
+    assert payload["parse_input_hash"]
 
 
 @pytest.mark.parametrize(
@@ -514,6 +587,9 @@ async def test_failed_model_receipt_is_audited_without_rule_fallback(
     assert run is not None and run.status == "failed"
     assert usage is not None and usage.state == "consumed"
     assert usage.ai_run_id == run.id
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
 
 
 async def test_final_transaction_rolls_back_receipt_candidates_and_task_then_retries_once(
@@ -626,6 +702,9 @@ async def test_cancelled_model_receipt_cannot_publish_requirements(
         )
     assert current is not None and current.status == "draft"
     assert run is not None and run.status == "cancelled"
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
 
 
 async def test_parse_worker_owner_mismatch_cannot_read_or_publish_job(
@@ -718,3 +797,276 @@ async def test_provider_retry_recovery_never_falls_back_to_rule_rows(
             )
         assert current is not None and current.status == "failed"
         assert usage is not None and usage.state == "released"
+
+
+async def test_parse_processing_rejects_claimless_execution(sql_session_factory):
+    owner, jobs, _, job = await _queued_unclaimed_parse(
+        sql_session_factory, None, raw="Python", suffix="claim_required"
+    )
+
+    with pytest.raises(TypeError, match="claim"):
+        await jobs.process_parse(
+            owner,
+            job.id,
+            trace_id="trace_claim_required",
+            task_id=job.task_id,
+        )
+
+    assert await _rows(sql_session_factory, owner, job.id) == []
+
+
+async def test_claimed_parse_uses_immutable_snapshot_after_job_text_changes(
+    sql_session_factory,
+):
+    requirement = {
+        "category": "must_have",
+        "priority": 1,
+        "value": "Python",
+        "source_range": {"start": 0, "end": 6},
+        "explicitness": "explicit",
+        "confidence_band": "high",
+    }
+    client = ReceiptClient((requirement,))
+    owner, jobs, tasks, job, claim = await _queued_parse(
+        sql_session_factory, client, raw="Python", suffix="snapshot_authority"
+    )
+    async with sql_session_factory.begin() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job.id,
+                JobDescription.owner_user_id == owner,
+            )
+        )
+        assert current is not None
+        current.title = "已变更标题"
+        current.raw_encrypted = "SQL"
+
+    await jobs.process_parse(
+        owner,
+        job.id,
+        trace_id="trace_snapshot_authority",
+        task_id=job.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    assert client.requests[0].payload.job_title == "后端工程师"
+    assert client.requests[0].payload.jd_text == "Python"
+    assert [row.text_encrypted for row in await _rows(sql_session_factory, owner, job.id)] == [
+        "Python"
+    ]
+
+
+async def test_preclaim_parse_cancellation_restores_job_and_scrubs_snapshot(
+    sql_session_factory,
+):
+    owner, _, tasks, job = await _queued_unclaimed_parse(
+        sql_session_factory, None, raw="Python", suffix="preclaim_cancel"
+    )
+
+    task = await tasks.request_cancel(owner, job.task_id)
+
+    assert task.status == "cancelled"
+    async with sql_session_factory() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job.id,
+                JobDescription.owner_user_id == owner,
+            )
+        )
+    assert current is not None and current.status == "draft"
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
+
+
+async def test_cancel_then_transport_error_recovers_parse_via_real_executor(
+    sql_session_factory,
+):
+    client = CancelThenErrorClient()
+    owner, _, tasks, job = await _queued_unclaimed_parse(
+        sql_session_factory, client, raw="Python", suffix="cancel_transport"
+    )
+    client.owner_id = owner
+    client.tasks = tasks
+    configure_pipeline_operations(
+        sql_session_factory,
+        Settings(app_env="test", database_url="sqlite+aiosqlite://"),
+        tasks,
+        storage_override=MemoryStorage(),
+        ai_client_override=client,
+    )
+
+    result = await TaskExecutor(
+        tasks, sleep=lambda _: None, jitter=lambda: 0
+    ).execute(owner, job.task_id, resolve_operation)
+
+    assert result["status"] == "cancelled"
+    task = await tasks.get_task(owner, job.task_id)
+    assert task is not None
+    assert task.active_ai_run_id is None
+    assert task.claim_token is None
+    async with sql_session_factory() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job.id,
+                JobDescription.owner_user_id == owner,
+            )
+        )
+        usage = await session.scalar(
+            select(UsageLedger).where(
+                UsageLedger.task_id == job.task_id,
+                UsageLedger.owner_user_id == owner,
+            )
+        )
+    assert current is not None and current.status == "draft"
+    assert usage is not None and usage.state == "consumed"
+    assert usage.ai_run_id is not None
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
+
+
+async def test_rule_fallback_queues_unmetered_when_ai_limits_are_exhausted(
+    sql_session_factory,
+):
+    owner_id = "usr_fallback_limits"
+    now = datetime.now(timezone.utc)
+    async with sql_session_factory.begin() as session:
+        session.add(User(id=owner_id))
+        await session.flush()
+        for index in range(20):
+            task_id = f"tsk_limit_{index}"
+            active = index < 2
+            session.add(
+                Task(
+                    id=task_id,
+                    owner_user_id=owner_id,
+                    type="match_resume",
+                    status="queued" if active else "succeeded",
+                    trace_id=f"trace_limit_{index}",
+                    queued_at=now,
+                    finished_at=None if active else now,
+                    stage="queued" if active else "succeeded",
+                    usage_type="ai_task",
+                )
+            )
+            session.add(
+                UsageLedger(
+                    id=f"usg_limit_{index}",
+                    owner_user_id=owner_id,
+                    usage_type="ai_task",
+                    quantity=1,
+                    cost_cny=Decimal("0"),
+                    trace_id=f"trace_limit_{index}",
+                    state="reserved" if active else "consumed",
+                    task_id=task_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+    tasks = TaskService(sql_session_factory)
+    jobs = JobService(sql_session_factory, None)
+    job = await jobs.create(
+        owner_id,
+        {"title": "后端工程师", "company": None, "raw": "Python"},
+        "create-fallback-limits",
+    )
+
+    queued, _ = await jobs.parse(
+        owner_id,
+        job.id,
+        "parse-fallback-limits",
+        trace_id="trace_fallback_limits",
+        task_service=tasks,
+    )
+
+    task = await tasks.get_task(owner_id, queued.task_id)
+    assert task is not None and task.status == "queued"
+    assert task.usage_type is None
+    async with sql_session_factory() as session:
+        assert await session.scalar(
+            select(func.count()).select_from(UsageLedger).where(
+                UsageLedger.task_id == queued.task_id,
+                UsageLedger.owner_user_id == owner_id,
+            )
+        ) == 0
+
+
+async def test_empty_rule_fallback_fails_with_stable_error(sql_session_factory):
+    owner, jobs, tasks, job, claim = await _queued_parse(
+        sql_session_factory, None, raw="  ", suffix="empty_fallback"
+    )
+
+    await jobs.process_parse(
+        owner,
+        job.id,
+        trace_id="trace_empty_fallback",
+        task_id=job.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    assert await _rows(sql_session_factory, owner, job.id) == []
+    task = await tasks.get_task(owner, job.task_id)
+    assert task is not None and task.status == "failed"
+    assert task.error_code == "JD_REQUIREMENTS_EMPTY"
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
+
+
+async def test_parse_dispatch_exhaustion_restores_job_and_scrubs_snapshot(
+    sql_session_factory,
+):
+    owner, _, tasks, job = await _queued_unclaimed_parse(
+        sql_session_factory, None, raw="Python", suffix="dispatch_exhausted"
+    )
+    dispatcher = OutboxDispatcher(
+        sql_session_factory,
+        FailingPublisher(),
+        retry_base_seconds=0,
+        jitter=lambda: 0,
+    )
+
+    for _ in range(3):
+        with pytest.raises(TaskQueueBusy):
+            await dispatcher.dispatch_task(job.task_id)
+
+    task = await tasks.get_task(owner, job.task_id)
+    assert task is not None and task.status == "failed"
+    assert task.error_code == "TASK_QUEUE_UNAVAILABLE"
+    async with sql_session_factory() as session:
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.id == job.id,
+                JobDescription.owner_user_id == owner,
+            )
+        )
+    assert current is not None and current.status == "draft"
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
+
+
+async def test_job_create_enforces_typed_parse_input_limit_without_task_side_effects(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+
+    accepted = client.post(
+        "/v1/jobs",
+        json={"title": "后端工程师", "raw": "x" * 20_000},
+        headers={"Idempotency-Key": "job-20000"},
+    )
+    rejected = client.post(
+        "/v1/jobs",
+        json={"title": "后端工程师", "raw": "x" * 20_001},
+        headers={"Idempotency-Key": "job-20001"},
+    )
+
+    assert accepted.status_code == 201
+    assert rejected.status_code == 422
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(Task)) == 0
+        assert await session.scalar(select(func.count()).select_from(UsageLedger)) == 0
