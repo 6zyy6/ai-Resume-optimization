@@ -217,6 +217,18 @@ def test_fact_policy_allows_responsibility_strength_downgrade():
             "负责用户调研/市场分析",
             ("参与用户调研", "负责市场分析"),
         ),
+        (
+            "负责用户调研和市场分析",
+            ("参与用户调研和市场分析", "负责市场分析"),
+        ),
+        (
+            "负责用户调研及市场分析",
+            ("参与用户调研及市场分析", "负责市场分析"),
+        ),
+        (
+            "负责用户调研与市场分析",
+            ("参与用户调研与市场分析", "负责市场分析"),
+        ),
     ],
 )
 def test_fact_policy_does_not_borrow_strong_responsibility_across_topics(

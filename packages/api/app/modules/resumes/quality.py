@@ -219,7 +219,7 @@ def responsibility_claim_supported(
         equivalent_strengths = [
             evidence_strength
             for evidence_subject, evidence_strength in evidence_fragments
-            if _responsibility_subject_equivalent(subject, evidence_subject)
+            if _responsibility_subject_covered(subject, evidence_subject)
         ]
         if equivalent_strengths and max(equivalent_strengths) < strength:
             return False
@@ -251,6 +251,12 @@ def _responsibility_subject_equivalent(left: str, right: str) -> bool:
         and right_terms
         and (left_terms <= right_terms or right_terms <= left_terms)
     )
+
+
+def _responsibility_subject_covered(claim: str, evidence: str) -> bool:
+    claim_terms = _high_risk_terms(claim)
+    evidence_terms = _high_risk_terms(evidence)
+    return bool(claim_terms and claim_terms <= evidence_terms)
 
 
 def _without_responsibility_markers(text: str) -> str:

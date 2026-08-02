@@ -175,3 +175,84 @@ Output:
 ```
 
 Risk: ambiguous unspaced single-character Chinese conjunctions are intentionally not split. This avoids corrupting ordinary words such as `和平`; explicit punctuation, `以及`, `&`, or `/` remains supported for deterministic multi-topic validation.
+
+## Round 4: directional responsibility coverage
+
+Base commit: `23fe6c6 fix(resumes): harden responsibility fragment parsing`
+
+### Finding
+
+An unsplit Chinese compound subject still used symmetric subject equivalence when selecting responsibility-strength evidence. For `负责用户调研和市场分析`, the weak compound fact `参与用户调研和市场分析` and the strong partial fact `负责市场分析` were both treated as equivalent; taking their maximum let the market-analysis fact authorize responsibility for user research. `及` and `与` had the same bypass through both `fact_policy_check` and persisted-version `ExportService.process_export`.
+
+### RED
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+.....FFF........FFF                                                      [100%]
+FAILED packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics[负责用户调研和市场分析-facts5]
+FAILED packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics[负责用户调研及市场分析-facts6]
+FAILED packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics[负责用户调研与市场分析-facts7]
+FAILED packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation[负责用户调研和市场分析-evidences8-zh-he-conjunction]
+FAILED packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation[负责用户调研及市场分析-evidences9-zh-ji-conjunction]
+FAILED packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation[负责用户调研与市场分析-evidences10-zh-yu-conjunction]
+6 failed, 13 passed in 1.39s
+```
+
+The policy failures returned a persisted `SupportedClaim`; the export failures completed without raising `EXPORT_BLOCKED_BY_FACTS`.
+
+### GREEN
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+...................                                                      [100%]
+19 passed in 1.29s
+```
+
+### Implementation rationale
+
+Responsibility strength now uses directional semantic coverage: an evidence subject contributes its strength only when its high-risk semantic terms cover the complete claim subject. A strong fact for only `市场分析` therefore cannot contribute strength to the compound subject `用户调研和市场分析`; the covering compound fact remains at the weaker `参与` level and the claim is rejected.
+
+This changes the evidence-selection rule rather than adding `和`, `及`, or `与` to the delimiter regex. Existing explicit punctuation, whitespace-delimited `and`, `&`, `/`, inherited marker strength, single-fact inflation, `和平项目`, and safe responsibility downgrade behavior remain on their existing paths.
+
+Files changed:
+
+- `packages/api/app/modules/resumes/quality.py`
+- `packages/api/tests/test_intake_ai_draft.py`
+- `packages/api/tests/test_exports.py`
+- `.superpowers/sdd/2026-07-30-ai-business-orchestration-v2-1/task-5-report.md`
+
+### Focused regression evidence
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py packages/api/tests/test_exports.py packages/api/tests/test_v2_intake.py packages/api/tests/test_task4_sql_integration.py::test_quality_rejects_responsibility_strength_inflation packages/api/tests/test_task_recovery.py packages/api/tests/test_task_state.py packages/api/tests/test_intake_ai_analysis.py::test_outbox_exhaustion_atomically_unblocks_intake_recovery -q
+```
+
+Output:
+
+```text
+........................................................................ [ 60%]
+...............................................                          [100%]
+119 passed in 7.68s
+```
+
+### Risks and limits
+
+- The rule intentionally fails closed: an unspaced Chinese compound subject is not upgraded by strong evidence that covers only part of that subject. This avoids word-boundary guesses and preserves ordinary words such as `和平`.
+- Strong support distributed across separate facts for an unspaced `和`/`及`/`与` compound may be conservatively rejected unless the claim uses an already explicit separator. This is preferable to cross-topic authorization at the central export boundary.
+- Evidence is focused and local; it does not claim provider, cloud queue, or production PostgreSQL acceptance.

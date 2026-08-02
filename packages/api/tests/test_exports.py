@@ -205,6 +205,21 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
             ("参与用户调研", "负责市场分析"),
             "zh-slash",
         ),
+        (
+            "负责用户调研和市场分析",
+            ("参与用户调研和市场分析", "负责市场分析"),
+            "zh-he-conjunction",
+        ),
+        (
+            "负责用户调研及市场分析",
+            ("参与用户调研及市场分析", "负责市场分析"),
+            "zh-ji-conjunction",
+        ),
+        (
+            "负责用户调研与市场分析",
+            ("参与用户调研与市场分析", "负责市场分析"),
+            "zh-yu-conjunction",
+        ),
     ],
 )
 def test_export_service_blocks_written_responsibility_inflation(
