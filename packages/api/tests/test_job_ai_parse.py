@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, func, inspect, select, text
 from app.core.config import Settings
 from app.db.models import (
     AiRun,
+    AiTraceEvent,
     JdRequirement,
     JobDescription,
     Outbox,
@@ -252,6 +253,27 @@ class CancelThenErrorClient(ReceiptClient):
         assert await cancellation.register_run(ai_run_id) is True
         await self.tasks.request_cancel(self.owner_id, request.task_id)
         raise TimeoutError("transport failed after cancellation")
+
+
+class MutatingRegisteredReceiptClient(ReceiptClient):
+    sessions: object
+    owner_id: str
+    job_id: str
+
+    async def run(self, request, cancellation=None):
+        assert cancellation is not None
+        ai_run_id = derive_ai_run_id(request.task_id, "parse", request.input_hash)
+        assert await cancellation.register_run(ai_run_id) is True
+        async with self.sessions.begin() as session:
+            job = await session.scalar(
+                select(JobDescription).where(
+                    JobDescription.id == self.job_id,
+                    JobDescription.owner_user_id == self.owner_id,
+                )
+            )
+            assert job is not None
+            job.raw_encrypted = "SQL"
+        return await super().run(request, cancellation)
 
 
 class FailingPublisher:
@@ -941,6 +963,90 @@ async def test_claimed_parse_fails_closed_when_public_job_source_changes(
     current = await jobs.get(owner, job.id)
     assert current is not None
     assert (current.status, current.raw_encrypted) == ("failed", "SQL")
+    assert "parse_snapshot" not in await _outbox_payload(
+        sql_session_factory, owner, job.task_id
+    )
+
+
+async def test_source_change_during_registered_run_audits_receipt_before_failure(
+    sql_session_factory,
+):
+    requirement = {
+        "category": "must_have",
+        "priority": 1,
+        "value": "Python",
+        "source_range": {"start": 0, "end": 6},
+        "explicitness": "explicit",
+        "confidence_band": "high",
+    }
+    client = MutatingRegisteredReceiptClient((requirement,))
+    owner, _, tasks, job = await _queued_unclaimed_parse(
+        sql_session_factory, client, raw="Python", suffix="source_race_audit"
+    )
+    client.sessions = sql_session_factory
+    client.owner_id = owner
+    client.job_id = job.id
+    configure_pipeline_operations(
+        sql_session_factory,
+        Settings(app_env="test", database_url="sqlite+aiosqlite://"),
+        tasks,
+        storage_override=MemoryStorage(),
+        ai_client_override=client,
+    )
+
+    result = await TaskExecutor(
+        tasks, sleep=lambda _: None, jitter=lambda: 0
+    ).execute(owner, job.task_id, resolve_operation)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "JD_PARSE_SOURCE_CHANGED"
+    assert await _rows(sql_session_factory, owner, job.id) == []
+    async with sql_session_factory() as session:
+        runs = list(
+            (
+                await session.scalars(
+                    select(AiRun).where(
+                        AiRun.owner_user_id == owner,
+                        AiRun.task_id == job.task_id,
+                    )
+                )
+            ).all()
+        )
+        assert len(runs) == 1
+        run = runs[0]
+        events = list(
+            (
+                await session.scalars(
+                    select(AiTraceEvent)
+                    .where(
+                        AiTraceEvent.owner_user_id == owner,
+                        AiTraceEvent.ai_run_id == run.id,
+                    )
+                    .order_by(AiTraceEvent.event_seq)
+                )
+            ).all()
+        )
+        usage = await session.scalar(
+            select(UsageLedger).where(
+                UsageLedger.owner_user_id == owner,
+                UsageLedger.task_id == job.task_id,
+            )
+        )
+        current = await session.scalar(
+            select(JobDescription).where(
+                JobDescription.owner_user_id == owner,
+                JobDescription.id == job.id,
+            )
+        )
+    assert run.status == "succeeded"
+    assert run.result_ref == job.id
+    assert [event.event_seq for event in events] == [1]
+    assert usage is not None
+    assert (usage.state, usage.ai_run_id) == ("consumed", run.id)
+    task = await tasks.get_task(owner, job.task_id)
+    assert task is not None
+    assert task.active_ai_run_id is None
+    assert current is not None and current.status == "failed"
     assert "parse_snapshot" not in await _outbox_payload(
         sql_session_factory, owner, job.task_id
     )

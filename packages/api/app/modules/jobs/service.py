@@ -272,20 +272,12 @@ class JobService:
             if current is None:
                 raise JobServiceError("RESOURCE_NOT_FOUND", "Job not found", 404)
             self._require_parse_graph(current, claimed_task)
+            source_changed = False
             if claimed_task.status != "cancelled":
                 current_mode, current_hash, current_payload = await self._parse_input(
                     session, claimed_task, current
                 )
-                if current_payload.jd_text != current.raw_encrypted:
-                    await self._fail_parse_in_session(
-                        session,
-                        current,
-                        claimed_task,
-                        task_service,
-                        "JD_PARSE_SOURCE_CHANGED",
-                        release_unused_ai_reservation=True,
-                    )
-                    return current.id
+                source_changed = current_payload.jd_text != current.raw_encrypted
                 if (
                     current_mode != generation_mode
                     or current_hash != input_hash
@@ -360,6 +352,16 @@ class JobService:
                         failure_code,
                     )
                     return current.id
+            if source_changed:
+                await self._fail_parse_in_session(
+                    session,
+                    current,
+                    claimed_task,
+                    task_service,
+                    "JD_PARSE_SOURCE_CHANGED",
+                    release_unused_ai_reservation=True,
+                )
+                return current.id
             elif not requirements:
                 await self._fail_parse_in_session(
                     session,

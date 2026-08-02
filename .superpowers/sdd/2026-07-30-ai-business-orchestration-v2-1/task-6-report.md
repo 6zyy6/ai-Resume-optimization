@@ -207,3 +207,49 @@ PASS
 ```
 
 Build retained the existing non-fatal baseline-browser age and Taro cache-resolution warnings.
+
+## Review fix round 3/5
+
+### RED evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py::test_source_change_during_registered_run_audits_receipt_before_failure -q
+1 failed in 0.20s
+```
+
+The real executor/pipeline regression registered an AI run, mutated the Job source during `run()`, and returned a valid succeeded typed receipt. Business failure and zero requirements were already correct, but the assertion found zero persisted `AiRun` rows, proving the terminal receipt and trace were skipped after usage had been bound to the registered run.
+
+### Fix rationale
+
+- The final transaction still validates the immutable saved input and returned receipt before publication.
+- For every returned terminal receipt, it now persists the idempotent stable-key `AiRun` and trace sequence, consumes the reservation, and settles the registered active run before applying the post-provider `JD_PARSE_SOURCE_CHANGED` business failure.
+- `AiRun.result_ref` remains the durable Job ID, a valid non-public business reference; no success requirement or synthetic result is invented.
+- Receipt replay remains idempotent through `AiRunService.persist_in_session`'s task/stage/input stable key and receipt equality checks. The entire receipt/usage/business failure remains one transaction, so rollback retries cannot leave partial audit state.
+- Pre-model source mismatch still avoids the provider entirely. Provider failure, schema/source-range failure, and empty-result precedence are unchanged and remain audited before their existing stable failure codes.
+
+### GREEN evidence
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py::test_source_change_during_registered_run_audits_receipt_before_failure -q
+1 passed in 0.80s
+
+.venv/bin/python -m pytest packages/api/tests/test_job_ai_parse.py packages/api/tests/test_matching.py packages/api/tests/test_ai_cancellation.py packages/api/tests/test_suggestions.py packages/api/tests/test_task7_review_fixes.py packages/api/tests/test_outbox.py packages/api/tests/test_task_fix_usage_and_claims.py packages/api/tests/test_ai_receipts.py -q
+106 passed in 6.86s
+
+pnpm test
+API: 1362 passed in 61.86s
+AI: 93 passed, 1 skipped
+Shared: 8 passed
+Design tokens: 2 passed
+Miniprogram: 12 passed
+Web: 53 passed
+Dev supervisor: 2 passed
+
+pnpm lint
+PASS
+
+pnpm build
+PASS
+```
+
+The full API run emitted six existing non-fatal aiosqlite event-loop-close warnings. Build retained the existing baseline-browser age and Taro cache-resolution warnings.
