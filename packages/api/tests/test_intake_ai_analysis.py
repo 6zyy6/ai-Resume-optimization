@@ -2807,6 +2807,31 @@ def test_english_trailing_or_compound_direct_object_negative_is_trace_only(answe
     assert invalid == [(0, "negative_source")]
 
 
+def test_long_leading_location_preserves_explicit_self_assertion():
+    answer = "在北京市海淀区中关村科技园区高峰阶段我完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped to ensure no errors at all",
+        "I helped to ensure no errors whatsoever",
+    ],
+)
+def test_english_nested_negative_with_trailing_emphasis_is_not_a_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [

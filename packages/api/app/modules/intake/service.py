@@ -2076,19 +2076,25 @@ def _has_positive_assertion(value: str) -> bool:
 
 def _has_english_direct_object_negative(value: str) -> bool:
     object_head = value.strip()
-    if re.search(r"\b(?:at\s+all|whatsoever)\s*$", object_head, re.IGNORECASE):
-        return True
     if re.match(
         r"^(?:no[-‐‑‒–—−]code|zero[-‐‑‒–—−]trust)\b",
         object_head,
         re.IGNORECASE,
-    ) or re.match(
+    ):
+        return False
+    if re.match(
         r"^(?:no\s+code\s+(?:tools?|platforms?|development|solutions?)|"
         r"zero\s+trust\s+(?:security|architecture|models?|networks?))\b",
         object_head,
         re.IGNORECASE,
     ):
-        return False
+        return bool(
+            re.search(
+                r"\b(?:at\s+all|whatsoever)\s*$",
+                object_head,
+                re.IGNORECASE,
+            )
+        )
     return bool(
         re.match(
             r"^(?:(?:(?:absolutely|virtually|almost)\s+)?"
@@ -2250,6 +2256,22 @@ def _has_unresolved_coordination(value: str) -> bool:
 def _strip_chinese_leading_adverbial(value: str) -> str:
     context = value
     while True:
+        self_assertions = list(
+            re.finditer(
+                r"(?:我|本人|我们|咱们)\s*"
+                r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*"
+                rf"(?:{CHINESE_COMPOUND_ACTION_PREDICATE}|"
+                rf"{CHINESE_ACTION_PREDICATE})",
+                context,
+            )
+        )
+        if re.match(r"^(?:在|于)", context) and self_assertions:
+            final_self = self_assertions[-1]
+            if not re.search(
+                rf"(?:{CHINESE_ACTION_PREDICATE})",
+                context[final_self.end() :],
+            ):
+                return context[final_self.start() :]
         stripped, count = re.subn(
             r"^(?:在|于)[^，,。.!！?？；;]{1,24}?"
             r"(?:旁边|附近|现场|中|内|里|旁|期间|阶段|过程中|下)",
@@ -2258,22 +2280,6 @@ def _strip_chinese_leading_adverbial(value: str) -> str:
             count=1,
         )
         if count == 0:
-            self_assertions = list(
-                re.finditer(
-                    r"(?:我|本人|我们|咱们)\s*"
-                    r"(?:曾|已|也|还|亲自|共同|独立|实际|主要|具体|成功)*\s*"
-                    rf"(?:{CHINESE_COMPOUND_ACTION_PREDICATE}|"
-                    rf"{CHINESE_ACTION_PREDICATE})",
-                    context,
-                )
-            )
-            if re.match(r"^(?:在|于)", context) and self_assertions:
-                final_self = self_assertions[-1]
-                if not re.search(
-                    rf"(?:{CHINESE_ACTION_PREDICATE})",
-                    context[final_self.end() :],
-                ):
-                    return context[final_self.start() :]
             return context
         context = stripped.lstrip()
 
