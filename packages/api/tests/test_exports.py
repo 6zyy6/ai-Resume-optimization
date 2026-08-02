@@ -211,6 +211,11 @@ def test_export_api_persists_pdf_and_returns_ten_minute_signed_url(
             "zh-he-conjunction",
         ),
         (
+            "负责用户调研和市场分析",
+            ("参与用户调研和需求访谈", "参与竞品调研和市场分析"),
+            "zh-he-distributed-weak",
+        ),
+        (
             "负责用户调研及市场分析",
             ("参与用户调研及市场分析", "负责市场分析"),
             "zh-ji-conjunction",

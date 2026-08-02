@@ -221,7 +221,7 @@ def responsibility_claim_supported(
             for evidence_subject, evidence_strength in evidence_fragments
             if _responsibility_subject_covered(subject, evidence_subject)
         ]
-        if equivalent_strengths and max(equivalent_strengths) < strength:
+        if not equivalent_strengths or max(equivalent_strengths) < strength:
             return False
     return True
 

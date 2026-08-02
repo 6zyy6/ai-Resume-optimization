@@ -222,6 +222,10 @@ def test_fact_policy_allows_responsibility_strength_downgrade():
             ("参与用户调研和市场分析", "负责市场分析"),
         ),
         (
+            "负责用户调研和市场分析",
+            ("参与用户调研和需求访谈", "参与竞品调研和市场分析"),
+        ),
+        (
             "负责用户调研及市场分析",
             ("参与用户调研及市场分析", "负责市场分析"),
         ),
@@ -286,10 +290,11 @@ def test_responsibility_strength_has_explicit_chinese_and_english_levels(
         ("负责用户调研", "参与用户调研", False),
         ("managed customer research", "supported customer research", False),
         ("用户调研", "负责用户调研", True),
-        ("负责用户调研", "负责市场分析", True),
+        ("负责用户调研", "负责用户调研", True),
+        ("负责用户调研", "负责市场分析", False),
     ],
 )
-def test_responsibility_helper_checks_strength_only_for_equivalent_subjects(
+def test_responsibility_helper_requires_covering_subject_strength(
     claim,
     evidence,
     expected,

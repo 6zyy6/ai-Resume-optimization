@@ -256,3 +256,106 @@ Output:
 - The rule intentionally fails closed: an unspaced Chinese compound subject is not upgraded by strong evidence that covers only part of that subject. This avoids word-boundary guesses and preserves ordinary words such as `和平`.
 - Strong support distributed across separate facts for an unspaced `和`/`及`/`与` compound may be conservatively rejected unless the claim uses an already explicit separator. This is preferable to cross-topic authorization at the central export boundary.
 - Evidence is focused and local; it does not claim provider, cloud queue, or production PostgreSQL acceptance.
+
+## Round 5: fail closed without one covering evidence item
+
+Base commit: `ff00ec4 fix(resumes): require covering responsibility evidence`
+
+### Finding and root cause
+
+Directional subject coverage from Round 4 selected only evidence facts whose high-risk terms covered the complete responsibility subject, but `responsibility_claim_supported` rejected only when that selection was non-empty and too weak. For `负责用户调研和市场分析`, the two weak facts `参与用户调研和需求访谈` and `参与竞品调研和市场分析` jointly covered all high-risk terms downstream while neither fact individually covered the complete subject. The empty strength selection therefore returned success and both policy and export accepted a responsibility upgrade.
+
+### RED
+
+The exact production counterexample was first added to both the deterministic policy and persisted real export path.
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+......F...........F..                                                    [100%]
+2 failed, 19 passed in 1.52s
+```
+
+The policy failure returned a `SupportedClaim`; the real `ExportService.process_export` failure completed without raising `EXPORT_BLOCKED_BY_FACTS`.
+
+The helper contract was also changed from allowing unrelated evidence to requiring a covering evidence item and observed RED independently:
+
+```text
+....F                                                                    [100%]
+1 failed, 4 passed in 0.06s
+```
+
+### GREEN and rationale
+
+The helper now returns false when a responsibility-bearing subject has no single covering evidence fragment, as well as when covering evidence exists only at a weaker responsibility level. This is the smallest fail-closed change and prevents high-risk term unioning in either caller from converting multiple partial weak facts into strong responsibility support. Responsibility-free claims still bypass this strength check and continue to use the existing relation policy.
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py::test_fact_policy_does_not_borrow_strong_responsibility_across_topics packages/api/tests/test_intake_ai_draft.py::test_responsibility_helper_requires_covering_subject_strength packages/api/tests/test_exports.py::test_export_service_blocks_written_responsibility_inflation -q
+```
+
+Output:
+
+```text
+..........................                                               [100%]
+26 passed in 1.43s
+```
+
+### Focused regression evidence
+
+Command:
+
+```bash
+.venv/bin/python -m pytest packages/api/tests/test_intake_ai_draft.py packages/api/tests/test_exports.py packages/api/tests/test_v2_intake.py packages/api/tests/test_task4_sql_integration.py::test_quality_rejects_responsibility_strength_inflation packages/api/tests/test_task_recovery.py packages/api/tests/test_task_state.py packages/api/tests/test_intake_ai_analysis.py::test_outbox_exhaustion_atomically_unblocks_intake_recovery -q
+```
+
+Output:
+
+```text
+........................................................................ [ 59%]
+..................................................                       [100%]
+122 passed, 3 warnings in 7.92s
+```
+
+The focused run emitted `aiosqlite` worker-thread teardown warnings from `test_model_draft_with_no_supported_claims_has_no_dangling_result_ref`; no focused assertion failed, and the later complete project test run passed without this pytest warning.
+
+Project regression command:
+
+```bash
+pnpm test
+```
+
+Output summary:
+
+```text
+packages/ai: 93 passed, 1 skipped
+packages/shared: 8 passed
+packages/design-tokens: 2 passed
+app/miniprogram: 12 passed
+app/web: 53 passed
+scripts/dev-supervisor: 2 passed
+packages/api: 1338 passed in 58.91s
+exit 0
+```
+
+The Web Vitest run emitted its existing Node experimental `localStorage` warning.
+
+### Files changed
+
+- `packages/api/app/modules/resumes/quality.py`
+- `packages/api/tests/test_intake_ai_draft.py`
+- `packages/api/tests/test_exports.py`
+- `.superpowers/sdd/2026-07-30-ai-business-orchestration-v2-1/task-5-report.md`
+
+### Risks and limits
+
+- Responsibility-bearing claims with only partial or unrelated evidence now fail at the responsibility gate, which is intentionally conservative; responsibility-free unrelated claims still reach the downstream relation policy.
+- The fix does not change subject tokenization, delimiter handling, cancellation, dispatch, or persistence architecture.
+- Verification is local and focused; it does not claim real provider, cloud queue, or production PostgreSQL acceptance.
