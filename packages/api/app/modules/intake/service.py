@@ -253,7 +253,8 @@ ENGLISH_TAIL_DENIAL = re.compile(
     re.IGNORECASE,
 )
 CHINESE_POSTPOSITIVE_INABILITY = re.compile(
-    rf"(?:{CHINESE_ACTION_PREDICATE})(?:不了(?!解)|不来|不成|不下)"
+    rf"(?:{CHINESE_ACTION_PREDICATE})"
+    r"(?:不了(?!解)|不来|不成|不下|不起|不掉|不到|不动|不完|不好)"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2086,7 +2087,17 @@ def _main_assertion_kind(value: str) -> str:
         )
         if positive is not None:
             direct_object = main_scope[positive.end() :].lstrip()
-            if re.match(r"^(?:nobody|nothing|no\s+one|no\b)", direct_object, re.I):
+            object_head = re.split(
+                r"\b(?:who|which|that|with|without|for|in|on|by)\b",
+                direct_object,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0]
+            if ENGLISH_EXPLICIT_NEGATIVE.search(object_head) or re.search(
+                r"\b(?:nobody|nothing|no\s+one)\b",
+                object_head,
+                re.IGNORECASE,
+            ):
                 return "hard"
             return "positive"
         if ENGLISH_EXPLICIT_NEGATIVE.search(main_scope):
@@ -2141,24 +2152,28 @@ def _has_unresolved_coordination(value: str) -> bool:
     context = _context_text(value)
     if re.search(r"(?:并且|以及|(?<!参)与|、)(?=\S)", context):
         return True
-    for match in re.finditer(r"同时|还|且|并", context):
-        if match.start() == 0:
-            continue
-        prefix = context[: match.start()]
-        assertion = CHINESE_POSITIVE_ASSERTION.match(prefix)
-        if assertion is not None and prefix[assertion.end() :].strip():
+    assertion = CHINESE_POSITIVE_ASSERTION.match(context)
+    if assertion is None:
+        return False
+    for match in re.finditer(r"同时|还(?!原)|且(?!末)|并(?!发|行)", context):
+        if match.start() >= assertion.end() and context[match.end() :].strip():
             return True
     return False
 
 
 def _strip_chinese_leading_adverbial(value: str) -> str:
-    return re.sub(
-        r"^(?:在|于)[^，,。.!！?？；;]{1,16}?"
-        r"(?:中|期间|阶段|过程中|场景下|情况下)",
-        "",
-        value,
-        count=1,
-    )
+    context = value
+    while True:
+        stripped, count = re.subn(
+            r"^(?:在|于)[^，,。.!！?？；;]{1,24}?"
+            r"(?:中|期间|阶段|过程中|下)",
+            "",
+            context,
+            count=1,
+        )
+        if count == 0:
+            return context
+        context = stripped.lstrip()
 
 
 def _is_chinese_self_owner(owner: str) -> bool:
@@ -2388,10 +2403,11 @@ def _claim_entities(value: str) -> tuple[set[str], set[str]]:
     labels = {
         label.upper()
         for pattern in (
-            r"(?<![A-Za-z])([A-Za-z])(?![A-Za-z])\s*(?:项目|工作|任务)",
-            r"(?:项目|工作|任务)\s*([A-Za-z])(?![A-Za-z])",
-            r"\bproject\s+([A-Za-z])\b",
-            r"\bcompleted\s+([A-Za-z])\b",
+            r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*)\s*"
+            r"(?:项目|工作|任务)",
+            r"(?:项目|工作|任务)\s*([A-Za-z][A-Za-z0-9_-]*)",
+            r"\bproject\s+([A-Za-z][A-Za-z0-9_-]*)\b",
+            r"\bcompleted\s+([A-Za-z][A-Za-z0-9_-]*)\b",
         )
         for label in re.findall(pattern, context, re.IGNORECASE)
     }

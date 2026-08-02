@@ -1888,6 +1888,126 @@ def test_different_technical_entity_other_owner_tail_does_not_poison_candidate()
     assert valid[0].decision_mode == "accept_or_edit"
 
 
+def test_nested_leading_adverbial_preserves_other_owner_detection():
+    answer = "在导师指导下同学完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+def test_nested_leading_adverbial_preserves_self_owner_acceptance():
+    answer = "在导师指导下我完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "承担不起项目",
+        "完成不掉任务",
+        "完成不到目标",
+        "推动不动项目",
+        "完成不完任务",
+        "处理不好任务",
+    ],
+)
+def test_standard_postpositive_inability_complements_are_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize("answer", ["支持不熟悉用户", "服务不了解客户"])
+def test_nested_object_negation_is_not_a_postpositive_inability(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_weak_coordination_at_first_predicate_boundary_requires_edit():
+    answer = "负责并设计方案"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+@pytest.mark.parametrize(
+    ("answer", "evidence", "is_same_label"),
+    [
+        ("我完成项目A1。项目A1由同学完成", "我完成项目A1", True),
+        ("我完成项目A1。项目A2由同学完成", "我完成项目A1", False),
+        (
+            "I completed project A1. Project A1 was completed by a teammate",
+            "I completed project A1",
+            True,
+        ),
+        (
+            "I completed project A1. Project A2 was completed by a teammate",
+            "I completed project A1",
+            False,
+        ),
+    ],
+)
+def test_complete_project_labels_control_cross_sentence_tail_identity(
+    answer,
+    evidence,
+    is_same_label,
+):
+    valid, invalid = _validate_candidate_slice(
+        answer,
+        evidence,
+        end=len(evidence),
+    )
+
+    if is_same_label:
+        assert valid == []
+        assert invalid == [(0, "negative_source")]
+    else:
+        assert invalid == []
+        assert len(valid) == 1
+        assert valid[0].decision_mode == "accept_or_edit"
+
+
+def test_english_qualified_negative_pronoun_is_trace_only():
+    answer = "I completed almost nothing"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_modes"),
+    [
+        ("I supported users without experience", {"accept_or_edit"}),
+        ("I supported users with no experience", {"accept_or_edit", "edit_only"}),
+    ],
+)
+def test_english_nested_object_negation_does_not_poison_main_predicate(
+    answer,
+    expected_modes,
+):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in expected_modes
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
