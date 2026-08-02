@@ -1564,10 +1564,14 @@ class IntakeService:
         session: AsyncSession,
         row: IntakeSession,
         title: str,
-        ready_facts: list[tuple[Fact, tuple[str, ...]]],
+        ready_facts: list[
+            tuple[Fact, tuple[str, ...], tuple[str, ...]]
+        ],
     ) -> dict[str, Any]:
         experience_ids = {
-            fact.experience_id for fact, _ in ready_facts if fact.experience_id
+            fact.experience_id
+            for fact, _, _ in ready_facts
+            if fact.experience_id
         }
         experiences = (
             list(
@@ -1584,14 +1588,19 @@ class IntakeService:
             else []
         )
         experience_titles = {item.id: item.title for item in experiences}
-        grouped: dict[str, list[str]] = {}
+        grouped: dict[tuple[str, ...], tuple[str, list[str]]] = {}
         compose_facts: list[ComposeFact] = []
-        for fact, source_hashes in ready_facts:
+        for fact, source_hashes, source_record_ids in ready_facts:
             group_title = experience_titles.get(
                 fact.experience_id or "",
                 fact.kind,
             )
-            grouped.setdefault(group_title, []).append(fact.id)
+            group_key = (
+                ("experience", fact.experience_id)
+                if fact.experience_id is not None
+                else ("source", *source_record_ids)
+            )
+            grouped.setdefault(group_key, (group_title, []))[1].append(fact.id)
             compose_facts.append(
                 ComposeFact(
                     id=fact.id,
@@ -1603,8 +1612,8 @@ class IntakeService:
         payload = ComposeResumeDraftPayload(
             resume_title=title,
             experience_groups=tuple(
-                ExperienceGroup(title=group, fact_refs=tuple(refs))
-                for group, refs in grouped.items()
+                ExperienceGroup(title=group_title, fact_refs=tuple(refs))
+                for group_title, refs in grouped.values()
             ),
             confirmed_facts=tuple(compose_facts),
             allowed_section_types=("experience", "project", "skills", "education"),
@@ -2081,6 +2090,9 @@ class IntakeService:
         row.status = "active"
         row.version += 1
         row.updated_at = datetime.now(timezone.utc)
+        if task.status == "cancelled":
+            await session.flush()
+            return
         await task_service.fail_task_in_session(
             session,
             task,
@@ -2168,7 +2180,7 @@ class IntakeService:
         self,
         session: AsyncSession,
         row: IntakeSession,
-    ) -> list[tuple[Fact, tuple[str, ...]]]:
+    ) -> list[tuple[Fact, tuple[str, ...], tuple[str, ...]]]:
         if not row.fact_ids:
             return []
         facts = list(
@@ -2182,22 +2194,38 @@ class IntakeService:
                 )
             ).all()
         )
-        ready: list[tuple[Fact, tuple[str, ...]]] = []
-        for fact in facts:
-            hashes = tuple(
-                sorted(
-                    (
-                        await session.scalars(
-                            select(FactSource.source_hash).where(
-                                FactSource.fact_id == fact.id,
-                                FactSource.owner_user_id == fact.owner_user_id,
-                            )
+        facts_by_id = {fact.id: fact for fact in facts}
+        ready: list[tuple[Fact, tuple[str, ...], tuple[str, ...]]] = []
+        for fact_id in row.fact_ids:
+            fact = facts_by_id.get(fact_id)
+            if fact is None:
+                continue
+            sources = list(
+                (
+                    await session.execute(
+                        select(
+                            FactSource.source_record_id,
+                            FactSource.source_hash,
                         )
-                    ).all()
-                )
+                        .where(
+                            FactSource.fact_id == fact.id,
+                            FactSource.owner_user_id == fact.owner_user_id,
+                        )
+                        .order_by(
+                            FactSource.source_record_id,
+                            FactSource.source_hash,
+                        )
+                    )
+                ).tuples()
             )
-            if hashes:
-                ready.append((fact, hashes))
+            if sources:
+                ready.append(
+                    (
+                        fact,
+                        tuple(source_hash for _, source_hash in sources),
+                        tuple(source_id for source_id, _ in sources),
+                    )
+                )
         return ready
 
     async def _response(

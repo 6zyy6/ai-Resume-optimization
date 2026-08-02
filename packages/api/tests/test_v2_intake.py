@@ -14,6 +14,7 @@ from app.db.models import (
     AiRun,
     AiTraceEvent,
     BulletFactLink,
+    Experience,
     Fact,
     FactCandidate,
     FactSource,
@@ -39,6 +40,9 @@ from app.integrations.ai_client import (
 from app.modules.auth.router import require_session
 from app.modules.auth.service import AuthenticatedSession
 from app.modules.intake.service import IntakeService
+from app.integrations.storage import MemoryStorage
+from app.workers.execution import resolve_operation
+from app.workers.pipeline import configure_pipeline_operations
 
 
 class DraftReceiptClient:
@@ -120,6 +124,21 @@ class DraftReceiptClient:
                 ensure_ascii=False,
             )
         )
+
+
+class CancellingDraftReceiptClient(DraftReceiptClient):
+    def __init__(self, task_service):
+        super().__init__(status="cancelled")
+        self.task_service = task_service
+
+    async def run(self, input, cancellation=None):
+        ai_run_id = derive_ai_run_id(input.task_id, "draft", input.input_hash)
+        assert cancellation is not None
+        assert await cancellation.register_run(ai_run_id) is True
+        await self.task_service.request_cancel("usr_a", input.task_id)
+        assert await cancellation.is_cancel_requested() is True
+        await cancellation.acknowledge_cancel(ai_run_id)
+        return await super().run(input)
 
 
 def _run(awaitable):
@@ -615,6 +634,191 @@ def test_model_draft_queues_an_immutable_sourced_input_snapshot(intake_client):
     assert _run(_model_count(sessions, UsageLedger)) == 1
 
 
+def test_public_cancel_restores_unclaimed_draft_and_allows_explicit_fallback(
+    intake_client,
+):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "public-cancel-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "待取消模型草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("public-cancel-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    assert _run(_intake_draft_state(sessions, session_id)) == ("drafting", 1)
+    assert _run(_usage_for_task(sessions, task_id)).state == "reserved"
+
+    cancelled = client.post(
+        f"/v1/tasks/{task_id}/cancel",
+        headers=_headers("public-cancel-model-task"),
+    )
+    replay = client.post(
+        f"/v1/tasks/{task_id}/cancel",
+        headers=_headers("public-cancel-model-task"),
+    )
+
+    assert cancelled.status_code == 200
+    assert replay.json() == cancelled.json()
+    assert _run(_task_result(sessions, task_id)) == ("cancelled", None)
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "released"
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+
+    fallback = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 2,
+            "title": "事实原文草稿",
+            "generation_mode": "rule_fallback",
+        },
+        headers=_headers("fallback-after-public-cancel"),
+    )
+    assert fallback.status_code == 202
+    assert fallback.json()["task_id"] != task_id
+    assert _run(_usage_for_task(sessions, fallback.json()["task_id"])) is None
+
+
+def test_direct_cancel_restores_only_unclaimed_intake_draft(intake_client):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "direct-cancel-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "直接取消草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("direct-cancel-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+
+    _run(application.state.task_service.request_cancel("usr_a", task_id))
+
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "released"
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+
+
+def test_running_draft_cancel_waits_for_worker_receipt_before_restoring_intake(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "running-cancel-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "运行中取消草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("running-cancel-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+    assert claim is not None
+
+    _run(application.state.task_service.request_cancel("usr_a", task_id))
+
+    assert _run(_intake_draft_state(sessions, session_id)) == ("drafting", 1)
+
+
+def test_draft_snapshot_keeps_same_title_experiences_in_distinct_groups(
+    intake_client,
+):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "same-title-groups-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责第一项工作", "负责第二项工作"],
+        )
+    )
+    _run(_assign_same_title_experiences(sessions))
+
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "同名经历草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("same-title-groups"),
+    )
+
+    groups = _run(_outbox_payload(sessions, queued.json()["task_id"]))[
+        "draft_snapshot"
+    ]["payload"]["experience_groups"]
+    assert groups == [
+        {"title": "课程项目", "fact_refs": ["fact_draft_0"]},
+        {"title": "课程项目", "fact_refs": ["fact_draft_1"]},
+    ]
+
+
+def test_draft_snapshot_keeps_same_kind_distinct_sources_in_distinct_groups(
+    intake_client,
+):
+    client, sessions, _, _ = intake_client
+    started = _start(client, "same-kind-groups-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责第一项工作", "负责第二项工作"],
+        )
+    )
+
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "同类来源草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("same-kind-groups"),
+    )
+
+    groups = _run(_outbox_payload(sessions, queued.json()["task_id"]))[
+        "draft_snapshot"
+    ]["payload"]["experience_groups"]
+    assert groups == [
+        {"title": "experience", "fact_refs": ["fact_draft_0"]},
+        {"title": "experience", "fact_refs": ["fact_draft_1"]},
+    ]
+
+
 def test_draft_generation_mode_is_required(intake_client):
     client, sessions, _, _ = intake_client
     started = _start(client, "draft-mode-start")
@@ -785,6 +989,120 @@ def test_failed_model_creates_no_resume_then_allows_explicit_literal_fallback(
     assert version.workflow_version == "2"
     assert version.ai_run_id is None
     assert version.input_hash is not None
+
+
+def test_cancelled_draft_receipt_persists_audit_and_recovers_intake(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "cancelled-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "取消的模型草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("cancelled-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=CancellingDraftReceiptClient(
+            application.state.task_service
+        ),
+    )
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+    assert claim is not None
+
+    result_ref = _run(resolve_operation("generate_intake_draft")(claim))
+
+    assert result_ref == session_id
+    assert _run(_task_result(sessions, task_id)) == ("cancelled", None)
+    assert _run(_intake_draft_state(sessions, session_id)) == ("active", 2)
+    assert _run(_usage_for_task(sessions, task_id)).state == "consumed"
+    ai_run = _run(_only_ai_run(sessions))
+    assert ai_run.status == "cancelled"
+    assert _run(_trace_sequences(sessions, ai_run.id)) == [1, 2]
+    assert _run(_model_count(sessions, Resume)) == 0
+    assert _run(_model_count(sessions, ResumeVersion)) == 0
+
+
+def test_model_draft_persists_supported_non_literal_rewrite_with_exact_link(
+    intake_client,
+):
+    client, sessions, application, _ = intake_client
+    started = _start(client, "rewrite-draft-start")
+    session_id = started.json()["id"]
+    _run(
+        _seed_confirmed_intake_facts(
+            sessions,
+            session_id,
+            ["负责用户调研", "完成产品原型"],
+        )
+    )
+    rewrite = "用户调研"
+    ai_client = DraftReceiptClient(
+        sections=[
+            {
+                "type": "experience",
+                "title": "课程项目",
+                "bullets": [
+                    {
+                        "text": rewrite,
+                        "atomic_claims": [
+                            {
+                                "text": rewrite,
+                                "fact_refs": ["fact_draft_0"],
+                                "claim_order": 0,
+                            }
+                        ],
+                        "risk_flags": [],
+                    }
+                ],
+            }
+        ]
+    )
+    application.state.intake_service = IntakeService(sessions, ai_client)
+    queued = client.post(
+        f"/v1/intake-sessions/{session_id}/drafts",
+        json={
+            "base_version": 0,
+            "title": "安全改写草稿",
+            "generation_mode": "model",
+        },
+        headers=_headers("rewrite-model-draft"),
+    )
+    task_id = queued.json()["task_id"]
+    claim = _run(application.state.task_service.claim_task("usr_a", task_id))
+
+    resume_id = _run(
+        application.state.intake_service.process_draft(
+            "usr_a",
+            session_id,
+            task_id=task_id,
+            claim_token=claim.token,
+            task_service=application.state.task_service,
+        )
+    )
+
+    version = _run(_resume_version(sessions, resume_id))
+    assert version.snapshot_json["sections"][0]["items"][0]["text"] == rewrite
+    link = _run(_only_bullet_link(sessions))
+    assert link.fact_id == "fact_draft_0"
+    assert link.claim_range == {"start": 0, "end": len(rewrite)}
+    assert link.fact_value_encrypted_at_link == "负责用户调研"
 
 
 def test_model_draft_with_no_supported_claims_has_no_dangling_result_ref(
@@ -1022,6 +1340,32 @@ async def _trace_payloads(sessions, ai_run_id):
         )
 
 
+async def _trace_sequences(sessions, ai_run_id):
+    async with sessions() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(AiTraceEvent.event_seq)
+                    .where(AiTraceEvent.ai_run_id == ai_run_id)
+                    .order_by(AiTraceEvent.event_seq)
+                )
+            ).all()
+        )
+
+
+async def _intake_draft_state(sessions, session_id):
+    async with sessions() as session:
+        row = await session.scalar(
+            select(IntakeSession).where(IntakeSession.id == session_id)
+        )
+        return row.status, row.version
+
+
+async def _only_bullet_link(sessions):
+    async with sessions() as session:
+        return await session.scalar(select(BulletFactLink))
+
+
 async def _reject_fact(sessions, fact_id):
     async with sessions.begin() as session:
         fact = await session.scalar(select(Fact).where(Fact.id == fact_id))
@@ -1130,3 +1474,29 @@ async def _seed_confirmed_intake_facts(sessions, session_id, values):
             fact.confirmed_at = datetime.now(timezone.utc)
             fact_ids.append(fact.id)
         intake.fact_ids = fact_ids
+
+
+async def _assign_same_title_experiences(sessions):
+    async with sessions.begin() as session:
+        session.add_all(
+            [
+                Experience(
+                    id="exp_draft_0",
+                    owner_user_id="usr_a",
+                    type="project",
+                    title="课程项目",
+                ),
+                Experience(
+                    id="exp_draft_1",
+                    owner_user_id="usr_a",
+                    type="project",
+                    title="课程项目",
+                ),
+            ]
+        )
+        await session.flush()
+        for index in range(2):
+            fact = await session.scalar(
+                select(Fact).where(Fact.id == f"fact_draft_{index}")
+            )
+            fact.experience_id = f"exp_draft_{index}"

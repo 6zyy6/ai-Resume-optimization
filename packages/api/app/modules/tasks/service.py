@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.ids import new_id
-from app.db.models import Outbox, Task, TaskEvent, UsageLedger
+from app.db.models import IntakeSession, Outbox, Task, TaskEvent, UsageLedger
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.db.ports import is_valid_cost_cny
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
@@ -482,6 +482,7 @@ class TaskService:
                     session,
                     task,
                 )
+                await self._restore_cancelled_intake_draft(session, task)
             await self._finish(session, task, "cancelled")
             return task
 
@@ -540,10 +541,40 @@ class TaskService:
                         session,
                         task,
                     )
+                    await self._restore_cancelled_intake_draft(session, task)
                 await self._finish(session, task, "cancelled")
             response = self._task_payload(task)
             await self.idempotency.complete(session, claim, 200, response)
             return task
+
+    async def _restore_cancelled_intake_draft(
+        self,
+        session: AsyncSession,
+        task: Task,
+    ) -> None:
+        if (
+            task.type != "generate_intake_draft"
+            or task.resource_type != "intake_session"
+            or task.resource_id is None
+        ):
+            return
+        intake = await session.scalar(
+            select(IntakeSession)
+            .where(
+                IntakeSession.id == task.resource_id,
+                IntakeSession.owner_user_id == task.owner_user_id,
+                IntakeSession.task_id == task.id,
+                IntakeSession.status == "drafting",
+                IntakeSession.resume_id.is_(None),
+            )
+            .with_for_update()
+        )
+        if intake is None:
+            return
+        intake.status = "active"
+        intake.version += 1
+        intake.updated_at = self.clock.now()
+        await session.flush()
 
     async def register_ai_run(
         self,

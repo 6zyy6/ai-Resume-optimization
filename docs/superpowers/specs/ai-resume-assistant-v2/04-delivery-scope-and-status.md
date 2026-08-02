@@ -22,7 +22,7 @@
 | FastAPI 核心资源路由 | `PARTIAL` | Facts、Resumes、Imports、Jobs、Matching、Suggestions、Tasks、Exports、Usage、Privacy | 保留；补 intake 和 `/v1/me` |
 | 不可变简历版本与事实检查 | `PARTIAL` | 数据模型、迁移、服务和后端测试 | 保留；修正 Web 使用方式 |
 | Task/Outbox/Worker | `PARTIAL` | 队列、claim/lease、events、取消实现 | 保留；补真实 Web 状态和外部证据 |
-| Pi 工作流 | `PARTIAL` | 八类 schema/workflow 中只有 parse_jd、match_resume_to_jd 进入业务调用链 | 按已批准的 [AI 业务编排 V2.1](./PRD-AI-业务编排V2.1.md) 收敛为五个模型工作流、两个确定性策略和稳定 run 恢复链 |
+| Pi 工作流 | `PARTIAL` | analyze_intake_answer、compose_resume_draft、parse_jd、match_resume_to_jd 已进入业务调用链；generate_suggestions_batch 尚未接入 | 继续完成建议工作流，并补真实模型与跨服务证据 |
 | 本地五服务启动 | `DONE-LOCAL` | Web、API、Pi、Dispatcher、Celery | 作为 real-service E2E 基线 |
 | 编辑器本地操作 | `PARTIAL` | 20 步撤销、拆分/合并/增删/排序 reducer | 与服务端 snapshot 初始化和保存合并 |
 | 自动保存 hook | `PARTIAL` | 800 ms、15 s、offline/error/conflict 状态 | 补真实恢复、冲突决策和离线草稿 |
@@ -35,9 +35,9 @@
 | --- | --- | --- |
 | 受保护路由和会话恢复 | `DONE-LOCAL` | 未登录跳登录；登录后安全返回；拒绝站外 returnTo |
 | 工作台真实数据 | `DONE-LOCAL` | Resumes/Tasks/Usage 三组 API 和局部失败 |
-| 经历梳理会话 | `PARTIAL` | 可恢复 session、确定性问题、去重、回答版本已完成；Pi 动态分析和 FactCandidate 未接入 |
+| 经历梳理会话 | `DONE-LOCAL` | 可恢复 session、确定性 fallback、Pi 动态分析、FactCandidate 审核、来源和回答版本均已接入；真实 provider 证据仍阻断 |
 | 从回答到事实 | `DONE-LOCAL` | 跳过不建事实；确认、来源、冲突完整 |
-| 初稿生成 | `PARTIAL` | task 可原子创建 Resume + Version + evidence，但 bullet 仍直接复制 fact value，未调用 compose workflow |
+| 初稿生成 | `DONE-LOCAL` | compose_resume_draft、确定性事实策略、精确 BulletFactLink、模型/规则 provenance、取消恢复和显式事实原文 fallback 已接入；真实 provider 证据仍阻断 |
 | 上传与导入确认拆分 | `DONE-LOCAL` | 真实 draft_facts、编辑确认、删除和粘贴兜底 |
 | 简历列表 | `DONE-LOCAL` | 真实列表、空/错/载入 |
 | 编辑器读取链 | `DONE-LOCAL` | 读取 Resume/Version；不使用固定业务内容 |
