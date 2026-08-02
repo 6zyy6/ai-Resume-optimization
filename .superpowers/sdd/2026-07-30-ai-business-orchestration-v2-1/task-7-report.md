@@ -226,3 +226,69 @@ Build retained the existing non-fatal `baseline-browser-mapping` age and Taro ca
 - Real provider, PostgreSQL row-lock behavior, Redis/Celery multi-process behavior, and cloud deployment evidence remain `BLOCKED`; local SQLite and typed deterministic receipt tests do not replace those external checks.
 - The two reviewer Minor findings (broad-string policy matching and the large matching service) remain deferred as requested.
 - User-owned `AGENTS.md` and both root Chinese documents remain untouched and excluded from this round.
+
+## Review fix round 2/5
+
+Reviewer result: one remaining Important finding in the explicit `rule_fallback` publication path. The newly noted duplicate legacy `fact_refs`/range-JSON Minor remains ledgered and out of scope.
+
+### RED evidence
+
+A real fallback Task used a test service hook to mutate either the confirmed requirement value or linked Fact status after `_processing_context` returned and before the terminal publication transaction:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_rule_fallback_revalidates_state_before_publication -q
+2 failed in 0.27s
+```
+
+Both variants incorrectly published one MatchItem and completed the Task instead of failing closed.
+
+### Fix rationale
+
+- Extracted one `_locked_publication_state` validator used by model and fallback publication.
+- The validator locks and reloads all requirements in stable order, selects the current confirmed subset, then locks/reloads immutable evidence links, Facts, and FactSource rows before recomputing the match input/hash.
+- Model publication additionally recomputes its suggestion-stage input/hash through the same validator; the prior duplicate model-only branch was removed.
+- Fallback publication now validates inside its terminal transaction and regenerates deterministic matches/suggestions from the locked current state. It no longer publishes rows derived from the pre-transaction context.
+- Any mismatch terminates with `MATCH_PUBLICATION_STATE_CHANGED`, scrubs public MatchItem/Suggestion/SuggestionFactLink rows, and fails Task/analysis. Fallback remains unmetered with zero `AiRun` and zero `UsageLedger` rows; Outbox remains the existing ID/hash-only payload.
+
+### GREEN evidence
+
+Fallback drift regression:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py::test_rule_fallback_revalidates_state_before_publication -q
+2 passed in 0.61s
+```
+
+Task 7 focused regression, including unchanged fallback success, mixed confirmed input, model drift, decision locks, and precise claim ranges:
+
+```text
+.venv/bin/python -m pytest packages/api/tests/test_match_ai_orchestration.py packages/api/tests/test_matching.py packages/api/tests/test_suggestions.py packages/api/tests/test_ai_cancellation.py packages/api/tests/test_task7_review_fixes.py packages/api/tests/test_schema_constraints.py -q
+109 passed in 12.02s
+```
+
+Final verification on 2026-08-02 16:32 CST:
+
+```text
+pnpm lint
+PASS
+
+pnpm build
+PASS
+
+pnpm test
+API: 1386 passed in 68.16s
+AI: 94 passed, 1 skipped
+Shared: 8 passed
+Design tokens: 2 passed
+Miniprogram: 12 passed
+Web: 53 passed
+Dev supervisor: 2 passed
+```
+
+The API run emitted five existing non-fatal aiosqlite event-loop-close warnings. Build retained the existing `baseline-browser-mapping` age and Taro cache-resolution warnings. No API/type contract changed, so regeneration was not required in this round.
+
+### Remaining limits
+
+- The newly ledgered duplicate legacy `fact_refs`/range-JSON Minor remains deferred as requested.
+- Real model, PostgreSQL locking, Redis/Celery multi-process, and cloud evidence remain `BLOCKED`.
+- User-owned `AGENTS.md` and the two root Chinese documents remain untouched and excluded.

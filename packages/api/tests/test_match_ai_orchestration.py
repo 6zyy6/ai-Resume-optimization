@@ -319,6 +319,35 @@ class DriftDuringSuggestionClient(TwoStageReceiptClient):
         return await super().run(request, cancellation)
 
 
+class FallbackDriftAfterContextService(MatchingService):
+    def __init__(self, sessions, suffix: str, drift: str) -> None:
+        super().__init__(sessions, None)
+        self.suffix = suffix
+        self.drift = drift
+        self.mutated = False
+
+    async def _processing_context(self, owner_id: str, analysis_id: str):
+        context = await super()._processing_context(owner_id, analysis_id)
+        if not self.mutated:
+            async with self.sessions.begin() as session:
+                if self.drift == "requirement":
+                    requirement = await session.scalar(
+                        select(JdRequirement).where(
+                            JdRequirement.id == f"req_{self.suffix}"
+                        )
+                    )
+                    assert requirement is not None
+                    requirement.text_encrypted = "Go"
+                else:
+                    fact = await session.scalar(
+                        select(Fact).where(Fact.id == f"fact_{self.suffix}")
+                    )
+                    assert fact is not None
+                    fact.status = "rejected"
+            self.mutated = True
+        return context
+
+
 def _receipt(request, *, status="succeeded", error_code=None, result=None):
     stage = "match" if isinstance(request, MatchResumeToJdRequest) else "suggestions"
     ai_run_id = derive_ai_run_id(request.task_id, stage, request.input_hash)
@@ -673,6 +702,53 @@ async def test_final_publication_revalidates_current_policy_state(
     assert task is not None and task.status == "failed"
     assert task.error_code == "MATCH_PUBLICATION_STATE_CHANGED"
     assert current is not None and current.status == "failed"
+
+
+@pytest.mark.parametrize("drift", ["requirement", "fact"])
+async def test_rule_fallback_revalidates_state_before_publication(
+    sql_session_factory,
+    drift,
+):
+    suffix = f"fallback_drift_{drift}"
+    owner, _, tasks, analysis, claim = await _queued_match(
+        sql_session_factory, None, suffix
+    )
+    service = FallbackDriftAfterContextService(
+        sql_session_factory, suffix, drift
+    )
+
+    await service.process_match(
+        owner,
+        analysis.id,
+        trace_id="ignored",
+        task_id=analysis.task_id,
+        claim_token=claim.token,
+        task_service=tasks,
+    )
+
+    async with sql_session_factory() as session:
+        task = await session.scalar(select(Task).where(Task.id == analysis.task_id))
+        current = await session.scalar(
+            select(MatchAnalysis).where(MatchAnalysis.id == analysis.id)
+        )
+        outbox = await session.scalar(
+            select(Outbox).where(Outbox.task_id == analysis.task_id)
+        )
+    assert await _count(sql_session_factory, MatchItem) == 0
+    assert await _count(sql_session_factory, Suggestion) == 0
+    assert await _count(sql_session_factory, SuggestionFactLink) == 0
+    assert await _count(sql_session_factory, AiRun) == 0
+    assert await _count(sql_session_factory, UsageLedger) == 0
+    assert task is not None and task.status == "failed"
+    assert task.error_code == "MATCH_PUBLICATION_STATE_CHANGED"
+    assert task.active_ai_run_id is None
+    assert current is not None and current.status == "failed"
+    assert outbox is not None and set(outbox.payload) == {
+        "analysis_id",
+        "generation_mode",
+        "match_input_hash",
+        "task_id",
+    }
 
 
 async def test_match_without_editable_candidates_still_settles_empty_suggestion_stage(

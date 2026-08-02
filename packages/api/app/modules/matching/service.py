@@ -565,9 +565,6 @@ class MatchingService:
             return analysis_id
 
         if analysis.generation_mode == "rule_fallback":
-            matches, suggestions = self._rule_fallback(
-                requirements, evidence, version.snapshot_json
-            )
             async with self.sessions.begin() as session:
                 claimed_task = (
                     await task_service.claimed_task_in_session(
@@ -577,6 +574,22 @@ class MatchingService:
                     else None
                 )
                 current = await self._locked_analysis(session, owner_id, analysis_id)
+                publication_state = await self._locked_publication_state(
+                    session,
+                    current,
+                    version,
+                    match_input_hash=match_input_hash,
+                    claimed_task=claimed_task,
+                    task_service=task_service,
+                )
+                if publication_state is None:
+                    return current.id
+                current_requirements, current_evidence = publication_state
+                matches, suggestions = self._rule_fallback(
+                    current_requirements,
+                    current_evidence,
+                    version.snapshot_json,
+                )
                 await self._publish_in_session(
                     session,
                     current,
@@ -587,7 +600,7 @@ class MatchingService:
                     match_input_hash=match_input_hash,
                     suggestion_ai_run_id=None,
                     suggestion_input_hash=match_input_hash,
-                    evidence=evidence,
+                    evidence=current_evidence,
                 )
                 current.status = "succeeded"
                 if claimed_task is not None:
@@ -755,59 +768,19 @@ class MatchingService:
             elif suggestion_receipt.run.status != "succeeded" or suggestion_error:
                 current.status = "failed"
                 return current.id
-            current_requirements = list(
-                (
-                    await session.scalars(
-                        select(JdRequirement)
-                        .where(
-                            JdRequirement.job_id == current.job_id,
-                            JdRequirement.owner_user_id
-                            == current.job_owner_user_id,
-                        )
-                        .order_by(JdRequirement.priority, JdRequirement.id)
-                        .with_for_update()
-                    )
-                ).all()
+            publication_state = await self._locked_publication_state(
+                session,
+                current,
+                version,
+                match_input_hash=match_input_hash,
+                match_rows=match_rows,
+                suggestion_input_hash=suggestion_input_hash,
+                claimed_task=claimed_task,
+                task_service=task_service,
             )
-            current_requirements = [
-                requirement
-                for requirement in current_requirements
-                if requirement.confirmed
-            ]
-            current_evidence = await self._evidence_projection(
-                session, version, lock=True
-            )
-            current_match_payload = self._match_payload(
-                version, current_requirements, current_evidence
-            )
-            current_match_hash = _workflow_input_hash(
-                "match_resume_to_jd", "resume-match@2", current_match_payload
-            )
-            current_suggestion_payload = self._suggestion_payload(
-                match_rows, current_match_payload, version.snapshot_json
-            )
-            current_suggestion_hash = _workflow_input_hash(
-                "generate_suggestions_batch",
-                "suggestions-batch@2",
-                current_suggestion_payload,
-            )
-            if (
-                not current_requirements
-                or current_match_hash != match_input_hash
-                or current_suggestion_hash != suggestion_input_hash
-            ):
-                if claimed_task is not None and task_service is not None:
-                    await self._fail_in_session(
-                        session,
-                        current,
-                        claimed_task,
-                        task_service,
-                        "MATCH_PUBLICATION_STATE_CHANGED",
-                    )
-                else:
-                    await self._delete_public_rows(session, current)
-                    current.status = "failed"
+            if publication_state is None:
                 return current.id
+            _, current_evidence = publication_state
             await self._publish_in_session(
                 session,
                 current,
@@ -818,7 +791,7 @@ class MatchingService:
                 match_input_hash=match_input_hash,
                 suggestion_ai_run_id=suggestion_run.id,
                 suggestion_input_hash=suggestion_input_hash,
-                evidence=evidence,
+                evidence=current_evidence,
             )
             current.status = "succeeded"
             if claimed_task is not None and task_service is not None:
@@ -1099,6 +1072,69 @@ class MatchingService:
                 )
             by_id[fact.id] = projection
         return tuple(by_id[key] for key in sorted(by_id))
+
+    async def _locked_publication_state(
+        self,
+        session: AsyncSession,
+        analysis: MatchAnalysis,
+        version: ResumeVersion,
+        *,
+        match_input_hash: str,
+        claimed_task: Any | None,
+        task_service: TaskService | None,
+        match_rows: list[dict[str, Any]] | None = None,
+        suggestion_input_hash: str | None = None,
+    ) -> tuple[list[JdRequirement], tuple[EvidenceFact, ...]] | None:
+        requirements = list(
+            (
+                await session.scalars(
+                    select(JdRequirement)
+                    .where(
+                        JdRequirement.job_id == analysis.job_id,
+                        JdRequirement.owner_user_id
+                        == analysis.job_owner_user_id,
+                    )
+                    .order_by(JdRequirement.priority, JdRequirement.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        requirements = [item for item in requirements if item.confirmed]
+        evidence = await self._evidence_projection(session, version, lock=True)
+        match_payload = self._match_payload(version, requirements, evidence)
+        current_match_hash = _workflow_input_hash(
+            "match_resume_to_jd", "resume-match@2", match_payload
+        )
+        state_changed = not requirements or current_match_hash != match_input_hash
+        if suggestion_input_hash is not None:
+            if match_rows is None:
+                raise RuntimeError("Suggestion publication requires match rows")
+            suggestion_payload = self._suggestion_payload(
+                match_rows, match_payload, version.snapshot_json
+            )
+            current_suggestion_hash = _workflow_input_hash(
+                "generate_suggestions_batch",
+                "suggestions-batch@2",
+                suggestion_payload,
+            )
+            state_changed = (
+                state_changed
+                or current_suggestion_hash != suggestion_input_hash
+            )
+        if not state_changed:
+            return requirements, evidence
+        if claimed_task is not None and task_service is not None:
+            await self._fail_in_session(
+                session,
+                analysis,
+                claimed_task,
+                task_service,
+                "MATCH_PUBLICATION_STATE_CHANGED",
+            )
+        else:
+            await self._delete_public_rows(session, analysis)
+            analysis.status = "failed"
+        return None
 
     @staticmethod
     def _match_payload(
