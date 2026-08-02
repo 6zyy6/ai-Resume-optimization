@@ -92,6 +92,102 @@ async def test_worker_crash_then_reclaim_completes_one_result(sql_session_factor
 
 
 @pytest.mark.anyio
+async def test_terminal_failure_pending_write_rolls_back_with_its_transaction(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    service = TaskService(sql_session_factory)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_terminal_pending_rollback",
+        idempotency_key="terminal-pending-rollback",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_recovery", task.id)
+    assert claim is not None
+
+    with pytest.raises(RuntimeError, match="pending write fault"):
+        async with sql_session_factory.begin() as session:
+            await service.mark_terminal_failure_pending_in_session(
+                session,
+                "usr_recovery",
+                task.id,
+                claim.token,
+                "ValueError",
+                retryable=False,
+            )
+            raise RuntimeError("pending write fault")
+
+    stored = await service.get_task("usr_recovery", task.id)
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.stage == "running"
+    assert stored.error_code is None
+
+
+@pytest.mark.anyio
+async def test_terminal_pending_reclaim_is_owner_scoped_and_rejects_stale_claims(
+    sql_session_factory,
+):
+    await _seed_user(sql_session_factory)
+    clock = RecoveryClock()
+    service = TaskService(sql_session_factory, clock=clock)
+    task = await service.create_task(
+        "usr_recovery",
+        task_type="resume_optimize",
+        queue="ai.interactive",
+        trace_id="tr_terminal_pending_claim",
+        idempotency_key="terminal-pending-claim",
+        admission=TaskAdmission.ai(),
+    )
+    claim = await service.claim_task("usr_recovery", task.id)
+    assert claim is not None
+
+    with pytest.raises(TaskClaimError):
+        await service.mark_terminal_failure_pending(
+            "usr_other",
+            task.id,
+            claim.token,
+            "ValueError",
+            retryable=False,
+        )
+    pending_claim = await service.mark_terminal_failure_pending(
+        "usr_recovery",
+        task.id,
+        claim.token,
+        "ValueError",
+        retryable=False,
+    )
+    assert pending_claim.terminal_failure_pending is True
+    assert pending_claim.terminal_failure_error_code == "ValueError"
+    assert pending_claim.terminal_failure_retryable is False
+
+    clock.value += timedelta(seconds=301)
+    reclaimed = await service.claim_task("usr_recovery", task.id)
+    assert reclaimed is not None
+    assert reclaimed.token != claim.token
+    assert reclaimed.attempts == claim.attempts
+    assert reclaimed.terminal_failure_pending is True
+    assert reclaimed.terminal_failure_error_code == "ValueError"
+    assert reclaimed.terminal_failure_retryable is False
+
+    with pytest.raises(TaskClaimError):
+        await service.mark_terminal_failure_pending(
+            "usr_recovery",
+            task.id,
+            claim.token,
+            "RuntimeError",
+            retryable=False,
+        )
+    stored = await service.get_task("usr_recovery", task.id)
+    assert stored is not None
+    assert stored.stage == "terminal_failure_pending_permanent"
+    assert stored.error_code == "ValueError"
+
+
+@pytest.mark.anyio
 async def test_executor_retries_only_transient_failures(sql_session_factory):
     """Retrying validation failures, or not retrying 5xx, violates the worker policy."""
     await _seed_user(sql_session_factory)

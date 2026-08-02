@@ -44,7 +44,15 @@ def retry_delay(attempt: int, jitter: Callable[[], float]) -> float:
 
 Operation = Callable[[Any], Awaitable[str] | str]
 OperationResolver = Callable[[str], Operation]
-TerminalFailureHandler = Callable[[Any, BaseException], Awaitable[None] | None]
+
+
+@dataclass(frozen=True)
+class TerminalFailure:
+    error_code: str
+    retryable: bool
+
+
+TerminalFailureHandler = Callable[[Any, TerminalFailure], Awaitable[None] | None]
 
 
 @dataclass(frozen=True)
@@ -138,9 +146,40 @@ class TaskExecutor:
                     "TASK_NOT_CLAIMABLE",
                     "Task has a live claim or exhausted its attempts",
                 )
+            if claim.terminal_failure_pending:
+                operation = resolver(claim.task_type)
+                terminal_failure_handler = getattr(
+                    operation,
+                    "terminal_failure_handler",
+                    None,
+                )
+                if (
+                    terminal_failure_handler is None
+                    or claim.terminal_failure_error_code is None
+                    or claim.terminal_failure_retryable is None
+                ):
+                    raise RuntimeError(
+                        f"terminal failure handler is unavailable for {claim.task_type}"
+                    )
+                return await self._handle_operation_terminal_failure(
+                    owner_user_id,
+                    task_id,
+                    claim,
+                    TerminalFailure(
+                        claim.terminal_failure_error_code,
+                        claim.terminal_failure_retryable,
+                    ),
+                    terminal_failure_handler,
+                )
             operation: Operation | None = None
+            terminal_failure_handler: TerminalFailureHandler | None = None
             try:
                 operation = resolver(claim.task_type)
+                terminal_failure_handler = getattr(
+                    operation,
+                    "terminal_failure_handler",
+                    None,
+                )
                 result = operation(claim)
                 if inspect.isawaitable(result):
                     result = await result
@@ -189,17 +228,23 @@ class TaskExecutor:
                     if inspect.isawaitable(delay):
                         await delay
                     continue
-                terminal_failure_handler = getattr(
-                    operation,
-                    "terminal_failure_handler",
-                    None,
-                )
                 if terminal_failure_handler is not None:
+                    terminal_failure = TerminalFailure(
+                        type(error).__name__,
+                        retryable,
+                    )
+                    claim = await self.service.mark_terminal_failure_pending(
+                        owner_user_id,
+                        task_id,
+                        claim.token,
+                        terminal_failure.error_code,
+                        retryable=terminal_failure.retryable,
+                    )
                     return await self._handle_operation_terminal_failure(
                         owner_user_id,
                         task_id,
                         claim,
-                        error,
+                        terminal_failure,
                         terminal_failure_handler,
                     )
                 task = await self.service.fail_task(
@@ -216,13 +261,13 @@ class TaskExecutor:
         owner_user_id: str,
         task_id: str,
         claim: Any,
-        operation_error: BaseException,
+        terminal_failure: TerminalFailure,
         handler: TerminalFailureHandler,
     ) -> dict[str, Any]:
         handler_error: BaseException | None = None
         for _ in range(2):
             try:
-                result = handler(claim, operation_error)
+                result = handler(claim, terminal_failure)
                 if inspect.isawaitable(result):
                     await result
             except Exception as error:

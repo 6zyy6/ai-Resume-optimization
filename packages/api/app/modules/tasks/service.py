@@ -23,6 +23,14 @@ from app.workers.execution import QUEUE_NAMES
 DEFAULT_LEASE_SECONDS = 300
 AI_QUEUE_NAMES = frozenset({"ai.interactive", "ai.batch"})
 SUPPORTED_ADMISSION_USAGE_TYPES = frozenset({None, "ai_task"})
+TERMINAL_FAILURE_PENDING_PERMANENT = "terminal_failure_pending_permanent"
+TERMINAL_FAILURE_PENDING_RETRYABLE = "terminal_failure_pending_retryable"
+TERMINAL_FAILURE_PENDING_STAGES = frozenset(
+    {
+        TERMINAL_FAILURE_PENDING_PERMANENT,
+        TERMINAL_FAILURE_PENDING_RETRYABLE,
+    }
+)
 
 
 class Clock(Protocol):
@@ -62,6 +70,9 @@ class TaskClaim:
     token: str
     attempts: int
     max_attempts: int
+    terminal_failure_pending: bool = False
+    terminal_failure_error_code: str | None = None
+    terminal_failure_retryable: bool | None = None
 
 
 @dataclass
@@ -310,7 +321,8 @@ class TaskService:
             )
             if live_lease or task.status not in {"queued", "running"}:
                 return None
-            if task.attempts >= task.max_attempts:
+            terminal_failure_pending = task.stage in TERMINAL_FAILURE_PENDING_STAGES
+            if not terminal_failure_pending and task.attempts >= task.max_attempts:
                 await self._finish(
                     session,
                     task,
@@ -321,12 +333,14 @@ class TaskService:
             if task.status != "running":
                 require_transition(task.status, "running")
             task.status = "running"
-            task.stage = "running"
             task.started_at = task.started_at or now
-            task.attempts += 1
+            if not terminal_failure_pending:
+                task.stage = "running"
+                task.attempts += 1
             task.claim_token = new_id("clm")
             task.claim_lease_expires_at = now + timedelta(seconds=lease_seconds)
-            await self._append_event(session, task, "running", task.progress, now)
+            if not terminal_failure_pending:
+                await self._append_event(session, task, "running", task.progress, now)
             await session.flush()
             return TaskClaim(
                 task.id,
@@ -335,7 +349,76 @@ class TaskService:
                 task.claim_token,
                 task.attempts,
                 task.max_attempts,
+                terminal_failure_pending,
+                task.error_code if terminal_failure_pending else None,
+                (
+                    task.stage == TERMINAL_FAILURE_PENDING_RETRYABLE
+                    if terminal_failure_pending
+                    else None
+                ),
             )
+
+    async def mark_terminal_failure_pending(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+        error_code: str,
+        *,
+        retryable: bool,
+    ) -> TaskClaim:
+        async with self.sessions.begin() as session:
+            return await self.mark_terminal_failure_pending_in_session(
+                session,
+                owner_user_id,
+                task_id,
+                claim_token,
+                error_code,
+                retryable=retryable,
+            )
+
+    async def mark_terminal_failure_pending_in_session(
+        self,
+        session: AsyncSession,
+        owner_user_id: str,
+        task_id: str,
+        claim_token: str,
+        error_code: str,
+        *,
+        retryable: bool,
+    ) -> TaskClaim:
+        task = await self._claimed_task(
+            session,
+            owner_user_id,
+            task_id,
+            claim_token,
+        )
+        stage = (
+            TERMINAL_FAILURE_PENDING_RETRYABLE
+            if retryable
+            else TERMINAL_FAILURE_PENDING_PERMANENT
+        )
+        if task.stage in TERMINAL_FAILURE_PENDING_STAGES and (
+            task.stage != stage or task.error_code != error_code
+        ):
+            raise TaskStateError(
+                "TASK_TERMINAL_FAILURE_CONFLICT",
+                "Task already has another terminal failure pending",
+            )
+        task.stage = stage
+        task.error_code = error_code
+        await session.flush()
+        return TaskClaim(
+            task.id,
+            task.owner_user_id,
+            task.type,
+            task.claim_token,
+            task.attempts,
+            task.max_attempts,
+            True,
+            error_code,
+            retryable,
+        )
 
     async def report_progress(
         self,

@@ -385,6 +385,16 @@ class FailingIntakeClient:
         raise RuntimeError("malformed provider response")
 
 
+class CountingFailingIntakeClient:
+    def __init__(self, error_type):
+        self.error_type = error_type
+        self.attempts = 0
+
+    async def run(self, input, cancellation=None):
+        self.attempts += 1
+        raise self.error_type("provider failure")
+
+
 class SequencedIntakeClient:
     def __init__(self, failures, candidates):
         self.failures = list(failures)
@@ -401,6 +411,14 @@ class SequencedIntakeClient:
 class FailingPublisher:
     def publish(self, task_id, owner_user_id, queue):
         raise ConnectionError("broker unavailable")
+
+
+class MutableTaskClock:
+    def __init__(self, value):
+        self.value = value
+
+    def now(self):
+        return self.value
 
 
 class MismatchedReceiptClient(IntakeReceiptClient):
@@ -3676,6 +3694,105 @@ def test_executor_propagates_persistent_terminal_handler_failure_without_split(
     assert usage == ("reserved", None)
 
 
+@pytest.mark.parametrize(
+    ("error_type", "pending_stage", "expected_ai_attempts", "expected_usage"),
+    [
+        (
+            RuntimeError,
+            "terminal_failure_pending_permanent",
+            1,
+            "released",
+        ),
+        (
+            TimeoutError,
+            "terminal_failure_pending_retryable",
+            3,
+            "reserved",
+        ),
+    ],
+)
+def test_executor_reenters_terminal_handler_across_expired_leases_without_rerunning_ai(
+    intake_analysis_app,
+    monkeypatch,
+    error_type,
+    pending_stage,
+    expected_ai_attempts,
+    expected_usage,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    ai_client = CountingFailingIntakeClient(error_type)
+    service = application.state.task_service
+    clock = MutableTaskClock(datetime.now(timezone.utc))
+    service.clock = clock
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        service,
+        storage_override=MemoryStorage(),
+        ai_client_override=ai_client,
+    )
+    original_fail = service.fail_task_in_session
+    handler_attempts = 0
+
+    async def always_fail_after_terminal_writes(*args, **kwargs):
+        nonlocal handler_attempts
+        handler_attempts += 1
+        await original_fail(*args, **kwargs)
+        raise RuntimeError("terminal write fault")
+
+    monkeypatch.setattr(
+        service,
+        "fail_task_in_session",
+        always_fail_after_terminal_writes,
+    )
+
+    async def exercise_reentry():
+        executor = TaskExecutor(service, sleep=lambda _: None, jitter=lambda: 0)
+        task = await service.get_task("usr_analysis", task_id)
+        assert task is not None
+        executor_runs = task.max_attempts + 1
+        for _ in range(executor_runs):
+            with pytest.raises(RuntimeError, match="terminal failure handler"):
+                await executor.execute("usr_analysis", task_id, resolve_operation)
+            state = await _terminal_pending_state(sessions, task_id, answer_id)
+            assert state == (
+                "running",
+                pending_stage,
+                error_type.__name__,
+                expected_ai_attempts,
+                "running",
+            )
+            clock.value += timedelta(seconds=301)
+
+        monkeypatch.setattr(service, "fail_task_in_session", original_fail)
+        result = await executor.execute("usr_analysis", task_id, resolve_operation)
+        return (
+            executor_runs,
+            result,
+            await _terminal_pending_state(sessions, task_id, answer_id),
+            await _task_event_stages(sessions, task_id),
+            await _usage_state(sessions, task_id),
+        )
+
+    executor_runs, result, state, stages, usage = _run(exercise_reentry())
+    assert handler_attempts == executor_runs * 2
+    assert ai_client.attempts == expected_ai_attempts
+    assert result["status"] == "failed"
+    assert result["error_code"] == error_type.__name__
+    assert state == (
+        "failed",
+        "failed",
+        error_type.__name__,
+        expected_ai_attempts,
+        "failed",
+    )
+    assert stages.count("failed") == 1
+    assert usage == (expected_usage, None)
+
+
 @pytest.mark.parametrize("recovery", ["retry", "continue", "restart"])
 def test_outbox_exhaustion_atomically_unblocks_intake_recovery(
     intake_analysis_app,
@@ -4692,6 +4809,22 @@ async def _task_answer_statuses(sessions, task_id, answer_id):
         )
         assert task is not None and answer is not None
         return task.status, answer.analysis_status
+
+
+async def _terminal_pending_state(sessions, task_id, answer_id):
+    async with sessions() as session:
+        task = await session.scalar(select(Task).where(Task.id == task_id))
+        answer = await session.scalar(
+            select(IntakeAnswer).where(IntakeAnswer.id == answer_id)
+        )
+        assert task is not None and answer is not None
+        return (
+            task.status,
+            task.stage,
+            task.error_code,
+            task.attempts,
+            answer.analysis_status,
+        )
 
 
 async def _cancelled_task_state(sessions, task_id):

@@ -19,7 +19,7 @@ from app.modules.jobs.service import JobService
 from app.modules.matching.service import MatchingService
 from app.modules.privacy.worker import PrivacyWorker
 from app.modules.tasks.service import TaskClaim, TaskService
-from app.workers.execution import register_operation, should_retry
+from app.workers.execution import TerminalFailure, register_operation
 
 
 @dataclass(frozen=True)
@@ -133,7 +133,7 @@ def configure_pipeline_operations(
 
     async def fail_intake_answer_analysis(
         claim: TaskClaim,
-        error: BaseException,
+        failure: TerminalFailure,
     ) -> None:
         task = await _task(task_service, claim)
         await intake.fail_answer_analysis(
@@ -141,8 +141,8 @@ def configure_pipeline_operations(
             _resource(task, "intake_answer"),
             task.id,
             claim.token,
-            type(error).__name__,
-            permanent=not should_retry(error),
+            failure.error_code,
+            permanent=not failure.retryable,
             task_service=task_service,
         )
 
