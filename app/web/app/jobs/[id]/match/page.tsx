@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 
 import { Page } from "../../../../components/Page";
 import { Button } from "../../../../components/ui/Button";
+import { StatusTag } from "../../../../components/ui/StatusTag";
 import { createWebApiClient } from "../../../../features/api/client";
 import { EvidenceList } from "../../../../features/facts/EvidenceList";
 
@@ -92,24 +93,41 @@ export default function MatchPage() {
       title="岗位要求与事实证据"
     >
       {analysis ? (
-        <section className="match-grid">
-          {categories.map(([label, key]) => {
-            const items = analysis.items.filter((item) => item.category === key);
-            return (
-              <article className="match-card" key={key}>
-                <span>{key}</span>
-                <strong>{items.length}</strong>
-                <h2>{label}</h2>
-                {items.length === 0 ? <p>没有此类要求。</p> : items.map((item) => (
-                  <details key={item.id} open>
-                    <summary>{requirements.get(item.requirement_id)?.text ?? `岗位要求 ${item.requirement_id}`}</summary>
-                    <EvidenceList factIds={item.evidence_refs} />
-                  </details>
-                ))}
-              </article>
-            );
-          })}
-        </section>
+        <>
+          <section className="button-row" aria-label="匹配依据">
+            {analysis.generation_mode ? (
+              <StatusTag tone="info">{analysis.generation_mode === "model" ? "模型匹配" : "基础解析"}</StatusTag>
+            ) : null}
+            {analysis.updated_at ? (
+              <time className="resource-id" dateTime={analysis.updated_at}>
+                更新时间 {new Intl.DateTimeFormat("zh-CN", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  timeZone: "Asia/Shanghai",
+                  year: "numeric",
+                }).format(new Date(analysis.updated_at))}
+              </time>
+            ) : null}
+          </section>
+          <section className="match-grid">
+            {categories.map(([label, key]) => {
+              const items = analysis.items.filter((item) => item.category === key);
+              return (
+                <article className="match-card" key={key}>
+                  <span>{key}</span>
+                  <strong>{items.length}</strong>
+                  <h2>{label}</h2>
+                  {items.length === 0 ? <p>没有此类要求。</p> : items.map((item) => (
+                    <details key={item.id} open>
+                      <summary>{requirements.get(item.requirement_id)?.text ?? `岗位要求 ${item.requirement_id}`}</summary>
+                      <EvidenceList factIds={item.evidence_refs} />
+                    </details>
+                  ))}
+                </article>
+              );
+            })}
+          </section>
+        </>
       ) : <section className="panel" role={error ? "alert" : "status"}>{message}</section>}
     </Page>
   );

@@ -35,12 +35,18 @@ class IntakeFactCandidateResponse(BaseModel):
     kind: str
     value: str
     source_excerpt: str
-    source_start: int
-    source_end: int
-    source_hash: str
+    source_start: int = Field(ge=0)
+    source_end: int = Field(gt=0)
+    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     status: Literal["pending", "accepted", "edited", "rejected"]
     decision_mode: Literal["accept_or_edit", "edit_only"]
     ai_run_id: str
+
+    @model_validator(mode="after")
+    def source_range_is_ordered(self) -> "IntakeFactCandidateResponse":
+        if self.source_end <= self.source_start:
+            raise ValueError("source_end must be greater than source_start")
+        return self
 
 
 class IntakeSessionResponse(BaseModel):

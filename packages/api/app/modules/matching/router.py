@@ -1,7 +1,8 @@
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts import ApiErrorEnvelope
 from app.core.errors import createApiError
@@ -38,14 +39,14 @@ class MatchItemResponse(BaseModel):
 
     id: str
     requirement_id: str
-    category: str
+    category: Literal["proved", "underexpressed", "needs_confirmation", "real_gap"]
     evidence_refs: list[str]
     resume_target_paths: list[str]
     reason_code: str
-    generation_mode: str
+    generation_mode: Literal["model", "rule_fallback"]
     workflow_version: str
     ai_run_id: str | None
-    input_hash: str
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class MatchResponse(BaseModel):
@@ -54,42 +55,49 @@ class MatchResponse(BaseModel):
     id: str
     resume_version_id: str
     job_id: str
-    status: str
-    generation_mode: str
+    status: Literal["queued", "processing", "succeeded", "failed"]
+    generation_mode: Literal["model", "rule_fallback"]
     workflow_version: str
     ai_run_id: str | None
-    input_hash: str
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     updated_at: datetime
     task_id: str | None
     items: list[MatchItemResponse]
+
+
+class SuggestionClaimRangeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
 
 
 class SuggestionFactLinkResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     fact_id: str
-    claim_range: dict[str, int]
+    claim_range: SuggestionClaimRangeResponse
 
 
 class SuggestionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
-    status: str
+    status: Literal["pending", "accepted", "edited", "ignored", "reverted", "blocked"]
     target_path: str
     requirement_id: str | None
     requirement_text: str | None
     original_text: str
-    original_hash: str
+    original_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     suggested_text: str
     reason: str
     fact_refs: list[str]
     fact_links: list[SuggestionFactLinkResponse]
     risk_flags: list[str]
-    generation_mode: str
+    generation_mode: Literal["model", "rule_fallback"]
     workflow_version: str
     ai_run_id: str | None
-    input_hash: str
+    input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     updated_at: datetime
 
 

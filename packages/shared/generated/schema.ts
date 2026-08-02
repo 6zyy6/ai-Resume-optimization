@@ -1477,8 +1477,11 @@ export interface components {
             raw: string;
             /** Requirements */
             requirements?: components["schemas"]["RequirementResponse"][];
-            /** Status */
-            status: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "queued" | "processing" | "parsed" | "failed";
             /** Task Id */
             task_id?: string | null;
             /** Title */
@@ -1500,12 +1503,18 @@ export interface components {
         MatchItemResponse: {
             /** Ai Run Id */
             ai_run_id: string | null;
-            /** Category */
-            category: string;
+            /**
+             * Category
+             * @enum {string}
+             */
+            category: "proved" | "underexpressed" | "needs_confirmation" | "real_gap";
             /** Evidence Refs */
             evidence_refs: string[];
-            /** Generation Mode */
-            generation_mode: string;
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "model" | "rule_fallback";
             /** Id */
             id: string;
             /** Input Hash */
@@ -1523,8 +1532,11 @@ export interface components {
         MatchResponse: {
             /** Ai Run Id */
             ai_run_id: string | null;
-            /** Generation Mode */
-            generation_mode: string;
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "model" | "rule_fallback";
             /** Id */
             id: string;
             /** Input Hash */
@@ -1535,8 +1547,11 @@ export interface components {
             job_id: string;
             /** Resume Version Id */
             resume_version_id: string;
-            /** Status */
-            status: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "queued" | "processing" | "succeeded" | "failed";
             /** Task Id */
             task_id: string | null;
             /**
@@ -1668,8 +1683,11 @@ export interface components {
             source_range: components["schemas"]["RequirementSourceRange"];
             /** Text */
             text: string;
-            /** Type */
-            type: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "must_have" | "preferred" | "responsibility" | "other";
             /** Workflow Version */
             workflow_version: string;
         };
@@ -1827,12 +1845,16 @@ export interface components {
              */
             source_type: "question_answer" | "imported_resume" | "user_edit" | "user_confirmation";
         };
+        /** SuggestionClaimRangeResponse */
+        SuggestionClaimRangeResponse: {
+            /** End */
+            end: number;
+            /** Start */
+            start: number;
+        };
         /** SuggestionFactLinkResponse */
         SuggestionFactLinkResponse: {
-            /** Claim Range */
-            claim_range: {
-                [key: string]: number;
-            };
+            claim_range: components["schemas"]["SuggestionClaimRangeResponse"];
             /** Fact Id */
             fact_id: string;
         };
@@ -1849,8 +1871,11 @@ export interface components {
             fact_links: components["schemas"]["SuggestionFactLinkResponse"][];
             /** Fact Refs */
             fact_refs: string[];
-            /** Generation Mode */
-            generation_mode: string;
+            /**
+             * Generation Mode
+             * @enum {string}
+             */
+            generation_mode: "model" | "rule_fallback";
             /** Id */
             id: string;
             /** Input Hash */
@@ -1867,8 +1892,11 @@ export interface components {
             requirement_text: string | null;
             /** Risk Flags */
             risk_flags: string[];
-            /** Status */
-            status: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "edited" | "ignored" | "reverted" | "blocked";
             /** Suggested Text */
             suggested_text: string;
             /** Target Path */

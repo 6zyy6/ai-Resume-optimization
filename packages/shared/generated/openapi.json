@@ -999,6 +999,7 @@
             "type": "string"
           },
           "source_end": {
+            "exclusiveMinimum": 0.0,
             "title": "Source End",
             "type": "integer"
           },
@@ -1007,10 +1008,12 @@
             "type": "string"
           },
           "source_hash": {
+            "pattern": "^[a-f0-9]{64}$",
             "title": "Source Hash",
             "type": "string"
           },
           "source_start": {
+            "minimum": 0.0,
             "title": "Source Start",
             "type": "integer"
           },
@@ -1332,6 +1335,13 @@
             "type": "array"
           },
           "status": {
+            "enum": [
+              "draft",
+              "queued",
+              "processing",
+              "parsed",
+              "failed"
+            ],
             "title": "Status",
             "type": "string"
           },
@@ -1405,6 +1415,12 @@
             "title": "Ai Run Id"
           },
           "category": {
+            "enum": [
+              "proved",
+              "underexpressed",
+              "needs_confirmation",
+              "real_gap"
+            ],
             "title": "Category",
             "type": "string"
           },
@@ -1416,6 +1432,10 @@
             "type": "array"
           },
           "generation_mode": {
+            "enum": [
+              "model",
+              "rule_fallback"
+            ],
             "title": "Generation Mode",
             "type": "string"
           },
@@ -1424,6 +1444,7 @@
             "type": "string"
           },
           "input_hash": {
+            "pattern": "^[a-f0-9]{64}$",
             "title": "Input Hash",
             "type": "string"
           },
@@ -1477,6 +1498,10 @@
             "title": "Ai Run Id"
           },
           "generation_mode": {
+            "enum": [
+              "model",
+              "rule_fallback"
+            ],
             "title": "Generation Mode",
             "type": "string"
           },
@@ -1485,6 +1510,7 @@
             "type": "string"
           },
           "input_hash": {
+            "pattern": "^[a-f0-9]{64}$",
             "title": "Input Hash",
             "type": "string"
           },
@@ -1504,6 +1530,12 @@
             "type": "string"
           },
           "status": {
+            "enum": [
+              "queued",
+              "processing",
+              "succeeded",
+              "failed"
+            ],
             "title": "Status",
             "type": "string"
           },
@@ -1870,6 +1902,12 @@
             "type": "string"
           },
           "type": {
+            "enum": [
+              "must_have",
+              "preferred",
+              "responsibility",
+              "other"
+            ],
             "title": "Type",
             "type": "string"
           },
@@ -2406,15 +2444,32 @@
         "title": "SourceInput",
         "type": "object"
       },
+      "SuggestionClaimRangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "exclusiveMinimum": 0.0,
+            "title": "End",
+            "type": "integer"
+          },
+          "start": {
+            "minimum": 0.0,
+            "title": "Start",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "SuggestionClaimRangeResponse",
+        "type": "object"
+      },
       "SuggestionFactLinkResponse": {
         "additionalProperties": false,
         "properties": {
           "claim_range": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Claim Range",
-            "type": "object"
+            "$ref": "#/components/schemas/SuggestionClaimRangeResponse"
           },
           "fact_id": {
             "title": "Fact Id",
@@ -2474,6 +2529,10 @@
             "type": "array"
           },
           "generation_mode": {
+            "enum": [
+              "model",
+              "rule_fallback"
+            ],
             "title": "Generation Mode",
             "type": "string"
           },
@@ -2482,10 +2541,12 @@
             "type": "string"
           },
           "input_hash": {
+            "pattern": "^[a-f0-9]{64}$",
             "title": "Input Hash",
             "type": "string"
           },
           "original_hash": {
+            "pattern": "^[a-f0-9]{64}$",
             "title": "Original Hash",
             "type": "string"
           },
@@ -2527,6 +2588,14 @@
             "type": "array"
           },
           "status": {
+            "enum": [
+              "pending",
+              "accepted",
+              "edited",
+              "ignored",
+              "reverted",
+              "blocked"
+            ],
             "title": "Status",
             "type": "string"
           },

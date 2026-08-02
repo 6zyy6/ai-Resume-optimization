@@ -26,6 +26,8 @@ const me = {
 };
 
 const firstSession = {
+  analysis_status: "idle",
+  analysis_task_id: null,
   answered_question_ids: [],
   completed_count: 0,
   current_question: {
@@ -34,6 +36,7 @@ const firstSession = {
     reason: null,
     type: "deep_answer",
   },
+  fact_candidates: [],
   fact_summaries: [],
   id: "intake_unique",
   remaining_estimate: 8,
@@ -69,6 +72,212 @@ afterEach(() => {
 });
 
 describe("V2 persisted intake", () => {
+  it("polls a queued answer analysis, reloads the candidate source, and accepts it as a confirmed fact", async () => {
+    let finishAnalysis: ((response: Response) => void) | undefined;
+    const queuedSession = {
+      ...firstSession,
+      analysis_status: "queued",
+      analysis_task_id: "task_answer_analysis",
+      answered_question_ids: ["experience_radar"],
+      completed_count: 1,
+      version: 1,
+    };
+    const candidateSession = {
+      ...queuedSession,
+      analysis_status: "waiting_for_confirmation",
+      current_question: null,
+      fact_candidates: [{
+        ai_run_id: "run_answer_analysis",
+        decision_mode: "accept_or_edit",
+        id: "candidate_real",
+        intake_answer_id: "answer_real",
+        kind: "project",
+        source_end: 12,
+        source_excerpt: "我组织了校园招聘活动",
+        source_hash: "a".repeat(64),
+        source_start: 0,
+        status: "pending",
+        value: "组织校园招聘活动",
+      }],
+    };
+    let sessionReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") {
+        return jsonResponse(firstSession, 201);
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique/answers")) {
+        return jsonResponse(queuedSession, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_answer_analysis")) {
+        return new Promise<Response>((resolve) => {
+          finishAnalysis = resolve;
+        });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        sessionReads += 1;
+        return jsonResponse(candidateSession);
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique/fact-candidates/candidate_real/decision")) {
+        return jsonResponse({
+          candidate_id: "candidate_real",
+          current_question: {
+            id: "project_role",
+            prompt: "你亲自完成了哪部分？",
+            reason: "ambiguous_role",
+            type: "short_answer",
+          },
+          fact_summary: {
+            id: "fact_confirmed",
+            kind: "project",
+            status: "confirmed",
+            value: "组织校园招聘活动",
+          },
+          session_version: 2,
+          status: "accepted",
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CreatePage />);
+    fireEvent.change(await screen.findByRole("textbox", { name: "你的回答" }), {
+      target: { value: "我组织了校园招聘活动" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存并继续" }));
+
+    expect(await screen.findByRole("heading", { name: "正在整理这段经历" })).toBeInTheDocument();
+    finishAnalysis?.(jsonResponse({
+      cancellation_requested: false,
+      error_code: null,
+      id: "task_answer_analysis",
+      progress: 100,
+      result_ref: "intake_unique",
+      stage: "completed",
+      status: "succeeded",
+      trace_id: "trace_answer_analysis",
+      type: "analyze_intake_answer",
+    }));
+    expect(await screen.findByText("我组织了校园招聘活动")).toBeInTheDocument();
+    expect(sessionReads).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "接受候选 1" }));
+
+    expect(await screen.findByText("已确认 1 / 1")).toBeInTheDocument();
+    expect(screen.getByText("组织校园招聘活动")).toBeInTheDocument();
+    const decisionCall = fetchMock.mock.calls.find(([url]) => (
+      String(url).endsWith("/fact-candidates/candidate_real/decision")
+    ));
+    expect(JSON.parse(String(decisionCall?.[1]?.body))).toEqual({
+      base_version: 1,
+      decision: "accept",
+      value: null,
+    });
+  });
+
+  it("offers retry and rule continuation without losing a failed answer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") {
+        return jsonResponse({
+          ...firstSession,
+          analysis_status: "failed",
+          analysis_task_id: "task_analysis_failed",
+          current_question: null,
+          version: 1,
+        }, 200);
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<CreatePage />);
+
+    expect(await screen.findByRole("button", { name: "重试整理" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "继续回答下一题" })).toBeEnabled();
+  });
+
+  it("makes the fact-text draft fallback an explicit user decision", async () => {
+    const readySession = {
+      ...firstSession,
+      analysis_status: "completed",
+      completed_count: 2,
+      current_question: null,
+      fact_summaries: [
+        { id: "fact_one", kind: "experience", status: "confirmed", value: "真实经历一" },
+        { id: "fact_two", kind: "result", status: "confirmed", value: "真实结果二" },
+      ],
+      version: 2,
+    };
+    const draftBodies: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/v1/me")) return jsonResponse(me);
+      if (path.endsWith("/v1/intake-sessions") && init?.method === "POST") {
+        return jsonResponse(readySession, 201);
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique/drafts") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        draftBodies.push(body);
+        const fallback = body.generation_mode === "rule_fallback";
+        return jsonResponse({
+          session_id: "intake_unique",
+          status: "queued",
+          task_id: fallback ? "task_draft_fallback" : "task_draft_model",
+          version: fallback ? 4 : 3,
+        }, 202);
+      }
+      if (path.endsWith("/v1/tasks/task_draft_model")) {
+        return jsonResponse({
+          cancellation_requested: false,
+          error_code: "MODEL_FAILED",
+          id: "task_draft_model",
+          progress: 50,
+          result_ref: null,
+          stage: "compose_resume_draft",
+          status: "failed",
+          trace_id: "trace_draft_model",
+          type: "generate_intake_draft",
+        });
+      }
+      if (path.endsWith("/v1/tasks/task_draft_fallback")) {
+        return jsonResponse({
+          cancellation_requested: false,
+          error_code: null,
+          id: "task_draft_fallback",
+          progress: 100,
+          result_ref: "resume_fallback",
+          stage: "completed",
+          status: "succeeded",
+          trace_id: "trace_draft_fallback",
+          type: "generate_intake_draft",
+        });
+      }
+      if (path.endsWith("/v1/intake-sessions/intake_unique") && init?.method === "GET") {
+        return jsonResponse({
+          ...readySession,
+          resume_id: "resume_fallback",
+          status: "completed",
+          task_id: "task_draft_fallback",
+          version: 4,
+        });
+      }
+      return jsonResponse({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CreatePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "生成基础简历" }));
+    fireEvent.click(await screen.findByRole("button", {
+      name: "使用事实原文创建基础草稿",
+    }));
+
+    await waitFor(() => expect(draftBodies).toHaveLength(2));
+    expect(draftBodies[1]).toMatchObject({ generation_mode: "rule_fallback" });
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/resumes/resume_fallback/edit"));
+  });
+
   it("starts a server session and renders the server-owned question", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);

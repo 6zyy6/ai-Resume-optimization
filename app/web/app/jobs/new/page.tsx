@@ -15,6 +15,19 @@ type Requirement = components["schemas"]["RequirementResponse"];
 type Job = components["schemas"]["JobResponse"];
 type SessionUser = components["schemas"]["MeResponse"];
 
+function confidenceLabel(band: Requirement["confidence_band"] | undefined) {
+  if (band === "high") return "高置信";
+  if (band === "medium") return "中置信";
+  if (band === "low") return "低置信";
+  return null;
+}
+
+function generationLabel(mode: Requirement["generation_mode"] | undefined) {
+  if (mode === "model") return "模型解析";
+  if (mode === "rule_fallback") return "基础解析";
+  return null;
+}
+
 export default function NewJobPage() {
   const [title, setTitle] = useState("");
   const [company, setCompany] = useState("");
@@ -270,10 +283,23 @@ export default function NewJobPage() {
                   <article className="audit-card" key={requirement.id}>
                     <Field label={`岗位要求 ${index + 1}`} multiline name={`requirement-${index}`} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => updateRequirement(index, { text: event.currentTarget.value })} value={requirement.text} />
                     <label className="field"><span className="field__label">类型</span>
-                      <select className="field__control" onChange={(event) => updateRequirement(index, { type: event.currentTarget.value })} value={requirement.type}>
+                      <select className="field__control" onChange={(event) => updateRequirement(index, { type: event.currentTarget.value as Requirement["type"] })} value={requirement.type}>
                         <option value="must_have">必须</option><option value="preferred">加分</option><option value="responsibility">职责</option><option value="other">其他</option>
                       </select>
                     </label>
+                    <div className="button-row" aria-label="解析依据">
+                      {confidenceLabel(requirement.confidence_band) ? (
+                        <StatusTag tone={requirement.confidence_band === "low" ? "pending" : "info"}>
+                          {confidenceLabel(requirement.confidence_band)}
+                        </StatusTag>
+                      ) : null}
+                      {generationLabel(requirement.generation_mode) ? (
+                        <StatusTag tone="info">{generationLabel(requirement.generation_mode)}</StatusTag>
+                      ) : null}
+                      {requirement.source_range ? (
+                        <span className="resource-id">原文字符 {requirement.source_range.start}–{requirement.source_range.end}</span>
+                      ) : null}
+                    </div>
                     <StatusTag tone={requirement.confirmed ? "success" : "pending"}>{requirement.confirmed ? "已确认" : "待确认"}</StatusTag>
                   </article>
                 ))}

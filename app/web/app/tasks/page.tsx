@@ -47,6 +47,8 @@ export default function TasksPage() {
 
   function resultHref(task: components["schemas"]["TaskResponse"]): string | null {
     if (!task.result_ref || task.status !== "succeeded") return null;
+    if (task.type === "analyze_intake_answer") return "/create";
+    if (task.type === "match_resume_to_job") return `/suggestions/${encodeURIComponent(task.result_ref)}`;
     if (task.type === "generate_intake_draft") return `/resumes/${task.result_ref}/edit`;
     if (task.type === "parse_resume_import") return `/imports/${task.result_ref}/confirm`;
     if (task.type === "parse_job") return `/jobs/new?job=${encodeURIComponent(task.result_ref)}`;

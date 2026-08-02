@@ -369,11 +369,88 @@ describe("V2 real workflow pages", () => {
     expect(screen.getByText("唯一原文戊")).toBeInTheDocument();
     expect(screen.getByText("唯一建议辛")).toBeInTheDocument();
     expect(screen.getByText(/唯一理由己/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "接受" }));
+    fireEvent.click(screen.getByRole("button", { name: "接受建议" }));
     expect(await screen.findByRole("link", { name: "进入导出" })).toHaveAttribute(
       "href",
       "/exports/new?version=rver_decision_nonce",
     );
+  });
+
+  it("navigates a suggestion batch and limits blocked items to evidence or ignore", async () => {
+    params = { analysisId: "analysis_batch" };
+    window.history.replaceState({}, "", "/suggestions/analysis_batch");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/v1/match-analyses/analysis_batch/suggestions")) {
+        return jsonResponse({ items: [
+          {
+            ai_run_id: "run_suggestion",
+            fact_links: [{ claim_range: { end: 5, start: 0 }, fact_id: "fact_pending" }],
+            fact_refs: ["fact_pending"],
+            generation_mode: "model",
+            id: "suggestion_pending",
+            input_hash: "a".repeat(64),
+            original_hash: "b".repeat(64),
+            original_text: "第一条原文",
+            reason: "第一条理由",
+            requirement_id: "req_pending",
+            requirement_text: "第一条岗位要求",
+            risk_flags: [],
+            status: "pending",
+            suggested_text: "第一条建议",
+            target_path: "/sections/0/items/0/text",
+            updated_at: "2026-07-30T08:00:00Z",
+            workflow_version: "2",
+          },
+          {
+            ai_run_id: "run_suggestion",
+            fact_links: [{ claim_range: { end: 6, start: 0 }, fact_id: "fact_blocked" }],
+            fact_refs: ["fact_blocked"],
+            generation_mode: "model",
+            id: "suggestion_blocked",
+            input_hash: "c".repeat(64),
+            original_hash: "d".repeat(64),
+            original_text: "第二条原文证据",
+            reason: "还缺少结果来源",
+            requirement_id: "req_blocked",
+            requirement_text: "第二条岗位要求证据",
+            risk_flags: ["missing_result_source"],
+            status: "blocked",
+            suggested_text: "补充事实后才可采用的建议",
+            target_path: "/sections/0/items/1/text",
+            updated_at: "2026-07-30T08:01:00Z",
+            workflow_version: "2",
+          },
+        ] });
+      }
+      if (path.endsWith("/v1/facts/fact_pending/sources")) return jsonResponse({ items: [] });
+      if (path.endsWith("/v1/facts/fact_pending")) {
+        return jsonResponse({ confirmed_at: "2026-07-30T00:00:00Z", id: "fact_pending", kind: "project", source_ids: [], status: "confirmed", value: "第一条事实" });
+      }
+      if (path.endsWith("/v1/facts/fact_blocked/sources")) {
+        return jsonResponse({ items: [{ content: "第二条事实来源", source_ref: "intake:2", source_type: "question_answer" }] });
+      }
+      if (path.endsWith("/v1/facts/fact_blocked")) {
+        return jsonResponse({ confirmed_at: "2026-07-30T00:00:00Z", id: "fact_blocked", kind: "result", source_ids: ["source_blocked"], status: "confirmed", value: "第二条事实证据" });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<SuggestionsPage />);
+
+    expect(await screen.findByText("第一条岗位要求")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "下一条建议" }));
+    expect(await screen.findByText("第二条原文证据")).toBeInTheDocument();
+    expect(screen.getByText("第二条岗位要求证据")).toBeInTheDocument();
+    expect(screen.getByText("补充事实后才可采用的建议")).toBeInTheDocument();
+    expect(screen.getByText(/还缺少结果来源/)).toBeInTheDocument();
+    expect(await screen.findByText("第二条事实证据")).toBeInTheDocument();
+    expect(screen.getByText(/missing_result_source/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "接受建议" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑后接受" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "补充事实" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "忽略建议" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "上一条建议" })).toBeEnabled();
   });
 
   it("renders parsed JD requirements from the server and confirms the real rows", async () => {
@@ -393,7 +470,7 @@ describe("V2 real workflow pages", () => {
         return jsonResponse({ cancellation_requested: false, error_code: null, id: "task_job", progress: 100, result_ref: "job_unique", stage: "completed", status: "succeeded", trace_id: "tr_job", type: "parse_job" });
       }
       if (path.endsWith("/v1/jobs/job_unique") && init?.method === "GET") {
-        return jsonResponse({ company: "唯一公司壬", id: "job_unique", requirements: [{ confirmed: false, id: "req_unique", priority: 1, text: "唯一岗位要求子", type: "must_have" }], status: "parsed", task_id: "task_job", title: "唯一岗位癸" });
+        return jsonResponse({ company: "唯一公司壬", id: "job_unique", raw: "岗位正文", requirements: [{ ai_run_id: null, confidence_band: "high", confirmed: false, explicitness: "explicit", generation_mode: "rule_fallback", id: "req_unique", input_hash: "a".repeat(64), priority: 1, source_hash: "b".repeat(64), source_range: { end: 4, start: 0 }, text: "唯一岗位要求子", type: "must_have", workflow_version: "2" }], status: "parsed", task_id: "task_job", title: "唯一岗位癸" });
       }
       if (path.endsWith("/v1/jobs/job_unique/requirements/req_unique") && init?.method === "PATCH") {
         return jsonResponse({ confirmed: true, id: "req_unique", priority: 1, text: "唯一岗位要求子", type: "must_have" });
@@ -409,6 +486,10 @@ describe("V2 real workflow pages", () => {
     fireEvent.click(screen.getByRole("button", { name: "解析岗位要求" }));
 
     expect(await screen.findByDisplayValue("唯一岗位要求子")).toBeInTheDocument();
+    expect(screen.getByText("高置信")).toBeInTheDocument();
+    expect(screen.getByText("原文字符 0–4")).toBeInTheDocument();
+    expect(screen.getByText("基础解析")).toBeInTheDocument();
+    expect(screen.queryByText("AI 已完成")).not.toBeInTheDocument();
     expect(screen.queryByText("用户研究与分析")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认全部要求" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => (
@@ -488,7 +569,7 @@ describe("V2 real workflow pages", () => {
         return jsonResponse({ consent_versions: {}, masked_email: "3***@qq.com", user_id: "usr_match", identity_type: "email" });
       }
       if (path.endsWith("/v1/match-analyses/analysis_unique")) {
-        return jsonResponse({ id: "analysis_unique", items: [{ category: "proved", evidence_refs: ["fact_nonce"], id: "match_item", requirement_id: "req_nonce" }], job_id: "job_unique", resume_version_id: "rver_unique", status: "succeeded", task_id: "task_match", workflow_version: "1" });
+        return jsonResponse({ ai_run_id: "run_match", generation_mode: "model", id: "analysis_unique", input_hash: "c".repeat(64), items: [{ ai_run_id: "run_match", category: "proved", evidence_refs: ["fact_nonce"], generation_mode: "model", id: "match_item", input_hash: "d".repeat(64), reason_code: "direct_evidence", requirement_id: "req_nonce", resume_target_paths: ["/sections/0/items/0/text"], workflow_version: "2" }], job_id: "job_unique", resume_version_id: "rver_unique", status: "succeeded", task_id: "task_match", updated_at: "2026-07-30T08:30:00Z", workflow_version: "2" });
       }
       if (path.endsWith("/v1/jobs/job_unique")) {
         return jsonResponse({ company: null, id: "job_unique", requirements: [{ confirmed: true, id: "req_nonce", priority: 1, text: "唯一匹配要求丑", type: "must_have" }], status: "parsed", task_id: null, title: "目标岗位" });
@@ -505,6 +586,8 @@ describe("V2 real workflow pages", () => {
     render(<MatchPage />);
 
     expect(await screen.findByText("唯一匹配要求丑")).toBeInTheDocument();
+    expect(screen.getByText("模型匹配")).toBeInTheDocument();
+    expect(screen.getByText(/2026.*07.*30/)).toBeInTheDocument();
     expect(await screen.findByText("唯一匹配事实")).toBeInTheDocument();
     expect(screen.getByText(/唯一匹配来源/)).toBeInTheDocument();
   });

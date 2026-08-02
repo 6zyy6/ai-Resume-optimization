@@ -2,7 +2,7 @@
 
 import { ApiError } from "@resume/shared/client";
 import type { components } from "@resume/shared/schema";
-import { waitForTask } from "@resume/shared/workflows";
+import { TaskTerminalError, waitForTask } from "@resume/shared/workflows";
 import { useRouter } from "next/navigation";
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 
@@ -14,8 +14,9 @@ import { createWebApiClient } from "../../features/api/client";
 
 type IntakeSession = components["schemas"]["IntakeSessionResponse"];
 type IntakeFact = components["schemas"]["IntakeFactSummary"];
+type IntakeFactCandidate = components["schemas"]["IntakeFactCandidateResponse"];
 type SessionUser = components["schemas"]["MeResponse"];
-type ViewState = "loading" | "ready" | "saving" | "confirming" | "drafting" | "error";
+type ViewState = "loading" | "ready" | "saving" | "analyzing" | "confirming" | "drafting" | "error";
 
 const reasonLabels = {
   ambiguous_role: "需要说明你本人承担的角色",
@@ -24,6 +25,11 @@ const reasonLabels = {
 } as const;
 
 function messageFor(error: unknown): string {
+  if (error instanceof TaskTerminalError) {
+    return error.status === "cancelled"
+      ? "任务已取消。已保存的输入仍然保留。"
+      : "任务没有完成。已保存的输入仍然保留，可以重试或手工继续。";
+  }
   if (error instanceof ApiError) {
     if (error.code === "INTAKE_VERSION_CONFLICT") return "会话已在其他页面更新，请读取云端最新进度后继续。";
     if (error.code === "INTAKE_FACTS_NOT_READY") return "请先确认至少两条有来源的经历事实。";
@@ -41,12 +47,16 @@ export default function CreatePage() {
   const [state, setState] = useState<ViewState>("loading");
   const [error, setError] = useState("");
   const [ownerId, setOwnerId] = useState("");
+  const [editingCandidateId, setEditingCandidateId] = useState("");
+  const [candidateEdits, setCandidateEdits] = useState<Record<string, string>>({});
+  const [draftFallbackAvailable, setDraftFallbackAvailable] = useState(false);
   const resumedTask = useRef("");
+  const resumedAnalysisTask = useRef("");
   const answerOperation = useRef({ fingerprint: "", key: "" });
   const draftOperation = useRef({ fingerprint: "", key: "" });
   const factOperationKeys = useRef<Record<string, string>>({});
 
-  const openCompletedDraft = async (current: IntakeSession) => {
+  const openCompletedDraft = async (current: IntakeSession, allowFallback = true) => {
     if (!current.task_id) return;
     const api = createWebApiClient();
     setState("drafting");
@@ -61,15 +71,40 @@ export default function CreatePage() {
       router.push(`/resumes/${completed.resume_id}/edit`);
     } catch (requestError) {
       setError(messageFor(requestError));
+      setDraftFallbackAvailable(allowFallback);
       setState("error");
     }
   };
 
   const applySession = (current: IntakeSession) => {
     setSession(current);
-    setState("ready");
+    setState(["queued", "running"].includes(current.analysis_status) ? "analyzing" : "ready");
     setError("");
     window.history.replaceState({}, "", `/create?session=${encodeURIComponent(current.id)}`);
+  };
+
+  const pollAnswerAnalysis = async (current: IntakeSession) => {
+    if (!current.analysis_task_id) return;
+    setSession(current);
+    setState("analyzing");
+    setError("");
+    try {
+      const api = createWebApiClient();
+      await waitForTask(
+        () => api.get<components["schemas"]["TaskResponse"]>(
+          `/v1/tasks/${current.analysis_task_id}`,
+        ),
+        current.analysis_task_id,
+      );
+      applySession(await api.get<IntakeSession>(`/v1/intake-sessions/${current.id}`));
+    } catch (requestError) {
+      const latest = await createWebApiClient().get<IntakeSession>(
+        `/v1/intake-sessions/${current.id}`,
+      ).catch(() => null);
+      if (latest) setSession(latest);
+      setError(messageFor(requestError));
+      setState(latest?.analysis_status === "failed" ? "ready" : "error");
+    }
   };
 
   const loadSession = async (restart = false) => {
@@ -109,6 +144,17 @@ export default function CreatePage() {
     ) {
       resumedTask.current = session.task_id;
       void openCompletedDraft(session);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (
+      session?.analysis_task_id
+      && ["queued", "running"].includes(session.analysis_status)
+      && resumedAnalysisTask.current !== session.analysis_task_id
+    ) {
+      resumedAnalysisTask.current = session.analysis_task_id;
+      void pollAnswerAnalysis(session);
     }
   }, [session]);
 
@@ -188,6 +234,96 @@ export default function CreatePage() {
       }
       setAnswer("");
       applySession(updated);
+      if (
+        updated.analysis_task_id
+        && ["queued", "running"].includes(updated.analysis_status)
+      ) {
+        resumedAnalysisTask.current = updated.analysis_task_id;
+        await pollAnswerAnalysis(updated);
+      }
+    } catch (requestError) {
+      setError(messageFor(requestError));
+      setState("error");
+    }
+  };
+
+  const decideCandidate = async (
+    candidate: IntakeFactCandidate,
+    decision: "accept" | "edit" | "reject",
+  ) => {
+    if (!session || state === "confirming") return;
+    const editedValue = (candidateEdits[candidate.id] ?? candidate.value).trim();
+    if (decision === "edit" && (!editedValue || editedValue === candidate.value)) {
+      setEditingCandidateId(candidate.id);
+      setError("请先修改候选内容，再保存编辑。");
+      return;
+    }
+    setState("confirming");
+    setError("");
+    try {
+      const body: components["schemas"]["FactCandidateDecisionRequest"] = {
+        base_version: session.version,
+        decision,
+        value: decision === "edit" ? editedValue : null,
+      };
+      const operation = `${candidate.id}:${JSON.stringify(body)}`;
+      factOperationKeys.current[operation] ||= crypto.randomUUID();
+      const result = await createWebApiClient().post<
+        typeof body,
+        components["schemas"]["FactCandidateDecisionResponse"]
+      >(
+        `/v1/intake-sessions/${session.id}/fact-candidates/${candidate.id}/decision`,
+        body,
+        factOperationKeys.current[operation],
+      );
+      delete factOperationKeys.current[operation];
+      const remaining = session.fact_candidates.filter((item) => (
+        item.id !== candidate.id && item.status === "pending"
+      ));
+      setSession({
+        ...session,
+        analysis_status: remaining.length === 0 ? "completed" : "waiting_for_confirmation",
+        current_question: result.current_question,
+        fact_candidates: session.fact_candidates.map((item) => (
+          item.id === candidate.id ? { ...item, status: result.status } : item
+        )),
+        fact_summaries: result.fact_summary
+          ? [...session.fact_summaries, result.fact_summary]
+          : session.fact_summaries,
+        version: result.session_version,
+      });
+      setEditingCandidateId("");
+      setState("ready");
+    } catch (requestError) {
+      setError(messageFor(requestError));
+      setState("error");
+    }
+  };
+
+  const recoverAnalysis = async (action: "retry" | "continue") => {
+    if (!session || state === "saving") return;
+    setState("saving");
+    setError("");
+    try {
+      const body: components["schemas"]["IntakeAnalysisActionRequest"] = {
+        base_version: session.version,
+      };
+      const operation = `analysis:${action}:${session.version}`;
+      factOperationKeys.current[operation] ||= crypto.randomUUID();
+      const updated = await createWebApiClient().post<typeof body, IntakeSession>(
+        `/v1/intake-sessions/${session.id}/analysis/${action}`,
+        body,
+        factOperationKeys.current[operation],
+      );
+      delete factOperationKeys.current[operation];
+      applySession(updated);
+      if (
+        updated.analysis_task_id
+        && ["queued", "running"].includes(updated.analysis_status)
+      ) {
+        resumedAnalysisTask.current = updated.analysis_task_id;
+        await pollAnswerAnalysis(updated);
+      }
     } catch (requestError) {
       setError(messageFor(requestError));
       setState("error");
@@ -220,15 +356,18 @@ export default function CreatePage() {
     }
   };
 
-  const createDraft = async () => {
+  const createDraft = async (
+    generationMode: components["schemas"]["IntakeDraftRequest"]["generation_mode"] = "model",
+  ) => {
     if (!session || state === "drafting") return;
     setState("drafting");
     setError("");
+    if (generationMode === "model") setDraftFallbackAvailable(false);
     try {
       const body: components["schemas"]["IntakeDraftRequest"] = {
         base_version: session.version,
         title: title.trim(),
-        generation_mode: "model",
+        generation_mode: generationMode,
       };
       const fingerprint = JSON.stringify(body);
       if (draftOperation.current.fingerprint !== fingerprint) {
@@ -251,7 +390,7 @@ export default function CreatePage() {
       };
       resumedTask.current = queued.task_id;
       setSession(draftingSession);
-      await openCompletedDraft(draftingSession);
+      await openCompletedDraft(draftingSession, generationMode === "model");
     } catch (requestError) {
       setError(messageFor(requestError));
       setState("error");
@@ -270,7 +409,11 @@ export default function CreatePage() {
   }
 
   const confirmedCount = session.fact_summaries.filter((fact) => fact.status === "confirmed").length;
-  const busy = ["saving", "confirming", "drafting", "loading"].includes(state);
+  const analyzing = ["queued", "running"].includes(session.analysis_status);
+  const reviewingCandidates = session.analysis_status === "waiting_for_confirmation";
+  const analysisFailed = session.analysis_status === "failed";
+  const draftFailed = session.status === "drafting" && state === "error";
+  const busy = ["saving", "analyzing", "confirming", "drafting", "loading"].includes(state);
   const question = session.current_question;
   const reason = question?.reason ? reasonLabels[question.reason] : null;
 
@@ -278,7 +421,26 @@ export default function CreatePage() {
     <Page
       actions={<Button disabled={busy} onClick={() => void loadSession(true)} variant="quiet">重新开始</Button>}
       eyebrow={`已完成 ${session.completed_count} 题 · 预计还剩 ${session.remaining_estimate} 题`}
-      status={{ label: session.status === "drafting" ? "正在生成草稿" : "回答已保存", tone: session.status === "drafting" ? "pending" : "success" }}
+      status={{
+        label: draftFailed
+          ? "草稿生成失败"
+          : session.status === "drafting"
+          ? "正在生成草稿"
+          : analyzing
+            ? "正在整理这段经历"
+            : reviewingCandidates
+              ? "请确认候选事实"
+              : analysisFailed
+                ? "经历整理失败"
+                : "回答已保存",
+        tone: draftFailed
+          ? "error"
+          : session.status === "drafting" || analyzing || reviewingCandidates
+          ? "pending"
+          : analysisFailed
+            ? "error"
+            : "success",
+      }}
       title="从真实经历开始"
     >
       <div className="editor-grid wizard-grid">
@@ -290,7 +452,94 @@ export default function CreatePage() {
         </aside>
 
         <section className="editor-main">
-          {question ? (
+          {analyzing ? (
+            <div aria-live="polite" role="status">
+              <h2>正在整理这段经历</h2>
+              <p>回答已经保存。整理完成后会显示候选事实和原回答出处。</p>
+            </div>
+          ) : analysisFailed ? (
+            <div role="alert">
+              <h2>这段经历暂时没有整理完成</h2>
+              <p>原回答已经保存。你可以用同一输入重试，也可以使用规则问题继续。</p>
+              <div className="button-row">
+                <Button
+                  disabled={busy}
+                  onClick={() => void recoverAnalysis("retry")}
+                  state={state === "saving" ? "loading" : "default"}
+                  variant="secondary"
+                >
+                  重试整理
+                </Button>
+                <Button
+                  disabled={busy}
+                  onClick={() => void recoverAnalysis("continue")}
+                  variant="quiet"
+                >
+                  继续回答下一题
+                </Button>
+              </div>
+              {error ? <p className="auth-error">{error}</p> : null}
+            </div>
+          ) : reviewingCandidates ? (
+            <div>
+              <h2>确认这段经历中的事实</h2>
+              <p>只有你接受或编辑后的候选，才会进入事实库。</p>
+              <ol className="intake-facts">
+                {session.fact_candidates.filter((candidate) => candidate.status === "pending").map((candidate, index) => (
+                  <li className="intake-fact" key={candidate.id}>
+                    <span>{candidate.kind}</span>
+                    <p>{candidate.value}</p>
+                    <p><strong>原回答出处：</strong>{candidate.source_excerpt}</p>
+                    <p className="resource-id">字符范围 {candidate.source_start}–{candidate.source_end}</p>
+                    {editingCandidateId === candidate.id ? (
+                      <Field
+                        label={`编辑候选 ${index + 1}`}
+                        multiline
+                        name={`candidate-${candidate.id}`}
+                        onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setCandidateEdits((current) => ({
+                          ...current,
+                          [candidate.id]: event.currentTarget.value,
+                        }))}
+                        value={candidateEdits[candidate.id] ?? candidate.value}
+                      />
+                    ) : null}
+                    <div className="button-row">
+                      {candidate.decision_mode === "accept_or_edit" ? (
+                        <Button
+                          aria-label={`接受候选 ${index + 1}`}
+                          disabled={busy}
+                          onClick={() => void decideCandidate(candidate, "accept")}
+                          variant="secondary"
+                        >
+                          接受候选
+                        </Button>
+                      ) : null}
+                      <Button
+                        aria-label={`${editingCandidateId === candidate.id ? "保存编辑候选" : "编辑候选"} ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => {
+                          if (editingCandidateId === candidate.id) void decideCandidate(candidate, "edit");
+                          else setEditingCandidateId(candidate.id);
+                        }}
+                        variant="secondary"
+                      >
+                        {editingCandidateId === candidate.id ? "保存编辑" : "编辑候选"}
+                      </Button>
+                      <Button
+                        aria-label={`拒绝候选 ${index + 1}`}
+                        disabled={busy}
+                        onClick={() => void decideCandidate(candidate, "reject")}
+                        variant="quiet"
+                      >
+                        不采用
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+              {error ? <p className="auth-error" role="alert">{error}</p> : null}
+            </div>
+          ) : question ? (
             <>
               <p className="eyebrow">{question.type === "short_answer" ? "简短回答" : "经历深挖"}</p>
               <h2>{question.prompt}</h2>
@@ -380,6 +629,16 @@ export default function CreatePage() {
           >
             生成基础简历
           </Button>
+          {draftFallbackAvailable ? (
+            <Button
+              disabled={state === "drafting" || !title.trim()}
+              onClick={() => void createDraft("rule_fallback")}
+              state={state === "drafting" ? "loading" : "default"}
+              variant="secondary"
+            >
+              使用事实原文创建基础草稿
+            </Button>
+          ) : null}
           {confirmedCount < 2 ? <p>至少确认两条有来源的事实后才可生成。</p> : null}
           {error && !question ? <p role="alert">{error}</p> : null}
         </aside>

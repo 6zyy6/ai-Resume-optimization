@@ -51,7 +51,7 @@ class RequirementResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
-    type: str
+    type: Literal["must_have", "preferred", "responsibility", "other"]
     priority: int
     text: str
     confirmed: bool
@@ -72,7 +72,7 @@ class JobResponse(BaseModel):
     title: str
     company: str | None
     raw: str
-    status: str
+    status: Literal["draft", "queued", "processing", "parsed", "failed"]
     requirements: list[RequirementResponse] = Field(default_factory=list)
     task_id: str | None = None
 

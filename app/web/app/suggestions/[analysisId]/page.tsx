@@ -2,7 +2,7 @@
 
 import type { components } from "@resume/shared/schema";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 
 import { Page } from "../../../components/Page";
@@ -13,15 +13,9 @@ import { createWebApiClient } from "../../../features/api/client";
 import { useApiResource } from "../../../features/api/useApiResource";
 import { EvidenceList } from "../../../features/facts/EvidenceList";
 
-interface DecisionResponse {
-  decision_id: string;
-  status: string;
-  suggestion_id: string;
-  version_id: string;
-}
-
 export default function SuggestionsPage() {
   const { analysisId } = useParams<{ analysisId: string }>();
+  const router = useRouter();
   const suggestions = useApiResource<components["schemas"]["SuggestionListResponse"]>(
     `/v1/match-analyses/${analysisId}/suggestions`,
   );
@@ -38,6 +32,24 @@ export default function SuggestionsPage() {
   const selected = suggestions.status === "ready" && !requestedMissing
     ? suggestions.data.items.find((item) => item.id === selectedId) ?? suggestions.data.items[0]
     : null;
+  const selectedIndex = suggestions.status === "ready" && selected
+    ? suggestions.data.items.findIndex((item) => item.id === selected.id)
+    : -1;
+
+  function selectSuggestion(index: number) {
+    if (suggestions.status !== "ready") return;
+    const item = suggestions.data.items[index];
+    if (!item) return;
+    setSelectedId(item.id);
+    setEditedText(item.suggested_text);
+    setDecision(item.status === "pending" ? "待处理" : item.status);
+    setEditing(false);
+    setError("");
+    setRequestedMissing(false);
+    const query = new URLSearchParams(window.location.search);
+    query.set("suggestion", item.id);
+    window.history.replaceState({}, "", `/suggestions/${analysisId}?${query.toString()}`);
+  }
 
   useEffect(() => {
     if (suggestions.status !== "ready" || suggestions.data.items.length === 0) return;
@@ -71,7 +83,7 @@ export default function SuggestionsPage() {
       if (decisionOperation.current.fingerprint !== fingerprint) {
         decisionOperation.current = { fingerprint, key: crypto.randomUUID() };
       }
-      const result = await createWebApiClient().post<typeof body, DecisionResponse>(
+      const result = await createWebApiClient().post<typeof body, components["schemas"]["DecisionResponse"]>(
         `/v1/suggestions/${selected.id}/${action}`,
         body,
         decisionOperation.current.key,
@@ -98,7 +110,9 @@ export default function SuggestionsPage() {
         z: ["revert", "已撤销"],
       } as const;
       const choice = action[event.key.toLowerCase() as keyof typeof action];
-      if (choice) void decide(choice[0], choice[1]);
+      if (!choice) return;
+      if (selected?.status === "blocked" && ["accept", "edit", "revert"].includes(choice[0])) return;
+      void decide(choice[0], choice[1]);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -115,8 +129,26 @@ export default function SuggestionsPage() {
       {suggestions.status === "ready" && suggestions.data.items.length === 0 ? <section className="panel"><p>这次匹配没有生成可处理建议。</p><Link href="/resumes">返回我的简历</Link></section> : null}
       {requestedMissing ? <section className="panel" role="alert"><p>{error}</p><Link href={`/suggestions/${analysisId}`}>查看此分析的建议</Link></section> : null}
       {selected ? (
-        <div className="suggestion-layout">
-          <section className="panel panel--wide">
+        <>
+          <nav className="button-row" aria-label="建议导航">
+            <Button
+              disabled={selectedIndex <= 0}
+              onClick={() => selectSuggestion(selectedIndex - 1)}
+              variant="secondary"
+            >
+              上一条建议
+            </Button>
+            <span className="resource-id">{selectedIndex + 1} / {suggestions.status === "ready" ? suggestions.data.items.length : 0}</span>
+            <Button
+              disabled={suggestions.status !== "ready" || selectedIndex >= suggestions.data.items.length - 1}
+              onClick={() => selectSuggestion(selectedIndex + 1)}
+              variant="secondary"
+            >
+              下一条建议
+            </Button>
+          </nav>
+          <div className="suggestion-layout">
+            <section className="panel panel--wide">
             <p className="eyebrow">JD 原要求</p>
             <h2>{selected.requirement_text ?? "未关联具体岗位要求"}</h2>
             <dl className="comparison">
@@ -141,19 +173,28 @@ export default function SuggestionsPage() {
               {selected.risk_flags.length > 0 ? `风险：${selected.risk_flags.join("、")}` : "没有额外风险标记"}
             </StatusTag>
             <div className="button-row">
-              <Button disabled={running} onClick={() => void decide("accept", "已接受")} state={running ? "loading" : "default"}>接受</Button>
-              <Button disabled={running} onClick={() => void decide("edit", "已编辑")} variant="secondary">{editing ? "保存编辑" : "编辑"}</Button>
-              <Button disabled={running} onClick={() => void decide("ignore", "已忽略")} variant="quiet">忽略</Button>
-              <Button disabled={running} onClick={() => void decide("revert", "已撤销")} variant="quiet">撤销</Button>
+              {selected.status !== "blocked" ? (
+                <>
+                  <Button disabled={running} onClick={() => void decide("accept", "已接受")} state={running ? "loading" : "default"}>接受建议</Button>
+                  <Button disabled={running} onClick={() => void decide("edit", "已编辑")} variant="secondary">{editing ? "保存编辑" : "编辑后接受"}</Button>
+                </>
+              ) : (
+                <Button disabled={running} onClick={() => router.push("/create")} variant="secondary">补充事实</Button>
+              )}
+              <Button disabled={running} onClick={() => void decide("ignore", "已忽略")} variant="quiet">忽略建议</Button>
+              {selected.status !== "blocked" ? (
+                <Button disabled={running} onClick={() => void decide("revert", "已撤销")} variant="quiet">撤销</Button>
+              ) : null}
             </div>
             {error ? <p className="auth-error" role="alert">{error}</p> : null}
             {versionId ? <Link className="button button--primary" href={`/exports/new?version=${versionId}`}>进入导出</Link> : null}
-          </section>
-          <aside className="panel"><h2>事实引用</h2>
-            <EvidenceList factIds={selected.fact_refs} />
-            <p className="resource-id">目标路径：{selected.target_path}</p>
-          </aside>
-        </div>
+            </section>
+            <aside className="panel"><h2>事实引用</h2>
+              <EvidenceList factIds={selected.fact_refs} />
+              <p className="resource-id">目标路径：{selected.target_path}</p>
+            </aside>
+          </div>
+        </>
       ) : null}
     </Page>
   );

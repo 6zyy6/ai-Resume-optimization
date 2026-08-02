@@ -176,6 +176,26 @@ describe("V2 pages render only API-owned business data", () => {
     ));
   });
 
+  it("routes completed answer analysis and match tasks without guessing private resource ids", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/v1/tasks?limit=50")) {
+        return jsonResponse({ items: [
+          { cancellation_requested: false, error_code: null, id: "task_answer", progress: 100, result_ref: "answer_private_id", stage: "completed", status: "succeeded", trace_id: "tr_answer", type: "analyze_intake_answer" },
+          { cancellation_requested: false, error_code: null, id: "task_match", progress: 100, result_ref: "analysis_public_id", stage: "completed", status: "succeeded", trace_id: "tr_match", type: "match_resume_to_job" },
+        ], next_cursor: null });
+      }
+      return jsonResponse({}, 404);
+    }));
+
+    render(<TasksPage />);
+
+    const resultLinks = await screen.findAllByRole("link", { name: "打开结果" });
+    expect(resultLinks[0]).toHaveAttribute("href", "/create");
+    expect(resultLinks[1]).toHaveAttribute("href", "/suggestions/analysis_public_id");
+    expect(resultLinks[0]).not.toHaveAttribute("href", expect.stringContaining("answer_private_id"));
+  });
+
   it("renders account and usage data and executes privacy writes through the API", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
