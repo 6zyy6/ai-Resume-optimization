@@ -2519,6 +2519,73 @@ def test_english_nested_negative_is_not_a_direct_object_denial(answer):
     assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
 
 
+@pytest.mark.parametrize("answer", ["在园区张佳期完成任务", "在园区王小季完成任务"])
+def test_unrecognized_location_name_with_time_suffix_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    ["服务不好客户的需求", "帮助不好同事的项目"],
+)
+def test_support_action_buhao_direct_object_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "帮助不好意思表达具体需求的用户",
+        "服务不好主动沟通反馈问题的客户",
+    ],
+)
+def test_support_action_buhao_long_attributive_is_not_a_result_complement(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "accept_or_edit"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I completed absolutely nothing",
+        "I completed virtually nothing",
+        "I completed almost nothing",
+        "I completed not a single project",
+    ],
+)
+def test_english_modified_direct_object_negative_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I helped with no-code tools",
+        "I implemented zero-trust security",
+        "I helped to ensure no errors",
+        "I helped with users with no experience",
+    ],
+)
+def test_english_hyphenated_or_nested_negative_is_not_direct_object_denial(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [

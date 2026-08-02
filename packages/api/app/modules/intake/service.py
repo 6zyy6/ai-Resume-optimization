@@ -266,7 +266,7 @@ CHINESE_POSTPOSITIVE_INABILITY = re.compile(
     rf"(?:(?:{CHINESE_RESULT_ACTION_PREDICATE})"
     r"(?:不了(?!解)|不(?:来|成|下|起|掉|到|动|完|好|住|牢|稳|准|清|透|够))|"
     rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})"
-    r"(?:不了(?!解)|不好(?![^，,。.!！?？；;]{0,8}的)))"
+    r"不了(?!解))"
 )
 CHINESE_REFERENTIAL_TARGET = (
     r"(?:(?:该|此|这个|前述)(?:项目|任务|工作|经历)|它)"
@@ -2077,19 +2077,40 @@ def _has_positive_assertion(value: str) -> bool:
 def _has_english_direct_object_negative(value: str) -> bool:
     return bool(
         re.match(
-            r"^(?:(?:almost\s+)?nothing|nobody|no\s+one|none|neither|"
-            r"no\b|zero\b|hardly\s+any\b|barely\s+any\b)",
+            r"^(?:(?:(?:absolutely|virtually|almost)\s+)?"
+            r"(?:nothing|nobody|no\s+one|none|neither|no(?!-)\b|zero(?!-)\b)|"
+            r"not\s+a\s+single\b|hardly\s+any\b|barely\s+any\b)",
             value.strip(),
             re.IGNORECASE,
         )
     )
 
 
+def _has_chinese_support_bad_result(value: str) -> bool:
+    for match in re.finditer(
+        rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})不好",
+        value,
+    ):
+        tail = re.split(r"[，,。.!！?？；;]", value[match.end() :], maxsplit=1)[0]
+        attributive_end = tail.find("的")
+        if attributive_end < 0:
+            return True
+        if re.match(
+            r"客户|用户|同事|学生|员工|项目|任务|需求|老师|导师|队友|"
+            r"供应商|团队|部门|产品|系统|业务|工作|活动",
+            tail[:attributive_end],
+        ):
+            return True
+    return False
+
+
 def _main_assertion_kind(value: str) -> str:
     context = _context_text(value)
     context = _strip_chinese_leading_adverbial(context)
     compact = re.sub(r"[\s、]+", "", context)
-    if CHINESE_POSTPOSITIVE_INABILITY.search(context):
+    if CHINESE_POSTPOSITIVE_INABILITY.search(
+        context
+    ) or _has_chinese_support_bad_result(context):
         return "hard"
 
     english_self = re.match(r"^(?:i|we)\b", context, re.IGNORECASE)
@@ -2292,7 +2313,8 @@ def _unresolved_location_has_other_owner(owner: str) -> bool:
     ):
         return False
     if re.fullmatch(
-        r"(?:[\u4e00-\u9fff]{0,4}(?:期|季|时|阶段|期间|场景)|高峰(?:期|时段)?)",
+        r"(?:高峰(?:期|时段)?|春季|夏季|秋季|冬季|暑期|寒假|暑假|学期|假期|"
+        r"同期|前期|中期|后期|早期|晚期|[\u4e00-\u9fff]{1,2}(?:阶段|期间|场景))",
         subject_value,
     ):
         return False
