@@ -44,6 +44,16 @@ def retry_delay(attempt: int, jitter: Callable[[], float]) -> float:
 
 Operation = Callable[[Any], Awaitable[str] | str]
 OperationResolver = Callable[[str], Operation]
+TerminalFailureHandler = Callable[[Any, BaseException], Awaitable[None] | None]
+
+
+@dataclass(frozen=True)
+class RegisteredOperation:
+    operation: Operation
+    terminal_failure_handler: TerminalFailureHandler | None = None
+
+    def __call__(self, claim: Any) -> Awaitable[str] | str:
+        return self.operation(claim)
 
 
 @dataclass(frozen=True)
@@ -53,7 +63,7 @@ class WorkerRuntime:
 
 
 _runtime: WorkerRuntime | None = None
-_operations: dict[str, Operation] = {}
+_operations: dict[str, RegisteredOperation] = {}
 _worker_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -62,11 +72,19 @@ def configure_worker(service: Any, resolver: OperationResolver) -> None:
     _runtime = WorkerRuntime(service, resolver)
 
 
-def register_operation(task_type: str, operation: Operation) -> None:
-    _operations[task_type] = operation
+def register_operation(
+    task_type: str,
+    operation: Operation,
+    *,
+    terminal_failure_handler: TerminalFailureHandler | None = None,
+) -> None:
+    _operations[task_type] = RegisteredOperation(
+        operation,
+        terminal_failure_handler,
+    )
 
 
-def resolve_operation(task_type: str) -> Operation:
+def resolve_operation(task_type: str) -> RegisteredOperation:
     try:
         return _operations[task_type]
     except KeyError as error:
@@ -120,6 +138,7 @@ class TaskExecutor:
                     "TASK_NOT_CLAIMABLE",
                     "Task has a live claim or exhausted its attempts",
                 )
+            operation: Operation | None = None
             try:
                 operation = resolver(claim.task_type)
                 result = operation(claim)
@@ -170,6 +189,19 @@ class TaskExecutor:
                     if inspect.isawaitable(delay):
                         await delay
                     continue
+                terminal_failure_handler = getattr(
+                    operation,
+                    "terminal_failure_handler",
+                    None,
+                )
+                if terminal_failure_handler is not None:
+                    return await self._handle_operation_terminal_failure(
+                        owner_user_id,
+                        task_id,
+                        claim,
+                        error,
+                        terminal_failure_handler,
+                    )
                 task = await self.service.fail_task(
                     owner_user_id,
                     task_id,
@@ -178,6 +210,37 @@ class TaskExecutor:
                     release_unused_ai_reservation=not retryable,
                 )
                 return _task_result(task)
+
+    async def _handle_operation_terminal_failure(
+        self,
+        owner_user_id: str,
+        task_id: str,
+        claim: Any,
+        operation_error: BaseException,
+        handler: TerminalFailureHandler,
+    ) -> dict[str, Any]:
+        handler_error: BaseException | None = None
+        for _ in range(2):
+            try:
+                result = handler(claim, operation_error)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as error:
+                handler_error = error
+                continue
+            task = await self.service.get_task(owner_user_id, task_id)
+            if task is not None and task.status in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                return _task_result(task)
+            handler_error = RuntimeError(
+                "operation terminal failure handler did not reach a terminal state"
+            )
+        raise RuntimeError(
+            f"terminal failure handler failed for {claim.task_type}"
+        ) from handler_error
 
     async def _terminal_result(
         self,

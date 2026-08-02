@@ -3573,7 +3573,7 @@ def test_executor_permanent_analysis_failure_is_atomic_and_releases_reservation(
     assert _run(_usage_state(sessions, task_id)) == ("released", None)
 
 
-def test_permanent_analysis_terminal_write_rolls_back_as_one_transaction(
+def test_executor_retries_atomic_terminal_handler_after_one_rollback(
     intake_analysis_app,
     monkeypatch,
 ):
@@ -3589,10 +3589,14 @@ def test_permanent_analysis_terminal_write_rolls_back_as_one_transaction(
         ai_client_override=FailingIntakeClient(),
     )
     original_fail = application.state.task_service.fail_task_in_session
+    handler_attempts = 0
 
     async def fail_after_terminal_writes(*args, **kwargs):
+        nonlocal handler_attempts
+        handler_attempts += 1
         await original_fail(*args, **kwargs)
-        raise RuntimeError("terminal write fault")
+        if handler_attempts == 1:
+            raise RuntimeError("terminal write fault")
 
     monkeypatch.setattr(
         application.state.task_service,
@@ -3600,25 +3604,74 @@ def test_permanent_analysis_terminal_write_rolls_back_as_one_transaction(
         fail_after_terminal_writes,
     )
 
-    async def exercise_fault():
-        claim = await application.state.task_service.claim_task(
+    async def exercise_retry():
+        result = await TaskExecutor(application.state.task_service).execute(
             "usr_analysis",
             task_id,
+            resolve_operation,
         )
-        assert claim is not None
-        with pytest.raises(RuntimeError, match="terminal write fault"):
-            await resolve_operation("analyze_intake_answer")(claim)
+        return (
+            result,
+            await _task_answer_statuses(sessions, task_id, answer_id),
+            await _task_event_stages(sessions, task_id),
+            await _usage_state(sessions, task_id),
+        )
+
+    result, statuses, stages, usage = _run(exercise_retry())
+    assert handler_attempts == 2
+    assert result["status"] == "failed"
+    assert statuses == ("failed", "failed")
+    assert stages[-1] == "failed"
+    assert stages.count("failed") == 1
+    assert usage == ("released", None)
+
+
+def test_executor_propagates_persistent_terminal_handler_failure_without_split(
+    intake_analysis_app,
+    monkeypatch,
+):
+    client, sessions, application = intake_analysis_app
+    queued = _queue_answer(client, "我完成了课程项目")
+    task_id = queued["analysis_task_id"]
+    answer_id = _run(_answer_id(sessions, task_id))
+    configure_pipeline_operations(
+        sessions,
+        Settings(app_env="test", database_url="sqlite+aiosqlite:///:memory:"),
+        application.state.task_service,
+        storage_override=MemoryStorage(),
+        ai_client_override=FailingIntakeClient(),
+    )
+    original_fail = application.state.task_service.fail_task_in_session
+    handler_attempts = 0
+
+    async def always_fail_after_terminal_writes(*args, **kwargs):
+        nonlocal handler_attempts
+        handler_attempts += 1
+        await original_fail(*args, **kwargs)
+        raise RuntimeError("terminal write fault")
+
+    monkeypatch.setattr(
+        application.state.task_service,
+        "fail_task_in_session",
+        always_fail_after_terminal_writes,
+    )
+
+    async def exercise_failure():
+        with pytest.raises(RuntimeError, match="terminal failure handler"):
+            await TaskExecutor(application.state.task_service).execute(
+                "usr_analysis",
+                task_id,
+                resolve_operation,
+            )
         return (
             await _task_answer_statuses(sessions, task_id, answer_id),
             await _task_event_stages(sessions, task_id),
             await _usage_state(sessions, task_id),
         )
 
-    statuses, stages, usage = _run(exercise_fault())
-    assert statuses == (
-        "running",
-        "running",
-    )
+    statuses, stages, usage = _run(exercise_failure())
+    assert handler_attempts == 2
+    assert statuses == ("running", "running")
     assert "failed" not in stages
     assert usage == ("reserved", None)
 

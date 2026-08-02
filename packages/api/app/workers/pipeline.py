@@ -122,28 +122,29 @@ def configure_pipeline_operations(
     async def analyze_intake_answer(claim: TaskClaim) -> str:
         task = await _task(task_service, claim)
         answer_id = _resource(task, "intake_answer")
-        try:
-            return await intake.process_answer_analysis(
-                claim.owner_user_id,
-                answer_id,
-                task_id=task.id,
-                claim_token=claim.token,
-                task_service=task_service,
-                cancellation=TaskAiCancellation(task_service, claim),
-            )
-        except Exception as error:
-            retryable = should_retry(error)
-            if not retryable or claim.attempts >= claim.max_attempts:
-                await intake.fail_answer_analysis(
-                    claim.owner_user_id,
-                    answer_id,
-                    task.id,
-                    claim.token,
-                    type(error).__name__,
-                    permanent=not retryable,
-                    task_service=task_service,
-                )
-            raise
+        return await intake.process_answer_analysis(
+            claim.owner_user_id,
+            answer_id,
+            task_id=task.id,
+            claim_token=claim.token,
+            task_service=task_service,
+            cancellation=TaskAiCancellation(task_service, claim),
+        )
+
+    async def fail_intake_answer_analysis(
+        claim: TaskClaim,
+        error: BaseException,
+    ) -> None:
+        task = await _task(task_service, claim)
+        await intake.fail_answer_analysis(
+            claim.owner_user_id,
+            _resource(task, "intake_answer"),
+            task.id,
+            claim.token,
+            type(error).__name__,
+            permanent=not should_retry(error),
+            task_service=task_service,
+        )
 
     async def export_private_data(claim: TaskClaim) -> str:
         return await privacy.export_data(claim.owner_user_id, claim.task_id)
@@ -155,7 +156,11 @@ def configure_pipeline_operations(
     register_operation("parse_job", parse_job)
     register_operation("match_resume_to_job", match_resume_to_job)
     register_operation("render_resume_export", render_resume_export)
-    register_operation("analyze_intake_answer", analyze_intake_answer)
+    register_operation(
+        "analyze_intake_answer",
+        analyze_intake_answer,
+        terminal_failure_handler=fail_intake_answer_analysis,
+    )
     register_operation("generate_intake_draft", generate_intake_draft)
     register_operation("data_export", export_private_data)
     register_operation("account_deletion", delete_private_data)
