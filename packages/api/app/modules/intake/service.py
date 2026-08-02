@@ -2076,6 +2076,8 @@ def _has_positive_assertion(value: str) -> bool:
 
 def _has_english_direct_object_negative(value: str) -> bool:
     object_head = value.strip()
+    if re.search(r"\b(?:at\s+all|whatsoever)\s*$", object_head, re.IGNORECASE):
+        return True
     if re.match(
         r"^(?:no[-‐‑‒–—−]code|zero[-‐‑‒–—−]trust)\b",
         object_head,
@@ -2091,7 +2093,8 @@ def _has_english_direct_object_negative(value: str) -> bool:
         re.match(
             r"^(?:(?:(?:absolutely|virtually|almost)\s+)?"
             r"(?:nothing|nobody|no\s+one|none|neither|no(?!-)\b|zero(?!-)\b)|"
-            r"not\s+(?:a\s+single|even\s+one|one|any)\b|hardly\s+any\b|"
+            r"not\s+(?:a\s+single|even\s+(?:a\s+single|one)|one|any)\b|"
+            r"hardly\s+any\b|"
             r"barely\s+any\b|scarcely\s+any\b)",
             object_head,
             re.IGNORECASE,
@@ -2104,6 +2107,8 @@ def _has_chinese_support_bad_result(value: str) -> bool:
         rf"(?:{CHINESE_SUPPORT_RESULT_ACTION_PREDICATE})不好",
         value,
     ):
+        if value.startswith("意思", match.end()):
+            continue
         tail = re.split(r"[，,。.!！?？；;]", value[match.end() :], maxsplit=1)[0]
         attributive_end = tail.rfind("的")
         if attributive_end < 0:
@@ -2114,14 +2119,22 @@ def _has_chinese_support_bad_result(value: str) -> bool:
             tail[:attributive_end],
         ):
             return True
+        if re.match(
+            r"^(?:这(?:些|个)?|那(?:些|个)?|该|本|各|所有|部分|若干)",
+            tail,
+        ) and re.fullmatch(
+            r"(?:客户|用户|同事|学生|员工|新人|老师|导师|队友|供应商)(?:们)?",
+            tail[attributive_end + 1 :],
+        ):
+            return True
     return False
 
 
 def _leading_adverbial_is_ambiguous(value: str) -> bool:
     return bool(
         re.match(
-            r"^(?:在|于)[\u4e00-\u9fff]{0,8}?(?:园区|办公室|场地|区域|环境|地点)"
-            r"[^，,。.!！?？；;]{1,12}?(?:阶段|期间)",
+            r"^(?:在|于)[^，,。.!！?？；;]*?(?:园区|办公室|场地|区域|环境|地点)"
+            r"[^，,。.!！?？；;]*?(?:阶段|期间)",
             re.sub(r"\s+", "", value),
         )
     )

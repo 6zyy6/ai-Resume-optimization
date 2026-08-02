@@ -2763,6 +2763,50 @@ def test_english_non_domain_or_even_one_direct_object_is_trace_only(answer):
     assert invalid == [(0, "negative_source")]
 
 
+def test_long_leading_location_prefix_requires_review():
+    answer = "在北京市海淀区中关村科技园区高峰阶段完成任务"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode == "edit_only"
+
+
+def test_support_action_buhaoyisi_is_not_a_bad_result():
+    answer = "帮助不好意思向同事求助的用户"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0].decision_mode in {"accept_or_edit", "edit_only"}
+
+
+def test_support_action_buhao_final_attributive_entity_is_trace_only():
+    answer = "服务不好这些刚毕业的新人"
+
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "I implemented no code platform at all",
+        "I worked on no code tools whatsoever",
+        "I completed not even a single project",
+    ],
+)
+def test_english_trailing_or_compound_direct_object_negative_is_trace_only(answer):
+    valid, invalid = _validate_candidate_slice(answer, answer)
+
+    assert valid == []
+    assert invalid == [(0, "negative_source")]
+
+
 @pytest.mark.parametrize(
     ("answer", "evidence", "expected_mode"),
     [
