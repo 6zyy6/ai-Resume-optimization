@@ -134,6 +134,13 @@ describe("V2 workflow contracts", () => {
     expect(Value.Check(WorkflowInputSchema, input)).toBe(true);
   });
 
+  it("accepts an empty suggestion batch after a match with no editable candidates", () => {
+    const input = makeSuggestionBatchInput();
+    input.payload.matches = [];
+
+    expect(Value.Check(WorkflowInputSchema, input)).toBe(true);
+  });
+
   it("keeps intake source hashing out of the model output contract", () => {
     const candidate = {
       kind: "skill",

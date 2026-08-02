@@ -1498,19 +1498,37 @@ export interface components {
         };
         /** MatchItemResponse */
         MatchItemResponse: {
+            /** Ai Run Id */
+            ai_run_id: string | null;
             /** Category */
             category: string;
             /** Evidence Refs */
             evidence_refs: string[];
+            /** Generation Mode */
+            generation_mode: string;
             /** Id */
             id: string;
+            /** Input Hash */
+            input_hash: string;
+            /** Reason Code */
+            reason_code: string;
             /** Requirement Id */
             requirement_id: string;
+            /** Resume Target Paths */
+            resume_target_paths: string[];
+            /** Workflow Version */
+            workflow_version: string;
         };
         /** MatchResponse */
         MatchResponse: {
+            /** Ai Run Id */
+            ai_run_id: string | null;
+            /** Generation Mode */
+            generation_mode: string;
             /** Id */
             id: string;
+            /** Input Hash */
+            input_hash: string;
             /** Items */
             items: components["schemas"]["MatchItemResponse"][];
             /** Job Id */
@@ -1521,6 +1539,11 @@ export interface components {
             status: string;
             /** Task Id */
             task_id: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
             /** Workflow Version */
             workflow_version: string;
         };
@@ -1811,10 +1834,18 @@ export interface components {
         };
         /** SuggestionResponse */
         SuggestionResponse: {
+            /** Ai Run Id */
+            ai_run_id: string | null;
             /** Fact Refs */
             fact_refs: string[];
+            /** Generation Mode */
+            generation_mode: string;
             /** Id */
             id: string;
+            /** Input Hash */
+            input_hash: string;
+            /** Original Hash */
+            original_hash: string;
             /** Original Text */
             original_text: string;
             /** Reason */
@@ -1831,6 +1862,13 @@ export interface components {
             suggested_text: string;
             /** Target Path */
             target_path: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Workflow Version */
+            workflow_version: string;
         };
         /**
          * SuggestionStatus

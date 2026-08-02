@@ -1393,6 +1393,17 @@
       "MatchItemResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Run Id"
+          },
           "category": {
             "title": "Category",
             "type": "string"
@@ -1404,12 +1415,35 @@
             "title": "Evidence Refs",
             "type": "array"
           },
+          "generation_mode": {
+            "title": "Generation Mode",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
             "type": "string"
           },
+          "input_hash": {
+            "title": "Input Hash",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          },
           "requirement_id": {
             "title": "Requirement Id",
+            "type": "string"
+          },
+          "resume_target_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resume Target Paths",
+            "type": "array"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
             "type": "string"
           }
         },
@@ -1417,7 +1451,13 @@
           "id",
           "requirement_id",
           "category",
-          "evidence_refs"
+          "evidence_refs",
+          "resume_target_paths",
+          "reason_code",
+          "generation_mode",
+          "workflow_version",
+          "ai_run_id",
+          "input_hash"
         ],
         "title": "MatchItemResponse",
         "type": "object"
@@ -1425,8 +1465,27 @@
       "MatchResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Run Id"
+          },
+          "generation_mode": {
+            "title": "Generation Mode",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "input_hash": {
+            "title": "Input Hash",
             "type": "string"
           },
           "items": {
@@ -1459,6 +1518,11 @@
             ],
             "title": "Task Id"
           },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
           "workflow_version": {
             "title": "Workflow Version",
             "type": "string"
@@ -1469,7 +1533,11 @@
           "resume_version_id",
           "job_id",
           "status",
+          "generation_mode",
           "workflow_version",
+          "ai_run_id",
+          "input_hash",
+          "updated_at",
           "task_id",
           "items"
         ],
@@ -2358,6 +2426,17 @@
       "SuggestionResponse": {
         "additionalProperties": false,
         "properties": {
+          "ai_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Run Id"
+          },
           "fact_refs": {
             "items": {
               "type": "string"
@@ -2365,8 +2444,20 @@
             "title": "Fact Refs",
             "type": "array"
           },
+          "generation_mode": {
+            "title": "Generation Mode",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
+            "type": "string"
+          },
+          "input_hash": {
+            "title": "Input Hash",
+            "type": "string"
+          },
+          "original_hash": {
+            "title": "Original Hash",
             "type": "string"
           },
           "original_text": {
@@ -2417,6 +2508,15 @@
           "target_path": {
             "title": "Target Path",
             "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "workflow_version": {
+            "title": "Workflow Version",
+            "type": "string"
           }
         },
         "required": [
@@ -2426,10 +2526,16 @@
           "requirement_id",
           "requirement_text",
           "original_text",
+          "original_hash",
           "suggested_text",
           "reason",
           "fact_refs",
-          "risk_flags"
+          "risk_flags",
+          "generation_mode",
+          "workflow_version",
+          "ai_run_id",
+          "input_hash",
+          "updated_at"
         ],
         "title": "SuggestionResponse",
         "type": "object"

@@ -39,7 +39,6 @@ from app.db.models import (
     VersionOperation,
 )
 from app.integrations.ai_client import (
-    FixtureAiClient,
     InternalAiClient,
     LegacyAiClientAdapter,
 )
@@ -243,26 +242,7 @@ def test_targeted_key_supports_alias_owned_base_and_job(pipeline_client):
     version_id, job_id = asyncio.run(
         _seed_alias_owned_match_input(sessions)
     )
-    client.app.state.matching_service = MatchingService(
-        sessions,
-        LegacyAiClientAdapter(FixtureAiClient(
-            {
-                "match_resume_to_jd": {
-                    "result": {
-                        "matches": [
-                            {
-                                "category": "needs_evidence",
-                                "requirement_refs": [
-                                    "review_alias_requirement"
-                                ],
-                                "fact_refs": [],
-                            }
-                        ]
-                    }
-                }
-            }
-        )),
-    )
+    client.app.state.matching_service = MatchingService(sessions)
 
     response = client.post(
         "/v1/match-analyses",
@@ -289,7 +269,7 @@ def test_targeted_key_supports_alias_owned_base_and_job(pipeline_client):
         f"/v1/match-analyses/{response.json()['id']}/suggestions"
     )
     assert suggestions.status_code == 200
-    assert suggestions.json()["items"][0]["requirement_text"] == "Python"
+    assert suggestions.json()["items"] == []
 
 
 def test_pi_final_match_creates_suggestion_links_used_by_public_response(
@@ -300,23 +280,10 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
     job_id, requirement_id = _create_parsed_job(
         client, sessions, "Python SQL", "review-pi-job", confirm=True
     )
+    from test_match_ai_orchestration import TwoStageReceiptClient
+
     client.app.state.matching_service = MatchingService(
-        sessions,
-        LegacyAiClientAdapter(FixtureAiClient(
-            {
-                "match_resume_to_jd": {
-                    "result": {
-                        "matches": [
-                            {
-                                "category": "transferable",
-                                "requirement_refs": [requirement_id],
-                                "fact_refs": [fact_id],
-                            }
-                        ]
-                    }
-                }
-            }
-        )),
+        sessions, TwoStageReceiptClient()
     )
     match = client.post(
         "/v1/match-analyses",
@@ -336,12 +303,20 @@ def test_pi_final_match_creates_suggestion_links_used_by_public_response(
         _first_suggestion_id(sessions, match.json()["id"])
     )
     assert queued_id is None
+    claim = asyncio.run(
+        client.app.state.task_service.claim_task(
+            "usr_a", match.json()["task_id"]
+        )
+    )
+    assert claim is not None
     asyncio.run(
         client.app.state.matching_service.process_match(
             "usr_a",
             match.json()["id"],
             trace_id="trace_review_pi",
             task_id=match.json()["task_id"],
+            claim_token=claim.token,
+            task_service=client.app.state.task_service,
         )
     )
 

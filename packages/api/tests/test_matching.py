@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from app.db.models import (
+    BulletFactLink,
     Fact,
     FactSource,
     File as FileModel,
@@ -211,6 +212,21 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
     assert completed.json()["status"] == "succeeded"
     assert completed.json()["items"][0]["category"] == "underexpressed"
     assert len(completed.json()["items"][0]["evidence_refs"]) == 1
+    assert {
+        "generation_mode",
+        "workflow_version",
+        "ai_run_id",
+        "input_hash",
+        "updated_at",
+    } <= set(completed.json())
+    assert {
+        "resume_target_paths",
+        "reason_code",
+        "generation_mode",
+        "workflow_version",
+        "ai_run_id",
+        "input_hash",
+    } <= set(completed.json()["items"][0])
     item = suggestions.json()["items"][0]
     assert suggestions.status_code == 200
     assert item["status"] == "pending"
@@ -220,6 +236,14 @@ def test_job_parse_and_match_api_returns_evidence_and_complete_suggestion(
     assert item["reason"]
     assert item["fact_refs"]
     assert item["risk_flags"] == []
+    assert {
+        "original_hash",
+        "generation_mode",
+        "workflow_version",
+        "ai_run_id",
+        "input_hash",
+        "updated_at",
+    } <= set(item)
 
 
 def test_job_parse_reuses_active_task_across_new_idempotency_keys(
@@ -371,6 +395,19 @@ async def _seed_resume(sessions) -> str:
                 operation_type="save",
                 actor="usr_a",
                 metadata_json={},
+            )
+        )
+        session.add(
+            BulletFactLink(
+                resume_version_id=version.id,
+                bullet_id="bullet_1",
+                fact_id=fact.id,
+                owner_user_id="usr_a",
+                fact_owner_user_id="usr_a",
+                claim_range={"start": 0, "end": len("使用 Python 开发服务")},
+                fact_value_encrypted_at_link="Python",
+                fact_status_at_link="confirmed",
+                fact_source_hashes_at_link=[hashlib.sha256(b"Python").hexdigest()],
             )
         )
     return version.id

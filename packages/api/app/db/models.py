@@ -749,6 +749,20 @@ class MatchAnalysis(OwnerMixin, Base):
             ["job_descriptions.id", "job_descriptions.owner_user_id"],
             name="fk_match_analysis_job_owner",
         ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_match_analysis_ai_run_owner",
+        ),
+        CheckConstraint(
+            "generation_mode IN ('model', 'rule_fallback')",
+            name="ck_match_analysis_generation_mode",
+        ),
+        CheckConstraint(
+            "generation_mode <> 'rule_fallback' OR ai_run_id IS NULL",
+            name="ck_match_analysis_generation_provenance",
+        ),
+        Index("ix_match_analyses_ai_run_id", "ai_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -756,9 +770,19 @@ class MatchAnalysis(OwnerMixin, Base):
     job_id: Mapped[str] = mapped_column(String(64), nullable=False)
     job_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="rule_fallback"
+    )
     workflow_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    ai_run_id: Mapped[str | None] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: "0" * 64
+    )
     task_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class MatchItem(OwnerMixin, Base):
@@ -774,6 +798,21 @@ class MatchItem(OwnerMixin, Base):
             ["jd_requirements.id", "jd_requirements.owner_user_id"],
             name="fk_match_item_requirement_owner",
         ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_match_item_ai_run_owner",
+        ),
+        CheckConstraint(
+            "generation_mode IN ('model', 'rule_fallback')",
+            name="ck_match_item_generation_mode",
+        ),
+        CheckConstraint(
+            "(generation_mode = 'model' AND ai_run_id IS NOT NULL) OR "
+            "(generation_mode = 'rule_fallback' AND ai_run_id IS NULL)",
+            name="ck_match_item_generation_provenance",
+        ),
+        Index("ix_match_items_ai_run_id", "ai_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -782,6 +821,22 @@ class MatchItem(OwnerMixin, Base):
     requirement_owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(32), nullable=False)
     evidence_refs: Mapped[list] = mapped_column(JSON, nullable=False)
+    resume_target_paths: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    reason_code: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="legacy_rule_fallback"
+    )
+    generation_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="rule_fallback"
+    )
+    workflow_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="legacy-rule-fallback@1"
+    )
+    ai_run_id: Mapped[str | None] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: "0" * 64
+    )
 
 
 class Suggestion(OwnerMixin, Base):
@@ -797,6 +852,21 @@ class Suggestion(OwnerMixin, Base):
             "status IN ('pending', 'accepted', 'edited', 'ignored', 'reverted', 'blocked')",
             name="ck_suggestion_status",
         ),
+        ForeignKeyConstraint(
+            ["ai_run_id", "owner_user_id"],
+            ["ai_runs.id", "ai_runs.owner_user_id"],
+            name="fk_suggestion_ai_run_owner",
+        ),
+        CheckConstraint(
+            "generation_mode IN ('model', 'rule_fallback')",
+            name="ck_suggestion_generation_mode",
+        ),
+        CheckConstraint(
+            "(generation_mode = 'model' AND ai_run_id IS NOT NULL) OR "
+            "(generation_mode = 'rule_fallback' AND ai_run_id IS NULL)",
+            name="ck_suggestion_generation_provenance",
+        ),
+        Index("ix_suggestions_ai_run_id", "ai_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -809,7 +879,20 @@ class Suggestion(OwnerMixin, Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     risk_flags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    generation_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="rule_fallback"
+    )
+    workflow_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="legacy-rule-fallback@1"
+    )
+    ai_run_id: Mapped[str | None] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=lambda: "0" * 64
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class SuggestionFactLink(OwnerMixin, Base):

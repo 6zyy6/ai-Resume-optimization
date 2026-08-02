@@ -26,6 +26,7 @@ from app.modules.tasks.service import TaskAdmission, TaskClaimError, TaskService
 from app.workers.pipeline import TaskAiCancellation
 from app.workers.execution import TaskExecutor
 from test_ai_receipts import CANONICAL_HASH, _receipt
+from test_match_ai_orchestration import _receipt as _match_receipt
 
 
 pytestmark = pytest.mark.anyio
@@ -335,6 +336,21 @@ async def test_cancelled_match_cannot_publish_ai_business_rows(
             headers={"Idempotency-Key": f"cancel-confirm-{index}"},
         )
         assert confirmed.status_code == 200
+    task_service = client.app.state.task_service
+
+    class CancelThenReturnAi:
+        async def run(self, request, cancellation=None):
+            assert cancellation is not None
+            ai_run_id = derive_ai_run_id(
+                request.task_id, "match", request.input_hash
+            )
+            assert await cancellation.register_run(ai_run_id) is True
+            await task_service.request_cancel("usr_a", request.task_id)
+            await cancellation.acknowledge_cancel(ai_run_id)
+            return _match_receipt(request, status="cancelled")
+
+    service = MatchingService(sessions, CancelThenReturnAi())
+    client.app.state.matching_service = service
     created = client.post(
         "/v1/match-analyses",
         json={
@@ -343,38 +359,21 @@ async def test_cancelled_match_cannot_publish_ai_business_rows(
         },
         headers={"Idempotency-Key": "cancel-match"},
     )
-    task_service = client.app.state.task_service
     claim = await task_service.claim_task(
         "usr_a",
         created.json()["task_id"],
     )
     assert claim is not None
 
-    class CancelThenReturnAi:
-        async def run(self, **_):
-            await task_service.request_cancel("usr_a", claim.task_id)
-            return {
-                "result": {
-                    "matches": [
-                        {
-                            "category": "transferable",
-                            "fact_refs": [],
-                            "requirement_refs": [],
-                        }
-                    ]
-                }
-            }
-
-    service = MatchingService(sessions, CancelThenReturnAi())
-    with pytest.raises(TaskClaimError):
-        await service.process_match(
-            "usr_a",
-            created.json()["id"],
-            trace_id="trace_cancel_match",
-            task_id=claim.task_id,
-            claim_token=claim.token,
-            task_service=task_service,
-        )
+    await service.process_match(
+        "usr_a",
+        created.json()["id"],
+        trace_id="trace_cancel_match",
+        task_id=claim.task_id,
+        claim_token=claim.token,
+        task_service=task_service,
+        cancellation=TaskAiCancellation(task_service, claim),
+    )
 
     async with sessions() as session:
         analysis = await session.scalar(
@@ -407,6 +406,6 @@ async def test_cancelled_match_cannot_publish_ai_business_rows(
         )
 
     assert analysis is not None
-    assert analysis.status == "queued"
+    assert analysis.status == "failed"
     assert counts == [0, 0, 0]
     assert requirements > 0

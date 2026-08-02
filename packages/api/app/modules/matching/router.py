@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict
 
@@ -38,6 +40,12 @@ class MatchItemResponse(BaseModel):
     requirement_id: str
     category: str
     evidence_refs: list[str]
+    resume_target_paths: list[str]
+    reason_code: str
+    generation_mode: str
+    workflow_version: str
+    ai_run_id: str | None
+    input_hash: str
 
 
 class MatchResponse(BaseModel):
@@ -47,7 +55,11 @@ class MatchResponse(BaseModel):
     resume_version_id: str
     job_id: str
     status: str
+    generation_mode: str
     workflow_version: str
+    ai_run_id: str | None
+    input_hash: str
+    updated_at: datetime
     task_id: str | None
     items: list[MatchItemResponse]
 
@@ -61,10 +73,16 @@ class SuggestionResponse(BaseModel):
     requirement_id: str | None
     requirement_text: str | None
     original_text: str
+    original_hash: str
     suggested_text: str
     reason: str
     fact_refs: list[str]
     risk_flags: list[str]
+    generation_mode: str
+    workflow_version: str
+    ai_run_id: str | None
+    input_hash: str
+    updated_at: datetime
 
 
 class SuggestionListResponse(BaseModel):
@@ -107,7 +125,11 @@ def _analysis(result: MatchAnalysisResult) -> MatchResponse:
         resume_version_id=result.analysis.resume_version_id,
         job_id=result.analysis.job_id,
         status=result.analysis.status,
+        generation_mode=result.analysis.generation_mode,
         workflow_version=result.analysis.workflow_version,
+        ai_run_id=result.analysis.ai_run_id,
+        input_hash=result.analysis.input_hash,
+        updated_at=result.analysis.updated_at,
         task_id=result.analysis.task_id,
         items=[
             MatchItemResponse(
@@ -115,6 +137,12 @@ def _analysis(result: MatchAnalysisResult) -> MatchResponse:
                 requirement_id=item.requirement_id,
                 category=item.category,
                 evidence_refs=list(item.evidence_refs),
+                resume_target_paths=list(item.resume_target_paths),
+                reason_code=item.reason_code,
+                generation_mode=item.generation_mode,
+                workflow_version=item.workflow_version,
+                ai_run_id=item.ai_run_id,
+                input_hash=item.input_hash,
             )
             for item in result.items
         ],
@@ -133,10 +161,16 @@ def _suggestion(
         requirement_id=row.requirement_id,
         requirement_text=requirement_text,
         original_text=row.original_text_encrypted,
+        original_hash=row.original_hash,
         suggested_text=row.suggested_encrypted,
         reason=row.reason,
         fact_refs=fact_refs,
         risk_flags=list(row.risk_flags),
+        generation_mode=row.generation_mode,
+        workflow_version=row.workflow_version,
+        ai_run_id=row.ai_run_id,
+        input_hash=row.input_hash,
+        updated_at=row.updated_at,
     )
 
 

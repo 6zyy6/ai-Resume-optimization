@@ -9,7 +9,6 @@ from app.integrations.ai_client import (
     AiCancellation,
     AiClient,
     InternalAiClient,
-    LegacyAiClientAdapter,
 )
 from app.integrations.storage import StoragePort, build_storage
 from app.modules.exports.service import ExportService
@@ -65,11 +64,8 @@ def configure_pipeline_operations(
     )
     imports = ImportService(sessions, storage)
     intake = IntakeService(sessions, ai_client)
-    legacy_ai_client = (
-        LegacyAiClientAdapter(ai_client) if ai_client is not None else None
-    )
     jobs = JobService(sessions, ai_client)
-    matching = MatchingService(sessions, legacy_ai_client)
+    matching = MatchingService(sessions, ai_client)
     exports = ExportService(sessions, storage)
     privacy = PrivacyWorker(sessions, storage)
 
@@ -115,6 +111,20 @@ def configure_pipeline_operations(
             claim_token=claim.token,
             task_service=task_service,
             cancellation=TaskAiCancellation(task_service, claim),
+        )
+
+    async def fail_match_resume_to_job(
+        claim: TaskClaim,
+        failure: TerminalFailure,
+    ) -> None:
+        task = await _task(task_service, claim)
+        await matching.fail_match(
+            claim.owner_user_id,
+            _resource(task, "match_analysis"),
+            task.id,
+            claim.token,
+            failure.error_code,
+            task_service=task_service,
         )
 
     async def render_resume_export(claim: TaskClaim) -> str:
@@ -187,7 +197,11 @@ def configure_pipeline_operations(
         parse_job,
         terminal_failure_handler=fail_parse_job,
     )
-    register_operation("match_resume_to_job", match_resume_to_job)
+    register_operation(
+        "match_resume_to_job",
+        match_resume_to_job,
+        terminal_failure_handler=fail_match_resume_to_job,
+    )
     register_operation("render_resume_export", render_resume_export)
     register_operation(
         "analyze_intake_answer",

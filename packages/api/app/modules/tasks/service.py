@@ -184,6 +184,17 @@ class TaskService:
             and len(payload["parse_input_hash"]) == 64
             and isinstance(payload.get("parse_snapshot"), dict)
         )
+        deterministic_match_fallback = (
+            task_type == "match_resume_to_job"
+            and queue == "ai.batch"
+            and resource_type == "match_analysis"
+            and resource_id is not None
+            and isinstance(payload, dict)
+            and payload.get("analysis_id") == resource_id
+            and payload.get("generation_mode") == "rule_fallback"
+            and isinstance(payload.get("match_input_hash"), str)
+            and len(payload["match_input_hash"]) == 64
+        )
         if (
             admission.usage_type not in SUPPORTED_ADMISSION_USAGE_TYPES
             or (
@@ -191,6 +202,7 @@ class TaskService:
                 and admission.usage_type != "ai_task"
                 and not deterministic_intake_fallback
                 and not deterministic_job_fallback
+                and not deterministic_match_fallback
             )
         ):
             raise TaskServiceError(
@@ -466,19 +478,29 @@ class TaskService:
             task = await self._claimed_task(
                 session, owner_user_id, task_id, claim_token
             )
-            if progress < task.progress:
-                raise TaskStateError(
-                    "TASK_PROGRESS_INVALID",
-                    "Task progress cannot decrease",
-                )
-            task.stage = stage
-            task.progress = progress
-            task.claim_lease_expires_at = self.clock.now() + timedelta(
-                seconds=DEFAULT_LEASE_SECONDS
-            )
-            await self._append_event(session, task, stage, progress)
-            await session.flush()
+            await self.report_progress_in_session(session, task, stage, progress)
             return task
+
+    async def report_progress_in_session(
+        self,
+        session: AsyncSession,
+        task: Task,
+        stage: str,
+        progress: int,
+    ) -> Task:
+        if progress < 0 or progress > 99 or progress < task.progress:
+            raise TaskStateError(
+                "TASK_PROGRESS_INVALID",
+                "Task progress must be monotonic and between 0 and 99",
+            )
+        task.stage = stage
+        task.progress = progress
+        task.claim_lease_expires_at = self.clock.now() + timedelta(
+            seconds=DEFAULT_LEASE_SECONDS
+        )
+        await self._append_event(session, task, stage, progress)
+        await session.flush()
+        return task
 
     async def request_cancel(self, owner_user_id: str, task_id: str) -> Task:
         async with self.sessions.begin() as session:

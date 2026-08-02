@@ -1,6 +1,9 @@
 import asyncio
 
 import pytest
+from sqlalchemy import func, select
+
+from app.db.models import Fact, ResumeVersion, Suggestion, SuggestionFactLink
 
 from app.modules.suggestions.service import (
     SuggestionConflict,
@@ -80,6 +83,27 @@ def test_suggestion_base_hash_isolation_and_revert():
     assert reverted.text == "负责数据分析"
 
 
+def test_blocked_suggestion_rejects_accept_as_unconfirmed_evidence():
+    with pytest.raises(SuggestionConflict, match="FACT_NOT_CONFIRMED"):
+        apply_suggestion_decision(
+            suggestion={**_suggestion(), "status": "blocked"},
+            decision="accept",
+            current_text="负责数据分析",
+            current_version_id="ver_1",
+        )
+
+
+def test_blocked_suggestion_can_be_ignored():
+    result = apply_suggestion_decision(
+        suggestion={**_suggestion(), "status": "blocked"},
+        decision="ignore",
+        current_text="负责数据分析",
+        current_version_id="ver_1",
+    )
+
+    assert result.status == "ignored"
+
+
 def test_accept_and_revert_endpoints_write_auditable_versions(pipeline_client):
     client, _, _ = pipeline_client
     suggestion_id, base_version_id = _setup_suggestion(client)
@@ -119,6 +143,121 @@ def test_edit_cannot_introduce_an_unconfirmed_tool(pipeline_client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "FACT_NOT_CONFIRMED"
+
+
+def test_blocked_suggestion_endpoints_cannot_accept_or_edit(pipeline_client):
+    client, sessions, _ = pipeline_client
+    suggestion_id, _ = _setup_suggestion(client)
+    asyncio.run(_set_suggestion_status(sessions, suggestion_id, "blocked"))
+
+    accepted = client.post(
+        f"/v1/suggestions/{suggestion_id}/accept",
+        headers={"Idempotency-Key": "blocked-accept"},
+    )
+    edited = client.post(
+        f"/v1/suggestions/{suggestion_id}/edit",
+        json={"text": "Python"},
+        headers={"Idempotency-Key": "blocked-edit"},
+    )
+
+    assert accepted.status_code == 422
+    assert accepted.json()["error"]["code"] == "FACT_NOT_CONFIRMED"
+    assert edited.status_code == 422
+    assert edited.json()["error"]["code"] == "FACT_NOT_CONFIRMED"
+
+
+def test_pending_accept_rejects_fact_drift_without_creating_version(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    suggestion_id, _ = _setup_suggestion(client)
+    before = asyncio.run(_version_count(sessions))
+    asyncio.run(_reject_linked_facts(sessions, suggestion_id))
+
+    response = client.post(
+        f"/v1/suggestions/{suggestion_id}/accept",
+        headers={"Idempotency-Key": "fact-drift-accept"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FACT_NOT_CONFIRMED"
+    assert asyncio.run(_version_count(sessions)) == before
+
+
+def test_pending_accept_revalidates_original_hash_before_creating_version(
+    pipeline_client,
+):
+    client, sessions, _ = pipeline_client
+    suggestion_id, _ = _setup_suggestion(client)
+    before = asyncio.run(_version_count(sessions))
+    asyncio.run(_set_suggestion_hash(sessions, suggestion_id, "0" * 64))
+
+    response = client.post(
+        f"/v1/suggestions/{suggestion_id}/accept",
+        headers={"Idempotency-Key": "hash-drift-accept"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SUGGESTION_BASE_CONFLICT"
+    assert asyncio.run(_version_count(sessions)) == before
+
+
+async def _set_suggestion_status(sessions, suggestion_id: str, status: str) -> None:
+    async with sessions.begin() as session:
+        suggestion = await session.scalar(
+            select(Suggestion).where(
+                Suggestion.id == suggestion_id,
+                Suggestion.owner_user_id == "usr_a",
+            )
+        )
+        assert suggestion is not None
+        suggestion.status = status
+
+
+async def _set_suggestion_hash(sessions, suggestion_id: str, value: str) -> None:
+    async with sessions.begin() as session:
+        suggestion = await session.scalar(
+            select(Suggestion).where(
+                Suggestion.id == suggestion_id,
+                Suggestion.owner_user_id == "usr_a",
+            )
+        )
+        assert suggestion is not None
+        suggestion.original_hash = value
+
+
+async def _reject_linked_facts(sessions, suggestion_id: str) -> None:
+    async with sessions.begin() as session:
+        fact_ids = list(
+            (
+                await session.scalars(
+                    select(SuggestionFactLink.fact_id).where(
+                        SuggestionFactLink.suggestion_id == suggestion_id,
+                        SuggestionFactLink.owner_user_id == "usr_a",
+                    )
+                )
+            ).all()
+        )
+        facts = list(
+            (
+                await session.scalars(
+                    select(Fact).where(
+                        Fact.id.in_(fact_ids),
+                        Fact.owner_user_id == "usr_a",
+                    )
+                )
+            ).all()
+        )
+        assert facts
+        for fact in facts:
+            fact.status = "rejected"
+
+
+async def _version_count(sessions) -> int:
+    async with sessions() as session:
+        return int(
+            await session.scalar(select(func.count()).select_from(ResumeVersion)) or 0
+        )
 
 
 def _setup_suggestion(client):

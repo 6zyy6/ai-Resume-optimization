@@ -25,7 +25,11 @@ from app.db.models import (
 from app.db.ownership import authorized_owner_ids, canonical_user_id
 from app.modules.idempotency.service import IdempotencyConflict, IdempotencyService
 from app.modules.resumes.service import canonical_snapshot
-from app.modules.resumes.quality import high_risk_terms, supports_high_risk_entities
+from app.modules.resumes.fact_policy import (
+    ConfirmedFactProjection,
+    DraftClaim,
+    fact_policy_check,
+)
 
 
 @dataclass(frozen=True)
@@ -62,8 +66,11 @@ def apply_suggestion_decision(
     current_version_id: str,
     edited_text: str | None = None,
 ) -> SuggestionDecisionResult:
+    if suggestion["status"] == "blocked" and decision in {"accept", "edit"}:
+        raise SuggestionConflict("FACT_NOT_CONFIRMED")
     allowed = {
         "pending": {"accept", "edit", "ignore"},
+        "blocked": {"ignore"},
         "accepted": {"revert"},
         "edited": {"revert"},
         "ignored": {"revert"},
@@ -162,8 +169,15 @@ class SuggestionService:
                 raise SuggestionServiceError(
                     "RESOURCE_NOT_FOUND", "Suggestion not found", 404
                 )
+            if suggestion.status == "blocked" and decision in {"accept", "edit"}:
+                raise SuggestionServiceError(
+                    "FACT_NOT_CONFIRMED",
+                    "Suggestion has claims requiring confirmation",
+                    422,
+                )
             allowed = {
                 "pending": {"accept", "edit", "ignore"},
+                "blocked": {"ignore"},
                 "accepted": {"revert"},
                 "edited": {"revert"},
                 "ignored": {"revert"},
@@ -173,12 +187,6 @@ class SuggestionService:
                     "SUGGESTION_TRANSITION_INVALID",
                     "Suggestion decision is invalid for its current status",
                     409,
-                )
-            if suggestion.status == "blocked":
-                raise SuggestionServiceError(
-                    "FACT_NOT_CONFIRMED",
-                    "Suggestion has claims requiring confirmation",
-                    422,
                 )
             if decision == "edit" and not edited_text:
                 raise SuggestionServiceError(
@@ -239,8 +247,12 @@ class SuggestionService:
                     "Target text changed after suggestion generation",
                     409,
                 )
-            fact_rows = await self._confirmed_facts(session, suggestion)
-            if decision in {"accept", "edit"} and not fact_rows:
+            fact_rows, fact_projection, expected_fact_count = (
+                await self._confirmed_facts(session, suggestion)
+            )
+            if decision in {"accept", "edit"} and (
+                not fact_rows or len(fact_rows) != expected_fact_count
+            ):
                 raise SuggestionServiceError(
                     "FACT_NOT_CONFIRMED",
                     "Accepted text requires confirmed fact evidence",
@@ -253,17 +265,18 @@ class SuggestionService:
                 "revert": suggestion.original_text_encrypted,
             }[decision]
             if decision in {"accept", "edit"}:
-                evidence = " ".join(
-                    fact.value_encrypted for fact in fact_rows
+                checked = fact_policy_check(
+                    new_text or "",
+                    (
+                        DraftClaim(
+                            text=new_text or "",
+                            fact_refs=tuple(fact.id for fact in fact_rows),
+                            claim_order=0,
+                        ),
+                    ),
+                    fact_projection,
                 )
-                allowed_terms = high_risk_terms(
-                    f"{suggestion.original_text_encrypted} {evidence}"
-                )
-                introduced_terms = high_risk_terms(new_text or "") - allowed_terms
-                if (
-                    introduced_terms
-                    or not supports_high_risk_entities(new_text or "", evidence)
-                ):
+                if checked.issues or len(checked.supported_claims) != 1:
                     raise SuggestionServiceError(
                         "FACT_NOT_CONFIRMED",
                         "Suggested text contains claims not supported by confirmed facts",
@@ -336,24 +349,51 @@ class SuggestionService:
     async def _confirmed_facts(
         session: AsyncSession,
         suggestion: Suggestion,
-    ) -> list[Fact]:
-        return list(
+    ) -> tuple[list[Fact], tuple[ConfirmedFactProjection, ...], int]:
+        links = list(
             (
                 await session.scalars(
-                    select(Fact)
-                    .join(
-                        SuggestionFactLink,
-                        (SuggestionFactLink.fact_id == Fact.id)
-                        & (SuggestionFactLink.owner_user_id == Fact.owner_user_id),
-                    )
-                    .where(
+                    select(SuggestionFactLink).where(
                         SuggestionFactLink.suggestion_id == suggestion.id,
                         SuggestionFactLink.owner_user_id == suggestion.owner_user_id,
-                        Fact.status == "confirmed",
                     )
                 )
             ).all()
         )
+        facts: list[Fact] = []
+        projections: list[ConfirmedFactProjection] = []
+        for link in links:
+            fact = await session.scalar(
+                select(Fact).where(
+                    Fact.id == link.fact_id,
+                    Fact.owner_user_id == link.owner_user_id,
+                    Fact.status == "confirmed",
+                )
+            )
+            if fact is None:
+                continue
+            source_hashes = tuple(
+                (
+                    await session.scalars(
+                        select(FactSource.source_hash).where(
+                            FactSource.fact_id == fact.id,
+                            FactSource.owner_user_id == fact.owner_user_id,
+                        )
+                    )
+                ).all()
+            )
+            if not source_hashes:
+                continue
+            facts.append(fact)
+            projections.append(
+                ConfirmedFactProjection(
+                    id=fact.id,
+                    value=fact.value_encrypted,
+                    status=fact.status,
+                    source_hashes=source_hashes,
+                )
+            )
+        return facts, tuple(projections), len(links)
 
     @staticmethod
     async def _copy_evidence(

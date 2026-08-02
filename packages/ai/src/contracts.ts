@@ -171,7 +171,7 @@ const SuggestionSourceSchema = Type.Object(
 
 export const GenerateSuggestionsBatchPayloadSchema = Type.Object(
   {
-    matches: Type.Array(SuggestionSourceSchema, { minItems: 1, maxItems: 1_000 }),
+    matches: Type.Array(SuggestionSourceSchema, { maxItems: 1_000 }),
     confirmed_facts: Type.Array(FactProjectionSchema, { maxItems: 1_000 }),
     confirmed_requirements: Type.Array(JdRequirementSchema, { maxItems: 1_000 }),
   },

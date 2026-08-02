@@ -179,7 +179,7 @@ class SuggestionSource(StrictModel):
 
 
 class GenerateSuggestionsBatchPayload(StrictModel):
-    matches: tuple[SuggestionSource, ...] = Field(min_length=1, max_length=1_000)
+    matches: tuple[SuggestionSource, ...] = Field(max_length=1_000)
     confirmed_facts: tuple[FactProjection, ...] = Field(max_length=1_000)
     confirmed_requirements: tuple[RequirementProjection, ...] = Field(max_length=1_000)
 
